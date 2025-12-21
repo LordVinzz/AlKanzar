@@ -14,6 +14,7 @@ find_package(spdlog REQUIRED)
 
 add_executable(AlKanzar
     src/main.cpp
+    src/render/RenderEngine.cpp
 )
 
 target_link_libraries(AlKanzar
