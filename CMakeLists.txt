@@ -12,14 +12,14 @@ find_package(SDL2 REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(spdlog REQUIRED)
 
+add_subdirectory(src/render)
+
 add_executable(AlKanzar
     src/main.cpp
-    src/render/RenderEngine.cpp
 )
 
 target_link_libraries(AlKanzar
     PRIVATE
-        SDL2::SDL2
-        OpenGL::GL
+        alkanzar_render
         spdlog::spdlog
 )

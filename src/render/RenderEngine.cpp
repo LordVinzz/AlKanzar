@@ -2,33 +2,109 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <utility>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 
 namespace {
-struct Vec3 {
-    float x;
-    float y;
-    float z;
-};
-
 constexpr float kIsoAngleX = 35.264f;  // atan(sqrt(1/2)) in degrees
 constexpr float kIsoAngleY = 45.0f;
 constexpr float kBaseOrthoSize = 10.0f;
 constexpr float kMinZoom = 0.2f;
 constexpr float kMaxZoom = 5.0f;
 
-void drawQuad(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& d, const Vec3& normal, const std::array<float, 3>& color) {
-    glBegin(GL_QUADS);
-    glColor3f(color[0], color[1], color[2]);
-    glNormal3f(normal.x, normal.y, normal.z);
-    glVertex3f(a.x, a.y, a.z);
-    glVertex3f(b.x, b.y, b.z);
-    glVertex3f(c.x, c.y, c.z);
-    glVertex3f(d.x, d.y, d.z);
-    glEnd();
+struct Mat4 {
+    std::array<float, 16> m{};
+};
+
+Mat4 identity() {
+    Mat4 mat{};
+    mat.m = {1.0f, 0.0f, 0.0f, 0.0f,
+             0.0f, 1.0f, 0.0f, 0.0f,
+             0.0f, 0.0f, 1.0f, 0.0f,
+             0.0f, 0.0f, 0.0f, 1.0f};
+    return mat;
 }
+
+Mat4 ortho(float left, float right, float bottom, float top, float zNear, float zFar) {
+    Mat4 mat = identity();
+    mat.m[0] = 2.0f / (right - left);
+    mat.m[5] = 2.0f / (top - bottom);
+    mat.m[10] = -2.0f / (zFar - zNear);
+    mat.m[12] = -(right + left) / (right - left);
+    mat.m[13] = -(top + bottom) / (top - bottom);
+    mat.m[14] = -(zFar + zNear) / (zFar - zNear);
+    return mat;
+}
+
+constexpr float kRadPerDeg = 0.017453292519943295769f;
+
+Mat4 rotateX(float degrees) {
+    const float r = degrees * kRadPerDeg;
+    const float c = std::cos(r);
+    const float s = std::sin(r);
+    Mat4 mat = identity();
+    mat.m[5] = c;
+    mat.m[6] = s;
+    mat.m[9] = -s;
+    mat.m[10] = c;
+    return mat;
+}
+
+Mat4 rotateY(float degrees) {
+    const float r = degrees * kRadPerDeg;
+    const float c = std::cos(r);
+    const float s = std::sin(r);
+    Mat4 mat = identity();
+    mat.m[0] = c;
+    mat.m[2] = -s;
+    mat.m[8] = s;
+    mat.m[10] = c;
+    return mat;
+}
+
+Mat4 translate(float x, float y, float z) {
+    Mat4 mat = identity();
+    mat.m[12] = x;
+    mat.m[13] = y;
+    mat.m[14] = z;
+    return mat;
+}
+
+Mat4 multiply(const Mat4& a, const Mat4& b) {
+    Mat4 res{};
+    for (int c = 0; c < 4; ++c) {
+        for (int r = 0; r < 4; ++r) {
+            res.m[c * 4 + r] =
+                a.m[0 * 4 + r] * b.m[c * 4 + 0] +
+                a.m[1 * 4 + r] * b.m[c * 4 + 1] +
+                a.m[2 * 4 + r] * b.m[c * 4 + 2] +
+                a.m[3 * 4 + r] * b.m[c * 4 + 3];
+        }
+    }
+    return res;
+}
+
+std::array<float, 16> toArray(const Mat4& mat) {
+    return mat.m;
+}
+
+struct Vertex {
+    float px, py, pz;
+    float nx, ny, nz;
+    float r, g, b;
+};
+
+void addQuad(const std::array<Vertex, 4>& verts, std::vector<float>& outVerts, std::vector<unsigned int>& outIndices) {
+    const unsigned int base = static_cast<unsigned int>(outVerts.size() / 9);
+    for (const auto& v : verts) {
+        outVerts.insert(outVerts.end(), {v.px, v.py, v.pz, v.nx, v.ny, v.nz, v.r, v.g, v.b});
+    }
+    outIndices.insert(outIndices.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
+}
+
 }  // namespace
 
 namespace render {
@@ -54,9 +130,9 @@ bool RenderEngine::init() {
         return true;
     }
 
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
 
@@ -92,7 +168,8 @@ bool RenderEngine::init() {
     glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
 
     updateProjection();
-    return true;
+    buildScene();
+    return sceneReady_;
 }
 
 void RenderEngine::run() {
@@ -146,8 +223,8 @@ void RenderEngine::handleEvent(const SDL_Event& event, bool& running) {
         case SDL_MOUSEMOTION:
             if (middleDragging_) {
                 constexpr float panSpeed = 0.01f;
-                cameraX_ -= static_cast<float>(event.motion.xrel) * panSpeed / zoom_;
-                cameraZ_ += static_cast<float>(event.motion.yrel) * panSpeed / zoom_;
+                panX_ -= static_cast<float>(event.motion.xrel) * panSpeed / zoom_;
+                panY_ += static_cast<float>(event.motion.yrel) * panSpeed / zoom_;
                 lastMouseX_ = event.motion.x;
                 lastMouseY_ = event.motion.y;
                 updateProjection();
@@ -165,71 +242,151 @@ void RenderEngine::handleEvent(const SDL_Event& event, bool& running) {
     }
 }
 
-void RenderEngine::updateProjection() const {
+void RenderEngine::updateProjection() {
     glViewport(0, 0, width_, height_);
 
     const float aspect = static_cast<float>(width_) / static_cast<float>(height_ > 0 ? height_ : 1);
     const float halfSize = kBaseOrthoSize / zoom_;
 
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    glOrtho(-halfSize * aspect, halfSize * aspect, -halfSize, halfSize, -50.0f, 50.0f);
+    const Mat4 proj = ortho(-halfSize * aspect, halfSize * aspect, -halfSize, halfSize, 1.0f, 100.0f);
+    // We want an isometric view that looks down onto the scene. The standard
+    // approach is to rotate the world by -35.264° around the X axis (to tip
+    // the view downward) and +45° around the Y axis (to rotate the view
+    // diagonally across the X/Z plane).  In the previous version the
+    // Y‑rotation used a negative angle which effectively flipped the depth
+    // ordering, causing the walls to appear behind the ground even though
+    // they are closer to the camera.  Swapping the sign on the Y rotation
+    // fixes the depth ordering and places the walls in front of the ground as
+    // intended.
+    const Mat4 rx = rotateX(-kIsoAngleX);
+    const Mat4 ry = rotateY(kIsoAngleY);
+    const Mat4 t = translate(-panX_, -panY_, -cameraDistance_);
 
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    glRotatef(kIsoAngleX, 1.0f, 0.0f, 0.0f);
-    glRotatef(kIsoAngleY, 0.0f, 1.0f, 0.0f);
-    glTranslatef(-cameraX_, 0.0f, -cameraZ_);
+    const Mat4 view = multiply(t, multiply(rx, ry));
+
+    projection_ = toArray(proj);
+    view_ = toArray(view);
 }
 
-void RenderEngine::renderScene() const {
+void RenderEngine::setMVPUniform() const {
+    Mat4 proj{projection_};
+    Mat4 view{view_};
+    const Mat4 mvp = multiply(proj, view);
+    glUniformMatrix4fv(mvpLocation_, 1, GL_FALSE, mvp.m.data());
+}
+
+void RenderEngine::drawLayer(RenderLayer layer, std::initializer_list<const MeshBuffer*> meshes) const {
+    // Ground doesn't write depth so vertical geometry isn't occluded in isometric view.
+    const GLboolean depthWrite = layer == RenderLayer::Ground ? GL_FALSE : GL_TRUE;
+    glDepthMask(depthWrite);
+    for (const MeshBuffer* mesh : meshes) {
+        mesh->draw();
+    }
+}
+
+void RenderEngine::renderScene() {
+    if (!sceneReady_) {
+        return;
+    }
+
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    updateProjection();
-    drawGround();
-    drawWalls();
+
+    shader_.use();
+    setMVPUniform();
+    glUniform3f(lightDirLocation_, -0.3f, -1.0f, -0.4f);
+
+    drawLayer(RenderLayer::Ground, {&ground_});
+    drawLayer(RenderLayer::Geometry, {&wallA_, &wallB_});
+    drawLayer(RenderLayer::Actors, {});
 }
 
-void RenderEngine::drawGround() const {
-    const float size = 5.0f;
-    const Vec3 normal{0.0f, 1.0f, 0.0f};
-    const std::array<float, 3> color{0.18f, 0.36f, 0.20f};
+void RenderEngine::buildScene() {
+    static const std::string vertexShader = R"(
+        #version 330 core
+        layout (location = 0) in vec3 aPos;
+        layout (location = 1) in vec3 aNormal;
+        layout (location = 2) in vec3 aColor;
 
-    drawQuad(
-        Vec3{-size, 0.0f, -size},
-        Vec3{size, 0.0f, -size},
-        Vec3{size, 0.0f, size},
-        Vec3{-size, 0.0f, size},
-        normal,
-        color
-    );
-}
+        uniform mat4 uMVP;
+        uniform vec3 uLightDir;
 
-void RenderEngine::drawWalls() const {
+        out vec3 vColor;
+
+        void main() {
+            gl_Position = uMVP * vec4(aPos, 1.0);
+            float ndotl = max(dot(normalize(aNormal), -normalize(uLightDir)), 0.2);
+            vColor = aColor * ndotl;
+        }
+    )";
+
+    static const std::string fragmentShader = R"(
+        #version 330 core
+        in vec3 vColor;
+        out vec4 FragColor;
+
+        void main() {
+            FragColor = vec4(vColor, 1.0);
+        }
+    )";
+
+    if (!shader_.buildFromSource(vertexShader, fragmentShader)) {
+        spdlog::error("RenderEngine: failed to build shaders");
+        sceneReady_ = false;
+        return;
+    }
+
+    mvpLocation_ = shader_.uniformLocation("uMVP");
+    lightDirLocation_ = shader_.uniformLocation("uLightDir");
+
+    std::vector<float> groundVerts;
+    std::vector<unsigned int> groundIdx;
+    const float g = 5.0f;
+    const std::array<Vertex, 4> groundQuad{{
+        {-g, 0.0f, -g, 0.0f, 1.0f, 0.0f, 0.18f, 0.36f, 0.20f},
+        {g, 0.0f, -g, 0.0f, 1.0f, 0.0f, 0.18f, 0.36f, 0.20f},
+        {g, 0.0f, g, 0.0f, 1.0f, 0.0f, 0.18f, 0.36f, 0.20f},
+        {-g, 0.0f, g, 0.0f, 1.0f, 0.0f, 0.18f, 0.36f, 0.20f},
+    }};
+    addQuad(groundQuad, groundVerts, groundIdx);
+
+    std::vector<float> wallVerts;
+    std::vector<unsigned int> wallIdx;
     const float wallHeight = 2.5f;
-    const float wallDepth = 0.1f;
+    const float wallOffset = 3.0f;
     const float wallLength = 5.0f;
 
-    const Vec3 normal{0.0f, 0.0f, 1.0f};
-    const std::array<float, 3> wallColorA{0.70f, 0.25f, 0.25f};
-    const std::array<float, 3> wallColorB{0.25f, 0.45f, 0.70f};
+    // The vertical walls must be defined in a counter‑clockwise order from the
+    // camera’s point of view in our isometric projection.  When we flipped the
+    // Y‑rotation to +45° the original vertex order resulted in a clockwise
+    // winding for the walls, so they were culled as back faces.  Reordering
+    // the vertices here restores a CCW winding without disabling face
+    // culling.  The normals remain the same; we still want wallA facing +X
+    // and wallB facing −X.
 
-    drawQuad(
-        Vec3{-wallLength, 0.0f, -wallDepth},
-        Vec3{-wallLength, wallHeight, -wallDepth},
-        Vec3{-wallLength, wallHeight, wallDepth},
-        Vec3{-wallLength, 0.0f, wallDepth},
-        normal,
-        wallColorA
-    );
+    // Wall A (x = -wallOffset) ordered: bottom‑near, bottom‑far, top‑far, top‑near
+    const std::array<Vertex, 4> wallAQuad{{
+        {-wallOffset, 0.0f, -wallLength, 1.0f, 0.0f, 0.0f, 0.70f, 0.25f, 0.25f},   // bottom near
+        {-wallOffset, 0.0f,  wallLength, 1.0f, 0.0f, 0.0f, 0.70f, 0.25f, 0.25f},   // bottom far
+        {-wallOffset, wallHeight,  wallLength, 1.0f, 0.0f, 0.0f, 0.70f, 0.25f, 0.25f}, // top far
+        {-wallOffset, wallHeight, -wallLength, 1.0f, 0.0f, 0.0f, 0.70f, 0.25f, 0.25f}, // top near
+    }};
+    addQuad(wallAQuad, wallVerts, wallIdx);
 
-    drawQuad(
-        Vec3{wallLength, 0.0f, -wallDepth},
-        Vec3{wallLength, wallHeight, -wallDepth},
-        Vec3{wallLength, wallHeight, wallDepth},
-        Vec3{wallLength, 0.0f, wallDepth},
-        normal,
-        wallColorB
-    );
+    // Wall B (x = +wallOffset) ordered similarly
+    const std::array<Vertex, 4> wallBQuad{{
+        { wallOffset, 0.0f, -wallLength, -1.0f, 0.0f, 0.0f, 0.25f, 0.45f, 0.70f},   // bottom near
+        { wallOffset, 0.0f,  wallLength, -1.0f, 0.0f, 0.0f, 0.25f, 0.45f, 0.70f},   // bottom far
+        { wallOffset, wallHeight,  wallLength, -1.0f, 0.0f, 0.0f, 0.25f, 0.45f, 0.70f}, // top far
+        { wallOffset, wallHeight, -wallLength, -1.0f, 0.0f, 0.0f, 0.25f, 0.45f, 0.70f}, // top near
+    }};
+    std::vector<float> wallBVerts;
+    std::vector<unsigned int> wallBIdx;
+    addQuad(wallBQuad, wallBVerts, wallBIdx);
+
+    sceneReady_ = shader_.id() != 0 &&
+                  ground_.upload(groundVerts, groundIdx) &&
+                  wallA_.upload(wallVerts, wallIdx) &&
+                  wallB_.upload(wallBVerts, wallBIdx);
 }
 
 }  // namespace render

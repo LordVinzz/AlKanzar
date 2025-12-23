@@ -3,12 +3,25 @@
 #include <SDL.h>
 #include <SDL_opengl.h>
 
+#include <string_view>
+
+#include "render/RenderEngine.hpp"
 #include <spdlog/spdlog.h>
 #include <spdlog/async.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/basic_file_sink.h>
 
-int main() {
+int main(int argc, char** argv) {
+    bool runRenderTest = false;
+    for (int i = 1; i < argc; ++i) {
+        std::string_view arg{argv[i]};
+        if ((arg == "--test" || arg == "-t") && i + 1 < argc) {
+            if (std::string_view{argv[i + 1]} == "RenderEngine") {
+                runRenderTest = true;
+            }
+        }
+    }
+
     // Thread pool async
     spdlog::init_thread_pool(8192, 1);
 
@@ -65,9 +78,17 @@ int main() {
     bool glAvailable = SDL_GL_LoadLibrary(nullptr) == 0;
     if (glAvailable) {
         spdlog::info("OpenGL library loaded successfully via SDL.");
-        SDL_GL_UnloadLibrary();
     } else {
         spdlog::error("OpenGL not available: {}", SDL_GetError());
+    }
+
+    if (runRenderTest && glAvailable) {
+        render::RenderEngine engine(1280, 720);
+        engine.run();
+    }
+
+    if (glAvailable) {
+        SDL_GL_UnloadLibrary();
     }
 
     SDL_Quit();
