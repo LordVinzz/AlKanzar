@@ -19,6 +19,7 @@ public:
 
     bool upload(const std::vector<float>& vertices, const std::vector<unsigned int>& indices);
     void draw() const;
+    void drawInstanced(GLsizei instanceCount) const;
     bool valid() const { return vao_ != 0 && vbo_ != 0 && ebo_ != 0 && indexCount_ > 0; }
 
 private:

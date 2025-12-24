@@ -77,6 +77,35 @@ bool ShaderProgram::buildFromSource(const std::string& vertexSrc, const std::str
     return true;
 }
 
+bool ShaderProgram::buildComputeFromSource(const std::string& computeSrc) {
+    destroy();
+
+    GLuint cs = compile(GL_COMPUTE_SHADER, computeSrc);
+    if (cs == 0) {
+        return false;
+    }
+
+    programId_ = glCreateProgram();
+    glAttachShader(programId_, cs);
+    glLinkProgram(programId_);
+
+    glDeleteShader(cs);
+
+    GLint linked = 0;
+    glGetProgramiv(programId_, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        GLint logLength = 0;
+        glGetProgramiv(programId_, GL_INFO_LOG_LENGTH, &logLength);
+        std::vector<char> log(static_cast<size_t>(logLength + 1), 0);
+        glGetProgramInfoLog(programId_, logLength, nullptr, log.data());
+        spdlog::error("ShaderProgram: compute program link error: {}", log.data());
+        destroy();
+        return false;
+    }
+
+    return true;
+}
+
 void ShaderProgram::use() const {
     glUseProgram(programId_);
 }

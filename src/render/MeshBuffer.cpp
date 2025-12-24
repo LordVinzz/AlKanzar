@@ -70,4 +70,13 @@ void MeshBuffer::draw() const {
     glBindVertexArray(0);
 }
 
+void MeshBuffer::drawInstanced(GLsizei instanceCount) const {
+    if (!valid() || instanceCount <= 0) {
+        return;
+    }
+    glBindVertexArray(vao_);
+    glDrawElementsInstanced(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr, instanceCount);
+    glBindVertexArray(0);
+}
+
 }  // namespace render

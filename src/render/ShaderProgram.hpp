@@ -18,6 +18,7 @@ public:
     ShaderProgram& operator=(const ShaderProgram&) = delete;
 
     bool buildFromSource(const std::string& vertexSrc, const std::string& fragmentSrc);
+    bool buildComputeFromSource(const std::string& computeSrc);
     void use() const;
     GLint uniformLocation(const char* name) const;
     GLuint id() const { return programId_; }
