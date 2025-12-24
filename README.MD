@@ -25,6 +25,7 @@ This project requires the following libraries:
 - **SDL2** (windowing, input, audio)
 - **glad** (OpenGL loader — **Windows only** for bindings)
 - **spdlog** (logging)
+- **glm** (math)
 
 Below are installation instructions for **macOS**, **Linux**, and **Windows (via vcpkg)**.
 
@@ -36,7 +37,7 @@ Use **Homebrew**:
 
 ```bash
 brew update
-brew install sdl2 spdlog
+brew install sdl2 spdlog glm
 ```
 
 Notes:
@@ -51,7 +52,7 @@ Notes:
 
 ```bash
 sudo apt update
-sudo apt install libsdl2-dev libspdlog-dev
+sudo apt install libsdl2-dev libspdlog-dev libglm-dev
 ```
 
 Notes:
@@ -74,7 +75,7 @@ cd vcpkg
 ### 2. Install required libraries
 
 ```sh
-vcpkg install sdl2 spdlog glad
+vcpkg install sdl2 spdlog glad glm
 ```
 
 This project should work with every triplets type ( x86 / x64 ) ( dynamic / static ) however some triplets may require additional configuration.

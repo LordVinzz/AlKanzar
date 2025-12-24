@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <utility>
 #include <vector>
 
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <spdlog/spdlog.h>
 
 namespace {
@@ -14,82 +16,6 @@ constexpr float kIsoAngleY = 45.0f;
 constexpr float kBaseOrthoSize = 10.0f;
 constexpr float kMinZoom = 0.2f;
 constexpr float kMaxZoom = 5.0f;
-
-struct Mat4 {
-    std::array<float, 16> m{};
-};
-
-Mat4 identity() {
-    Mat4 mat{};
-    mat.m = {1.0f, 0.0f, 0.0f, 0.0f,
-             0.0f, 1.0f, 0.0f, 0.0f,
-             0.0f, 0.0f, 1.0f, 0.0f,
-             0.0f, 0.0f, 0.0f, 1.0f};
-    return mat;
-}
-
-Mat4 ortho(float left, float right, float bottom, float top, float zNear, float zFar) {
-    Mat4 mat = identity();
-    mat.m[0] = 2.0f / (right - left);
-    mat.m[5] = 2.0f / (top - bottom);
-    mat.m[10] = -2.0f / (zFar - zNear);
-    mat.m[12] = -(right + left) / (right - left);
-    mat.m[13] = -(top + bottom) / (top - bottom);
-    mat.m[14] = -(zFar + zNear) / (zFar - zNear);
-    return mat;
-}
-
-constexpr float kRadPerDeg = 0.017453292519943295769f;
-
-Mat4 rotateX(float degrees) {
-    const float r = degrees * kRadPerDeg;
-    const float c = std::cos(r);
-    const float s = std::sin(r);
-    Mat4 mat = identity();
-    mat.m[5] = c;
-    mat.m[6] = s;
-    mat.m[9] = -s;
-    mat.m[10] = c;
-    return mat;
-}
-
-Mat4 rotateY(float degrees) {
-    const float r = degrees * kRadPerDeg;
-    const float c = std::cos(r);
-    const float s = std::sin(r);
-    Mat4 mat = identity();
-    mat.m[0] = c;
-    mat.m[2] = -s;
-    mat.m[8] = s;
-    mat.m[10] = c;
-    return mat;
-}
-
-Mat4 translate(float x, float y, float z) {
-    Mat4 mat = identity();
-    mat.m[12] = x;
-    mat.m[13] = y;
-    mat.m[14] = z;
-    return mat;
-}
-
-Mat4 multiply(const Mat4& a, const Mat4& b) {
-    Mat4 res{};
-    for (int c = 0; c < 4; ++c) {
-        for (int r = 0; r < 4; ++r) {
-            res.m[c * 4 + r] =
-                a.m[0 * 4 + r] * b.m[c * 4 + 0] +
-                a.m[1 * 4 + r] * b.m[c * 4 + 1] +
-                a.m[2 * 4 + r] * b.m[c * 4 + 2] +
-                a.m[3 * 4 + r] * b.m[c * 4 + 3];
-        }
-    }
-    return res;
-}
-
-std::array<float, 16> toArray(const Mat4& mat) {
-    return mat.m;
-}
 
 struct Vertex {
     float px, py, pz;
@@ -248,7 +174,7 @@ void RenderEngine::updateProjection() {
     const float aspect = static_cast<float>(width_) / static_cast<float>(height_ > 0 ? height_ : 1);
     const float halfSize = kBaseOrthoSize / zoom_;
 
-    const Mat4 proj = ortho(-halfSize * aspect, halfSize * aspect, -halfSize, halfSize, 1.0f, 100.0f);
+    projection_ = glm::ortho(-halfSize * aspect, halfSize * aspect, -halfSize, halfSize, 1.0f, 100.0f);
     // We want an isometric view that looks down onto the scene. The standard
     // approach is to rotate the world by -35.264° around the X axis (to tip
     // the view downward) and +45° around the Y axis (to rotate the view
@@ -258,21 +184,16 @@ void RenderEngine::updateProjection() {
     // they are closer to the camera.  Swapping the sign on the Y rotation
     // fixes the depth ordering and places the walls in front of the ground as
     // intended.
-    const Mat4 rx = rotateX(-kIsoAngleX);
-    const Mat4 ry = rotateY(kIsoAngleY);
-    const Mat4 t = translate(-panX_, -panY_, -cameraDistance_);
+    const glm::mat4 rx = glm::rotate(glm::mat4(1.0f), glm::radians(-kIsoAngleX), glm::vec3(1.0f, 0.0f, 0.0f));
+    const glm::mat4 ry = glm::rotate(glm::mat4(1.0f), glm::radians(kIsoAngleY), glm::vec3(0.0f, 1.0f, 0.0f));
+    const glm::mat4 t = glm::translate(glm::mat4(1.0f), glm::vec3(-panX_, -panY_, -cameraDistance_));
 
-    const Mat4 view = multiply(t, multiply(rx, ry));
-
-    projection_ = toArray(proj);
-    view_ = toArray(view);
+    view_ = t * rx * ry;
 }
 
 void RenderEngine::setMVPUniform() const {
-    Mat4 proj{projection_};
-    Mat4 view{view_};
-    const Mat4 mvp = multiply(proj, view);
-    glUniformMatrix4fv(mvpLocation_, 1, GL_FALSE, mvp.m.data());
+    const glm::mat4 mvp = projection_ * view_;
+    glUniformMatrix4fv(mvpLocation_, 1, GL_FALSE, glm::value_ptr(mvp));
 }
 
 void RenderEngine::drawLayer(RenderLayer layer, std::initializer_list<const MeshBuffer*> meshes) const {

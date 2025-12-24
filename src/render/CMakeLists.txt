@@ -13,6 +13,7 @@ target_link_libraries(alkanzar_render
     PUBLIC
         SDL2::SDL2
         OpenGL::GL
+        glm::glm
     PRIVATE
         spdlog::spdlog
 )

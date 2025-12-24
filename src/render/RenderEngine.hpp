@@ -6,9 +6,10 @@
 #include <SDL.h>
 #include <SDL_opengl.h>
 
-#include <array>
 #include <initializer_list>
 #include <string>
+
+#include <glm/mat4x4.hpp>
 
 #include "MeshBuffer.hpp"
 #include "ShaderProgram.hpp"
@@ -61,8 +62,8 @@ private:
     GLint mvpLocation_{-1};
     GLint lightDirLocation_{-1};
 
-    std::array<float, 16> projection_{};
-    std::array<float, 16> view_{};
+    glm::mat4 projection_{1.0f};
+    glm::mat4 view_{1.0f};
     bool sceneReady_{false};
 };
 
