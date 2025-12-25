@@ -456,8 +456,8 @@ void RenderEngine::updateLights() {
     auto appendLight = [&](const LightInstance& light) {
         glm::vec3 position = light.basePosition;
         const float phase = light.phase + time;
-        const float orbitScale = light.type == LightType::Spot ? 0.25f : 0.55f;
-        const float bobScale = light.type == LightType::Spot ? 0.15f : 0.35f;
+        const float orbitScale = light.type == LightType::Spot ? 2.25f : 0.55f;
+        const float bobScale = light.type == LightType::Spot ? 2.15f : 0.35f;
 
         position.x += orbitScale * std::cos(phase * 0.7f);
         position.z += orbitScale * std::sin(phase * 0.9f);
@@ -727,6 +727,14 @@ void RenderEngine::ensureDeferredResources() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+    glGenTextures(1, &gbufferDepthColor_);
+    glBindTexture(GL_TEXTURE_2D, gbufferDepthColor_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, width_, height_, 0, GL_RED, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
     glGenTextures(1, &gbufferDepth_);
     glBindTexture(GL_TEXTURE_2D, gbufferDepth_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width_, height_, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
@@ -741,9 +749,10 @@ void RenderEngine::ensureDeferredResources() {
     glBindFramebuffer(GL_FRAMEBUFFER, gbufferFbo_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gbufferAlbedo_, 0);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gbufferNormal_, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gbufferDepthColor_, 0);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, gbufferDepth_, 0);
-    const GLenum gbufferAttachments[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
-    glDrawBuffers(2, gbufferAttachments);
+    const GLenum gbufferAttachments[3] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
+    glDrawBuffers(3, gbufferAttachments);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
         spdlog::error("RenderEngine: gbuffer framebuffer is incomplete");
     }
@@ -792,6 +801,10 @@ void RenderEngine::destroyDeferredResources() {
     if (gbufferNormal_ != 0) {
         glDeleteTextures(1, &gbufferNormal_);
         gbufferNormal_ = 0;
+    }
+    if (gbufferDepthColor_ != 0) {
+        glDeleteTextures(1, &gbufferDepthColor_);
+        gbufferDepthColor_ = 0;
     }
     if (gbufferDepth_ != 0) {
         glDeleteTextures(1, &gbufferDepth_);
@@ -944,8 +957,13 @@ void RenderEngine::renderDeferredScene() {
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    const GLfloat clearAlbedo[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    const GLfloat clearNormal[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    const GLfloat clearDepth[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+    glClearBufferfv(GL_COLOR, 0, clearAlbedo);
+    glClearBufferfv(GL_COLOR, 1, clearNormal);
+    glClearBufferfv(GL_COLOR, 2, clearDepth);
+    glClearBufferfi(GL_DEPTH_STENCIL, 0, 1.0f, 0);
 
     deferredGeometryShader_.use();
     glUniformMatrix4fv(gbufferMvpLocation_, 1, GL_FALSE, glm::value_ptr(mvp));
@@ -953,7 +971,9 @@ void RenderEngine::renderDeferredScene() {
     glUniform1f(gbufferMetallicLocation_, 0.0f);
     glUniform1f(gbufferRoughnessLocation_, 0.6f);
 
+    glDepthMask(GL_FALSE);
     ground_.draw();
+    glDepthMask(GL_TRUE);
     wallA_.draw();
     wallB_.draw();
 
@@ -977,7 +997,7 @@ void RenderEngine::renderDeferredScene() {
     glActiveTexture(GL_TEXTURE0 + 1);
     glBindTexture(GL_TEXTURE_2D, gbufferNormal_);
     glActiveTexture(GL_TEXTURE0 + 2);
-    glBindTexture(GL_TEXTURE_2D, gbufferDepth_);
+    glBindTexture(GL_TEXTURE_2D, gbufferDepthColor_);
 
     glBindVertexArray(fullscreenVao_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -1001,7 +1021,7 @@ void RenderEngine::renderDeferredScene() {
         glActiveTexture(GL_TEXTURE0 + 1);
         glBindTexture(GL_TEXTURE_2D, gbufferNormal_);
         glActiveTexture(GL_TEXTURE0 + 2);
-        glBindTexture(GL_TEXTURE_2D, gbufferDepth_);
+        glBindTexture(GL_TEXTURE_2D, gbufferDepthColor_);
         glActiveTexture(GL_TEXTURE0 + 3);
         glBindTexture(GL_TEXTURE_BUFFER, lightsTboTex_);
 
@@ -1037,7 +1057,7 @@ void RenderEngine::renderDeferredScene() {
     glActiveTexture(GL_TEXTURE0 + 2);
     glBindTexture(GL_TEXTURE_2D, gbufferNormal_);
     glActiveTexture(GL_TEXTURE0 + 3);
-    glBindTexture(GL_TEXTURE_2D, gbufferDepth_);
+    glBindTexture(GL_TEXTURE_2D, gbufferDepthColor_);
 
     glBindVertexArray(fullscreenVao_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -1475,6 +1495,7 @@ void RenderEngine::buildScene() {
 
             layout(location = 0) out vec4 gAlbedoMetal;
             layout(location = 1) out vec4 gNormalRough;
+            layout(location = 2) out float gDepth;
 
             uniform float uMetallic;
             uniform float uRoughness;
@@ -1483,6 +1504,7 @@ void RenderEngine::buildScene() {
                 vec3 normal = normalize(vNormal);
                 gAlbedoMetal = vec4(vAlbedo, uMetallic);
                 gNormalRough = vec4(normal, uRoughness);
+                gDepth = gl_FragCoord.z;
             }
         )";
 

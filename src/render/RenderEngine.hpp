@@ -179,6 +179,7 @@ private:
     GLuint gbufferFbo_{0};
     GLuint gbufferAlbedo_{0};
     GLuint gbufferNormal_{0};
+    GLuint gbufferDepthColor_{0};
     GLuint gbufferDepth_{0};
     GLuint lightFbo_{0};
     GLuint lightColor_{0};
