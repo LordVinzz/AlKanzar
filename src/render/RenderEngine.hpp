@@ -28,19 +28,40 @@ enum class RenderLayer {
 
 class RenderEngine {
 public:
+    /**
+     * Creates a render engine with the requested window size and title.
+     * @param width Initial window width in pixels.
+     * @param height Initial window height in pixels.
+     * @param title Window title string.
+     */
     RenderEngine(int width, int height, std::string title = "AlKanzar - Render Preview");
+    /**
+     * Releases GL resources and destroys the SDL window/context.
+     */
     ~RenderEngine();
 
+    /**
+     * Non-copyable to avoid duplicating SDL/GL resources.
+     */
     RenderEngine(const RenderEngine&) = delete;
+    /**
+     * Non-copyable assignment to avoid duplicating SDL/GL resources.
+     */
     RenderEngine& operator=(const RenderEngine&) = delete;
 
+    /**
+     * Initializes the SDL window, GL context, and scene resources.
+     * @return true when initialization succeeds or was already done.
+     */
     bool init();
+    /**
+     * Runs the main event/render loop until quit.
+     */
     void run();
 
 private:
     enum class RendererPath {
         SimpleForward,
-        TiledCompute,
         Deferred41,
     };
 
@@ -77,33 +98,63 @@ private:
         glm::vec4 spotParams;
     };
 
-    struct TileMeta {
-        uint32_t offset;
-        uint32_t count;
-        uint32_t pad0;
-        uint32_t pad1;
-    };
-
+    /**
+     * Handles input/window events and updates camera controls and debug view.
+     * @param event SDL event to process.
+     * @param running Set to false to exit the main loop.
+     */
     void handleEvent(const SDL_Event& event, bool& running);
+    /**
+     * Updates viewport, projection, and view matrices from current camera state.
+     */
     void updateProjection();
+    /**
+     * Chooses the rendering path based on GL version support.
+     */
     void detectLightingCapabilities();
+    /**
+     * Renders a single frame using the active renderer path.
+     */
     void renderScene();
+    /**
+     * Builds shaders, meshes, and uploads scene geometry.
+     */
     void buildScene();
+    /**
+     * Initializes the light list used by deferred rendering.
+     */
     void buildLights();
+    /**
+     * Animates lights, updates GPU buffers, and counts light types.
+     */
     void updateLights();
-    void ensureLightingResources();
-    void destroyLightingResources();
+    /**
+     * Allocates or resizes deferred G-buffer and light targets.
+     */
     void ensureDeferredResources();
+    /**
+     * Releases deferred rendering GPU resources.
+     */
     void destroyDeferredResources();
+    /**
+     * Builds sphere/cone meshes for light volumes.
+     * @return true when both meshes upload successfully.
+     */
     bool buildVolumeMeshes();
-    void renderDepthPrepass();
-    void dispatchDepthMinMax();
-    void dispatchLightCulling();
-    void renderLitScene();
+    /**
+     * Renders the scene using the deferred 4.1 path.
+     */
     void renderDeferredScene();
+    /**
+     * Renders the scene using the simple forward path.
+     */
     void renderSimpleScene();
 
-    void setLightingUniforms() const;
+    /**
+     * Draws meshes for a layer with appropriate depth mask behavior.
+     * @param layer Render layer to determine depth writes.
+     * @param meshes Mesh buffers to draw.
+     */
     void drawLayer(RenderLayer layer, std::initializer_list<const MeshBuffer*> meshes) const;
 
     SDL_Window* window_{nullptr};
@@ -119,13 +170,6 @@ private:
     int lastMouseY_{0};
     std::string title_;
 
-    using DispatchComputeFn = void (*)(GLuint, GLuint, GLuint);
-    using MemoryBarrierFn = void (*)(GLbitfield);
-
-    ShaderProgram lightingShader_;
-    ShaderProgram depthShader_;
-    ShaderProgram depthMinMaxCompute_;
-    ShaderProgram lightCullCompute_;
     ShaderProgram simpleShader_;
     ShaderProgram deferredGeometryShader_;
     ShaderProgram deferredDirLightShader_;
@@ -136,22 +180,6 @@ private:
     MeshBuffer wallB_;
     MeshBuffer lightSphere_;
     MeshBuffer lightCone_;
-    GLint lightingMvpLocation_{-1};
-    GLint lightingViewLocation_{-1};
-    GLint lightingTileCountLocation_{-1};
-    GLint lightingTileSizeLocation_{-1};
-    GLint dirLightDirLocation_{-1};
-    GLint dirLightColorLocation_{-1};
-    GLint dirLightIntensityLocation_{-1};
-    GLint depthMvpLocation_{-1};
-    GLint depthScreenSizeLocation_{-1};
-    GLint depthTileCountLocation_{-1};
-    GLint cullScreenSizeLocation_{-1};
-    GLint cullTileCountLocation_{-1};
-    GLint cullTileSizeLocation_{-1};
-    GLint cullLightCountLocation_{-1};
-    GLint cullMaxLightsLocation_{-1};
-    GLint cullInvProjLocation_{-1};
     GLint simpleMvpLocation_{-1};
     GLint simpleLightDirLocation_{-1};
     GLint gbufferMvpLocation_{-1};
@@ -170,12 +198,6 @@ private:
     GLint volumeIsSpotLocation_{-1};
     GLint compositeDebugModeLocation_{-1};
 
-    GLuint depthFbo_{0};
-    GLuint depthTexture_{0};
-    GLuint lightsSsbo_{0};
-    GLuint tileMetaSsbo_{0};
-    GLuint tileIndexSsbo_{0};
-    GLuint tileDepthSsbo_{0};
     GLuint gbufferFbo_{0};
     GLuint gbufferAlbedo_{0};
     GLuint gbufferNormal_{0};
@@ -187,21 +209,12 @@ private:
     GLuint lightsTboTex_{0};
     GLuint fullscreenVao_{0};
 
-    int tileSize_{16};
-    int maxLightsPerTile_{128};
-    int tilesX_{0};
-    int tilesY_{0};
-    int resourceWidth_{0};
-    int resourceHeight_{0};
     int deferredWidth_{0};
     int deferredHeight_{0};
     int lightCount_{0};
     int pointLightCount_{0};
     int spotLightCount_{0};
-    GLsizeiptr lightBufferSize_{0};
     GLsizeiptr lightTboSize_{0};
-    DispatchComputeFn dispatchCompute_{nullptr};
-    MemoryBarrierFn memoryBarrier_{nullptr};
 
     RendererPath rendererPath_{RendererPath::SimpleForward};
     DebugView debugView_{DebugView::Final};

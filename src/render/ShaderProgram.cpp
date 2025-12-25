@@ -2,7 +2,30 @@
 
 #include <spdlog/spdlog.h>
 
+#include <fstream>
+#include <sstream>
 #include <vector>
+
+namespace {
+
+bool readFile(const std::string& path, std::string& out) {
+    std::ifstream file(path, std::ios::in | std::ios::binary);
+    if (!file) {
+        spdlog::error("ShaderProgram: unable to open shader file: {}", path);
+        return false;
+    }
+
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    out = buffer.str();
+    if (out.empty()) {
+        spdlog::warn("ShaderProgram: shader file is empty: {}", path);
+    }
+
+    return true;
+}
+
+}  // namespace
 
 namespace render {
 
@@ -77,6 +100,20 @@ bool ShaderProgram::buildFromSource(const std::string& vertexSrc, const std::str
     return true;
 }
 
+bool ShaderProgram::buildFromFiles(const std::string& vertexPath, const std::string& fragmentPath) {
+    std::string vertexSrc;
+    std::string fragmentSrc;
+    if (!readFile(vertexPath, vertexSrc) || !readFile(fragmentPath, fragmentSrc)) {
+        destroy();
+        return false;
+    }
+    if (!buildFromSource(vertexSrc, fragmentSrc)) {
+        spdlog::error("ShaderProgram: failed to build program from {} and {}", vertexPath, fragmentPath);
+        return false;
+    }
+    return true;
+}
+
 bool ShaderProgram::buildComputeFromSource(const std::string& computeSrc) {
     destroy();
 
@@ -103,6 +140,19 @@ bool ShaderProgram::buildComputeFromSource(const std::string& computeSrc) {
         return false;
     }
 
+    return true;
+}
+
+bool ShaderProgram::buildComputeFromFile(const std::string& computePath) {
+    std::string computeSrc;
+    if (!readFile(computePath, computeSrc)) {
+        destroy();
+        return false;
+    }
+    if (!buildComputeFromSource(computeSrc)) {
+        spdlog::error("ShaderProgram: failed to build compute program from {}", computePath);
+        return false;
+    }
     return true;
 }
 
