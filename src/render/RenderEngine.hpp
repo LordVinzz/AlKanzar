@@ -16,6 +16,7 @@
 #include <glm/vec4.hpp>
 
 #include "MeshBuffer.hpp"
+#include "ShadowSystem.hpp"
 #include "ShaderProgram.hpp"
 
 namespace render {
@@ -72,6 +73,9 @@ private:
         RoughMetal = 3,
         Depth = 4,
         Light = 5,
+        ShadowMap = 6,
+        ShadowFactor = 7,
+        ShadowCascade = 8,
     };
 
     enum class LightType : uint32_t {
@@ -89,6 +93,9 @@ private:
         float outerAngle;
         LightType type;
         float phase;
+        bool castsShadow{false};
+        float shadowBiasMin{0.0f};
+        float shadowBiasSlope{0.0f};
     };
 
     struct GpuLight {
@@ -96,6 +103,7 @@ private:
         glm::vec4 colorIntensity;
         glm::vec4 directionType;
         glm::vec4 spotParams;
+        glm::vec4 shadowInfo;
     };
 
     /**
@@ -196,7 +204,34 @@ private:
     GLint volumeScreenSizeLocation_{-1};
     GLint volumeLightOffsetLocation_{-1};
     GLint volumeIsSpotLocation_{-1};
+    GLint volumeInvViewLocation_{-1};
+    GLint volumeSpotShadowMatrixLocation_{-1};
+    GLint volumeSpotShadowCountLocation_{-1};
+    GLint volumeSpotShadowTexelSizeLocation_{-1};
+    GLint volumeSpotShadowPcfRadiusLocation_{-1};
+    GLint volumePointShadowCountLocation_{-1};
+    GLint volumePointShadowDiskRadiusLocation_{-1};
+    GLint volumePointShadowPcfRadiusLocation_{-1};
     GLint compositeDebugModeLocation_{-1};
+    GLint deferredShadowMapLocation_{-1};
+    GLint deferredShadowMatrixLocation_{-1};
+    GLint deferredCascadeSplitsLocation_{-1};
+    GLint deferredCascadeCountLocation_{-1};
+    GLint deferredShadowTexelSizeLocation_{-1};
+    GLint deferredShadowBiasMinLocation_{-1};
+    GLint deferredShadowBiasSlopeLocation_{-1};
+    GLint deferredShadowPcfRadiusLocation_{-1};
+    GLint compositeShadowMapLocation_{-1};
+    GLint compositeShadowMatrixLocation_{-1};
+    GLint compositeCascadeSplitsLocation_{-1};
+    GLint compositeCascadeCountLocation_{-1};
+    GLint compositeShadowTexelSizeLocation_{-1};
+    GLint compositeShadowPcfRadiusLocation_{-1};
+    GLint compositeInvProjLocation_{-1};
+    GLint compositeShadowBiasMinLocation_{-1};
+    GLint compositeShadowBiasSlopeLocation_{-1};
+    GLint compositeShadowDebugCascadeLocation_{-1};
+    GLint compositeDirLightDirLocation_{-1};
 
     GLuint gbufferFbo_{0};
     GLuint gbufferAlbedo_{0};
@@ -219,6 +254,9 @@ private:
     RendererPath rendererPath_{RendererPath::SimpleForward};
     DebugView debugView_{DebugView::Final};
     bool cameraInsideLightVolume_{false};
+    int shadowDebugCascade_{0};
+
+    ShadowSystem shadowSystem_{};
 
     std::vector<LightInstance> lights_;
     std::vector<GpuLight> gpuLights_;

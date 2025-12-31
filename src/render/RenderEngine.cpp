@@ -18,6 +18,8 @@ constexpr float kIsoAngleY = 45.0f;
 constexpr float kBaseOrthoSize = 10.0f;
 constexpr float kMinZoom = 0.2f;
 constexpr float kMaxZoom = 5.0f;
+constexpr float kNearPlane = 1.0f;
+constexpr float kFarPlane = 100.0f;
 
 struct Vertex {
     float px, py, pz;
@@ -167,6 +169,7 @@ RenderEngine::RenderEngine(int width, int height, std::string title)
 
 RenderEngine::~RenderEngine() {
     destroyDeferredResources();
+    shadowSystem_.destroy();
     if (glContext_) {
         SDL_GL_DeleteContext(glContext_);
         glContext_ = nullptr;
@@ -217,6 +220,7 @@ bool RenderEngine::init() {
     glDepthFunc(GL_LEQUAL);
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
+    glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
     glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
 
     detectLightingCapabilities();
@@ -271,6 +275,21 @@ void RenderEngine::handleEvent(const SDL_Event& event, bool& running) {
                 case SDLK_5:
                     debugView_ = DebugView::Light;
                     break;
+                case SDLK_6:
+                    debugView_ = DebugView::ShadowMap;
+                    break;
+                case SDLK_7:
+                    debugView_ = DebugView::ShadowFactor;
+                    break;
+                case SDLK_8:
+                    debugView_ = DebugView::ShadowCascade;
+                    break;
+                case SDLK_LEFTBRACKET:
+                    shadowDebugCascade_ = std::max(0, shadowDebugCascade_ - 1);
+                    break;
+                case SDLK_RIGHTBRACKET:
+                    shadowDebugCascade_ = std::min(shadowSystem_.directionalCascadeCount() - 1, shadowDebugCascade_ + 1);
+                    break;
                 default:
                     break;
             }
@@ -323,7 +342,7 @@ void RenderEngine::updateProjection() {
     const float aspect = static_cast<float>(width_) / static_cast<float>(height_ > 0 ? height_ : 1);
     const float halfSize = kBaseOrthoSize / zoom_;
 
-    projection_ = glm::ortho(-halfSize * aspect, halfSize * aspect, -halfSize, halfSize, 1.0f, 100.0f);
+    projection_ = glm::ortho(-halfSize * aspect, halfSize * aspect, -halfSize, halfSize, kNearPlane, kFarPlane);
     invProjection_ = glm::inverse(projection_);
     // We want an isometric view that looks down onto the scene. The standard
     // approach is to rotate the world by -35.264° around the X axis (to tip
@@ -392,6 +411,9 @@ void RenderEngine::buildLights() {
         light.outerAngle = 0.0f;
         light.type = LightType::Point;
         light.phase = angle;
+        light.castsShadow = (i == 0);
+        light.shadowBiasMin = 0.0015f;
+        light.shadowBiasSlope = 0.0045f;
         lights_.push_back(light);
     }
 
@@ -407,6 +429,9 @@ void RenderEngine::buildLights() {
         light.outerAngle = 25.0f;
         light.type = LightType::Spot;
         light.phase = angle;
+        light.castsShadow = (i == 0);
+        light.shadowBiasMin = 0.0012f;
+        light.shadowBiasSlope = 0.004f;
         lights_.push_back(light);
     }
 
@@ -417,6 +442,7 @@ void RenderEngine::updateLights() {
     if (rendererPath_ != RendererPath::Deferred41) {
         return;
     }
+    shadowSystem_.beginFrame();
     if (lights_.empty()) {
         lightCount_ = 0;
         pointLightCount_ = 0;
@@ -425,6 +451,7 @@ void RenderEngine::updateLights() {
     }
 
     const float time = static_cast<float>(SDL_GetTicks()) * 0.001f;
+    const glm::mat4 invView = glm::inverse(view_);
     gpuLights_.clear();
     gpuLights_.reserve(lights_.size());
     pointLightCount_ = 0;
@@ -455,10 +482,49 @@ void RenderEngine::updateLights() {
             viewDir = glm::normalize(glm::mat3(view_) * direction);
         }
 
+        int shadowType = 0;
+        int shadowIndex = -1;
+        if (light.castsShadow) {
+            if (light.type == LightType::Spot) {
+                ShadowSystem::SpotShadowDesc desc{
+                    position,
+                    direction,
+                    light.radius,
+                    light.outerAngle,
+                    light.shadowBiasMin,
+                    light.shadowBiasSlope
+                };
+                shadowIndex = shadowSystem_.registerSpotShadow(desc, invView);
+                if (shadowIndex >= 0) {
+                    shadowType = 1;
+                }
+            } else {
+                ShadowSystem::PointShadowDesc desc{
+                    position,
+                    light.radius,
+                    light.shadowBiasMin,
+                    light.shadowBiasSlope
+                };
+                shadowIndex = shadowSystem_.registerPointShadow(desc);
+                if (shadowIndex >= 0) {
+                    shadowType = 2;
+                }
+            }
+        }
+        if (shadowType == 0) {
+            shadowIndex = 0;
+        }
+
         GpuLight gpu{};
         gpu.positionRadius = glm::vec4(viewPos, light.radius);
         gpu.colorIntensity = glm::vec4(light.color, light.intensity);
         gpu.directionType = glm::vec4(viewDir, static_cast<float>(light.type));
+        gpu.shadowInfo = glm::vec4(
+            static_cast<float>(shadowType),
+            static_cast<float>(shadowIndex),
+            light.shadowBiasMin,
+            light.shadowBiasSlope
+        );
 
         if (light.type == LightType::Spot) {
             const float inner = std::cos(glm::radians(light.innerAngle));
@@ -677,6 +743,13 @@ void RenderEngine::renderDeferredScene() {
     const glm::mat4 mvp = projection_ * view_;
     const glm::vec3 dirLightWorld(-0.3f, -1.0f, -0.4f);
     const glm::vec3 dirLightView = glm::normalize(glm::mat3(view_) * dirLightWorld);
+    const glm::mat4 invView = glm::inverse(view_);
+
+    shadowSystem_.updateDirectional(view_, projection_, dirLightWorld, kNearPlane, kFarPlane);
+    shadowDebugCascade_ = std::clamp(shadowDebugCascade_, 0, shadowSystem_.directionalCascadeCount() - 1);
+    shadowSystem_.renderDirectionalShadows({&ground_, &wallA_, &wallB_});
+    shadowSystem_.renderSpotShadows({&ground_, &wallA_, &wallB_});
+    shadowSystem_.renderPointShadows({&ground_, &wallA_, &wallB_});
 
     glBindFramebuffer(GL_FRAMEBUFFER, gbufferFbo_);
     glViewport(0, 0, width_, height_);
@@ -717,6 +790,26 @@ void RenderEngine::renderDeferredScene() {
     glUniform3f(deferredDirLightColorLocation_, 1.0f, 1.0f, 1.0f);
     glUniform1f(deferredDirLightIntensityLocation_, 0.7f);
     glUniform3f(deferredAmbientLocation_, 0.06f, 0.06f, 0.07f);
+    glUniformMatrix4fv(
+        deferredShadowMatrixLocation_,
+        shadowSystem_.directionalCascadeCount(),
+        GL_FALSE,
+        glm::value_ptr(shadowSystem_.directionalMatrices().front())
+    );
+    glUniform1fv(
+        deferredCascadeSplitsLocation_,
+        shadowSystem_.directionalCascadeCount(),
+        shadowSystem_.directionalSplits().data()
+    );
+    glUniform1i(deferredCascadeCountLocation_, shadowSystem_.directionalCascadeCount());
+    glUniform2f(
+        deferredShadowTexelSizeLocation_,
+        shadowSystem_.directionalTexelSize().x,
+        shadowSystem_.directionalTexelSize().y
+    );
+    glUniform1f(deferredShadowBiasMinLocation_, shadowSystem_.directionalBiasMin());
+    glUniform1f(deferredShadowBiasSlopeLocation_, shadowSystem_.directionalBiasSlope());
+    glUniform1i(deferredShadowPcfRadiusLocation_, shadowSystem_.directionalPcfRadius());
 
     glActiveTexture(GL_TEXTURE0 + 0);
     glBindTexture(GL_TEXTURE_2D, gbufferAlbedo_);
@@ -724,6 +817,8 @@ void RenderEngine::renderDeferredScene() {
     glBindTexture(GL_TEXTURE_2D, gbufferNormal_);
     glActiveTexture(GL_TEXTURE0 + 2);
     glBindTexture(GL_TEXTURE_2D, gbufferDepthColor_);
+    glActiveTexture(GL_TEXTURE0 + 3);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, shadowSystem_.directionalShadowMap());
 
     glBindVertexArray(fullscreenVao_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -741,6 +836,23 @@ void RenderEngine::renderDeferredScene() {
         glUniformMatrix4fv(volumeProjLocation_, 1, GL_FALSE, glm::value_ptr(projection_));
         glUniformMatrix4fv(volumeInvProjLocation_, 1, GL_FALSE, glm::value_ptr(invProjection_));
         glUniform2f(volumeScreenSizeLocation_, static_cast<float>(width_), static_cast<float>(height_));
+        glUniformMatrix4fv(volumeInvViewLocation_, 1, GL_FALSE, glm::value_ptr(invView));
+        glUniformMatrix4fv(
+            volumeSpotShadowMatrixLocation_,
+            shadowSystem_.spotShadowCount(),
+            GL_FALSE,
+            glm::value_ptr(shadowSystem_.spotShadowMatrices().front())
+        );
+        glUniform1i(volumeSpotShadowCountLocation_, shadowSystem_.spotShadowCount());
+        glUniform2f(
+            volumeSpotShadowTexelSizeLocation_,
+            shadowSystem_.spotTexelSize().x,
+            shadowSystem_.spotTexelSize().y
+        );
+        glUniform1i(volumeSpotShadowPcfRadiusLocation_, shadowSystem_.spotPcfRadius());
+        glUniform1i(volumePointShadowCountLocation_, shadowSystem_.pointShadowCount());
+        glUniform1f(volumePointShadowDiskRadiusLocation_, shadowSystem_.pointShadowDiskRadius());
+        glUniform1i(volumePointShadowPcfRadiusLocation_, shadowSystem_.pointPcfRadius());
 
         glActiveTexture(GL_TEXTURE0 + 0);
         glBindTexture(GL_TEXTURE_2D, gbufferAlbedo_);
@@ -750,6 +862,10 @@ void RenderEngine::renderDeferredScene() {
         glBindTexture(GL_TEXTURE_2D, gbufferDepthColor_);
         glActiveTexture(GL_TEXTURE0 + 3);
         glBindTexture(GL_TEXTURE_BUFFER, lightsTboTex_);
+        glActiveTexture(GL_TEXTURE0 + 4);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, shadowSystem_.spotShadowMap());
+        glActiveTexture(GL_TEXTURE0 + 5);
+        glBindTexture(GL_TEXTURE_CUBE_MAP_ARRAY, shadowSystem_.pointShadowMap());
 
         if (pointLightCount_ > 0) {
             glUniform1i(volumeIsSpotLocation_, 0);
@@ -775,6 +891,29 @@ void RenderEngine::renderDeferredScene() {
 
     deferredCompositeShader_.use();
     glUniform1i(compositeDebugModeLocation_, static_cast<int>(debugView_));
+    glUniformMatrix4fv(
+        compositeShadowMatrixLocation_,
+        shadowSystem_.directionalCascadeCount(),
+        GL_FALSE,
+        glm::value_ptr(shadowSystem_.directionalMatrices().front())
+    );
+    glUniform1fv(
+        compositeCascadeSplitsLocation_,
+        shadowSystem_.directionalCascadeCount(),
+        shadowSystem_.directionalSplits().data()
+    );
+    glUniform1i(compositeCascadeCountLocation_, shadowSystem_.directionalCascadeCount());
+    glUniform2f(
+        compositeShadowTexelSizeLocation_,
+        shadowSystem_.directionalTexelSize().x,
+        shadowSystem_.directionalTexelSize().y
+    );
+    glUniform1i(compositeShadowPcfRadiusLocation_, shadowSystem_.directionalPcfRadius());
+    glUniformMatrix4fv(compositeInvProjLocation_, 1, GL_FALSE, glm::value_ptr(invProjection_));
+    glUniform3fv(compositeDirLightDirLocation_, 1, glm::value_ptr(dirLightView));
+    glUniform1f(compositeShadowBiasMinLocation_, shadowSystem_.directionalBiasMin());
+    glUniform1f(compositeShadowBiasSlopeLocation_, shadowSystem_.directionalBiasSlope());
+    glUniform1i(compositeShadowDebugCascadeLocation_, shadowDebugCascade_);
 
     glActiveTexture(GL_TEXTURE0 + 0);
     glBindTexture(GL_TEXTURE_2D, lightColor_);
@@ -784,6 +923,8 @@ void RenderEngine::renderDeferredScene() {
     glBindTexture(GL_TEXTURE_2D, gbufferNormal_);
     glActiveTexture(GL_TEXTURE0 + 3);
     glBindTexture(GL_TEXTURE_2D, gbufferDepthColor_);
+    glActiveTexture(GL_TEXTURE0 + 4);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, shadowSystem_.directionalShadowMap());
 
     glBindVertexArray(fullscreenVao_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -885,23 +1026,60 @@ void RenderEngine::buildScene() {
         volumeLightOffsetLocation_ = deferredVolumeShader_.uniformLocation("uLightOffset");
         volumeIsSpotLocation_ = deferredVolumeShader_.uniformLocation("uIsSpot");
         compositeDebugModeLocation_ = deferredCompositeShader_.uniformLocation("uDebugMode");
+        volumeInvViewLocation_ = deferredVolumeShader_.uniformLocation("uInvView");
+        volumeSpotShadowMatrixLocation_ = deferredVolumeShader_.uniformLocation("uSpotShadowMatrices[0]");
+        volumeSpotShadowCountLocation_ = deferredVolumeShader_.uniformLocation("uSpotShadowCount");
+        volumeSpotShadowTexelSizeLocation_ = deferredVolumeShader_.uniformLocation("uSpotShadowTexelSize");
+        volumeSpotShadowPcfRadiusLocation_ = deferredVolumeShader_.uniformLocation("uSpotShadowPcfRadius");
+        volumePointShadowCountLocation_ = deferredVolumeShader_.uniformLocation("uPointShadowCount");
+        volumePointShadowDiskRadiusLocation_ = deferredVolumeShader_.uniformLocation("uPointShadowDiskRadius");
+        volumePointShadowPcfRadiusLocation_ = deferredVolumeShader_.uniformLocation("uPointShadowPcfRadius");
+        deferredShadowMapLocation_ = deferredDirLightShader_.uniformLocation("uShadowMap");
+        deferredShadowMatrixLocation_ = deferredDirLightShader_.uniformLocation("uShadowMatrices[0]");
+        deferredCascadeSplitsLocation_ = deferredDirLightShader_.uniformLocation("uCascadeSplits[0]");
+        deferredCascadeCountLocation_ = deferredDirLightShader_.uniformLocation("uCascadeCount");
+        deferredShadowTexelSizeLocation_ = deferredDirLightShader_.uniformLocation("uShadowTexelSize");
+        deferredShadowBiasMinLocation_ = deferredDirLightShader_.uniformLocation("uShadowBiasMin");
+        deferredShadowBiasSlopeLocation_ = deferredDirLightShader_.uniformLocation("uShadowBiasSlope");
+        deferredShadowPcfRadiusLocation_ = deferredDirLightShader_.uniformLocation("uShadowPcfRadius");
+        compositeShadowMapLocation_ = deferredCompositeShader_.uniformLocation("uShadowMap");
+        compositeShadowMatrixLocation_ = deferredCompositeShader_.uniformLocation("uShadowMatrices[0]");
+        compositeCascadeSplitsLocation_ = deferredCompositeShader_.uniformLocation("uCascadeSplits[0]");
+        compositeCascadeCountLocation_ = deferredCompositeShader_.uniformLocation("uCascadeCount");
+        compositeShadowTexelSizeLocation_ = deferredCompositeShader_.uniformLocation("uShadowTexelSize");
+        compositeShadowPcfRadiusLocation_ = deferredCompositeShader_.uniformLocation("uShadowPcfRadius");
+        compositeInvProjLocation_ = deferredCompositeShader_.uniformLocation("uInvProj");
+        compositeShadowBiasMinLocation_ = deferredCompositeShader_.uniformLocation("uShadowBiasMin");
+        compositeShadowBiasSlopeLocation_ = deferredCompositeShader_.uniformLocation("uShadowBiasSlope");
+        compositeShadowDebugCascadeLocation_ = deferredCompositeShader_.uniformLocation("uShadowDebugCascade");
+        compositeDirLightDirLocation_ = deferredCompositeShader_.uniformLocation("uDirLightDir");
 
         deferredDirLightShader_.use();
         glUniform1i(deferredDirLightShader_.uniformLocation("uGAlbedoMetal"), 0);
         glUniform1i(deferredDirLightShader_.uniformLocation("uGNormalRough"), 1);
         glUniform1i(deferredDirLightShader_.uniformLocation("uDepth"), 2);
+        glUniform1i(deferredShadowMapLocation_, 3);
 
         deferredVolumeShader_.use();
         glUniform1i(deferredVolumeShader_.uniformLocation("uGAlbedoMetal"), 0);
         glUniform1i(deferredVolumeShader_.uniformLocation("uGNormalRough"), 1);
         glUniform1i(deferredVolumeShader_.uniformLocation("uDepth"), 2);
         glUniform1i(deferredVolumeShader_.uniformLocation("uLightBuffer"), 3);
+        glUniform1i(deferredVolumeShader_.uniformLocation("uSpotShadowMap"), 4);
+        glUniform1i(deferredVolumeShader_.uniformLocation("uPointShadowMap"), 5);
 
         deferredCompositeShader_.use();
         glUniform1i(deferredCompositeShader_.uniformLocation("uLightBuffer"), 0);
         glUniform1i(deferredCompositeShader_.uniformLocation("uGAlbedoMetal"), 1);
         glUniform1i(deferredCompositeShader_.uniformLocation("uGNormalRough"), 2);
         glUniform1i(deferredCompositeShader_.uniformLocation("uDepth"), 3);
+        glUniform1i(compositeShadowMapLocation_, 4);
+
+        if (!shadowSystem_.init(shaderRoot)) {
+            spdlog::error("RenderEngine: failed to init shadow system");
+            sceneReady_ = false;
+            return;
+        }
 
         buildLights();
         volumeReady = buildVolumeMeshes();

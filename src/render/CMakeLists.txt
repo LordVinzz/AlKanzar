@@ -1,5 +1,6 @@
 add_library(alkanzar_render STATIC
     RenderEngine.cpp
+    ShadowSystem.cpp
     ShaderProgram.cpp
     MeshBuffer.cpp
 )
@@ -16,6 +17,8 @@ set(SHADER_FILES
     ${SHADER_SOURCE_DIR}/deferred_volume.vert
     ${SHADER_SOURCE_DIR}/deferred_volume.frag
     ${SHADER_SOURCE_DIR}/deferred_composite.frag
+    ${SHADER_SOURCE_DIR}/shadow_depth.vert
+    ${SHADER_SOURCE_DIR}/shadow_depth.frag
 )
 
 add_custom_target(copy_shaders ALL

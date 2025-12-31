@@ -11,7 +11,7 @@ flat out int vLightIndex;
 void main() {
     int lightIndex = uLightOffset + gl_InstanceID;
     vLightIndex = lightIndex;
-    int base = lightIndex * 4;
+    int base = lightIndex * 5;
 
     vec4 posRadius = texelFetch(uLightBuffer, base);
     vec4 dirType = texelFetch(uLightBuffer, base + 2);

@@ -1,10 +1,19 @@
 #version 410 core
+#define MAX_CASCADES 4
 in vec2 vUv;
 out vec4 FragColor;
 
 uniform sampler2D uGAlbedoMetal;
 uniform sampler2D uGNormalRough;
 uniform sampler2D uDepth;
+uniform sampler2DArray uShadowMap;
+uniform mat4 uShadowMatrices[MAX_CASCADES];
+uniform float uCascadeSplits[MAX_CASCADES];
+uniform int uCascadeCount;
+uniform vec2 uShadowTexelSize;
+uniform float uShadowBiasMin;
+uniform float uShadowBiasSlope;
+uniform int uShadowPcfRadius;
 uniform mat4 uInvProj;
 uniform vec3 uDirLightDir;
 uniform vec3 uDirLightColor;
@@ -15,6 +24,23 @@ vec3 reconstructViewPos(vec2 uv, float depth) {
     vec4 ndc = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
     vec4 view = uInvProj * ndc;
     return view.xyz / view.w;
+}
+
+float sampleShadowMap(vec3 shadowCoord, int layer, float bias) {
+    if (shadowCoord.z > 1.0 || shadowCoord.x < 0.0 || shadowCoord.x > 1.0 || shadowCoord.y < 0.0 || shadowCoord.y > 1.0) {
+        return 1.0;
+    }
+    float shadow = 0.0;
+    int taps = 0;
+    for (int y = -uShadowPcfRadius; y <= uShadowPcfRadius; ++y) {
+        for (int x = -uShadowPcfRadius; x <= uShadowPcfRadius; ++x) {
+            vec2 offset = vec2(x, y) * uShadowTexelSize;
+            float depth = texture(uShadowMap, vec3(shadowCoord.xy + offset, layer)).r;
+            shadow += (shadowCoord.z - bias <= depth) ? 1.0 : 0.0;
+            taps++;
+        }
+    }
+    return shadow / max(float(taps), 1.0);
 }
 
 void main() {
@@ -45,8 +71,22 @@ void main() {
     vec3 diffuse = (1.0 - metallic) * albedo / 3.14159265;
     vec3 specular = F0 * spec;
 
+    float viewDepth = -viewPos.z;
+    int cascade = 0;
+    for (int i = 0; i < uCascadeCount - 1; ++i) {
+        if (viewDepth > uCascadeSplits[i]) {
+            cascade = i + 1;
+        }
+    }
+
+    vec4 shadowPos = uShadowMatrices[cascade] * vec4(viewPos, 1.0);
+    vec3 shadowCoord = shadowPos.xyz / shadowPos.w;
+    shadowCoord = shadowCoord * 0.5 + 0.5;
+    float bias = max(uShadowBiasMin, uShadowBiasSlope * (1.0 - ndotl));
+    float shadow = sampleShadowMap(shadowCoord, cascade, bias);
+
     vec3 color = uAmbient * albedo;
-    color += (diffuse + specular) * uDirLightColor * uDirLightIntensity * ndotl;
+    color += (diffuse + specular) * uDirLightColor * uDirLightIntensity * ndotl * shadow;
 
     FragColor = vec4(color, 1.0);
 }
