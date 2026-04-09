@@ -1,5 +1,6 @@
 #include "RenderEngine.hpp"
 
+#include <SDL_opengl.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -12,6 +13,8 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <spdlog/spdlog.h>
 
+#include "StaticGltfModel.hpp"
+
 namespace {
 constexpr float kIsoAngleX = 35.264f;  // atan(sqrt(1/2)) in degrees
 constexpr float kIsoAngleY = 45.0f;
@@ -20,6 +23,15 @@ constexpr float kMinZoom = 0.2f;
 constexpr float kMaxZoom = 5.0f;
 constexpr float kNearPlane = 1.0f;
 constexpr float kFarPlane = 100.0f;
+constexpr float kOrbitSpeedDegPerSecond = 40.0f;
+constexpr float kAxisLength = 1.0f;
+constexpr float kAxisThickness = 0.035f;
+constexpr float kAxisCenterHalfExtent = 0.055f;
+constexpr float kLightGizmoScaleMin = 0.45f;
+constexpr float kLightGizmoScaleMax = 1.25f;
+constexpr float kLightGizmoScaleFactor = 0.12f;
+constexpr float kDirectionalDebugAnchorDistance = 7.5f;
+constexpr float kDebugVolumeAlpha = 0.85f;
 
 struct Vertex {
     float px, py, pz;
@@ -33,6 +45,72 @@ void addQuad(const std::array<Vertex, 4>& verts, std::vector<float>& outVerts, s
         outVerts.insert(outVerts.end(), {v.px, v.py, v.pz, v.nx, v.ny, v.nz, v.r, v.g, v.b});
     }
     outIndices.insert(outIndices.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
+}
+
+void addBox(
+    const glm::vec3& minCorner,
+    const glm::vec3& maxCorner,
+    const glm::vec3& color,
+    std::vector<float>& outVerts,
+    std::vector<unsigned int>& outIndices
+) {
+    const float minX = minCorner.x;
+    const float minY = minCorner.y;
+    const float minZ = minCorner.z;
+    const float maxX = maxCorner.x;
+    const float maxY = maxCorner.y;
+    const float maxZ = maxCorner.z;
+    const float r = color.r;
+    const float g = color.g;
+    const float b = color.b;
+
+    const std::array<Vertex, 4> rightFace{{
+        {maxX, minY, minZ, 1.0f, 0.0f, 0.0f, r, g, b},
+        {maxX, maxY, minZ, 1.0f, 0.0f, 0.0f, r, g, b},
+        {maxX, maxY, maxZ, 1.0f, 0.0f, 0.0f, r, g, b},
+        {maxX, minY, maxZ, 1.0f, 0.0f, 0.0f, r, g, b},
+    }};
+    addQuad(rightFace, outVerts, outIndices);
+
+    const std::array<Vertex, 4> leftFace{{
+        {minX, minY, minZ, -1.0f, 0.0f, 0.0f, r, g, b},
+        {minX, minY, maxZ, -1.0f, 0.0f, 0.0f, r, g, b},
+        {minX, maxY, maxZ, -1.0f, 0.0f, 0.0f, r, g, b},
+        {minX, maxY, minZ, -1.0f, 0.0f, 0.0f, r, g, b},
+    }};
+    addQuad(leftFace, outVerts, outIndices);
+
+    const std::array<Vertex, 4> topFace{{
+        {minX, maxY, minZ, 0.0f, 1.0f, 0.0f, r, g, b},
+        {minX, maxY, maxZ, 0.0f, 1.0f, 0.0f, r, g, b},
+        {maxX, maxY, maxZ, 0.0f, 1.0f, 0.0f, r, g, b},
+        {maxX, maxY, minZ, 0.0f, 1.0f, 0.0f, r, g, b},
+    }};
+    addQuad(topFace, outVerts, outIndices);
+
+    const std::array<Vertex, 4> bottomFace{{
+        {minX, minY, minZ, 0.0f, -1.0f, 0.0f, r, g, b},
+        {maxX, minY, minZ, 0.0f, -1.0f, 0.0f, r, g, b},
+        {maxX, minY, maxZ, 0.0f, -1.0f, 0.0f, r, g, b},
+        {minX, minY, maxZ, 0.0f, -1.0f, 0.0f, r, g, b},
+    }};
+    addQuad(bottomFace, outVerts, outIndices);
+
+    const std::array<Vertex, 4> frontFace{{
+        {minX, minY, maxZ, 0.0f, 0.0f, 1.0f, r, g, b},
+        {maxX, minY, maxZ, 0.0f, 0.0f, 1.0f, r, g, b},
+        {maxX, maxY, maxZ, 0.0f, 0.0f, 1.0f, r, g, b},
+        {minX, maxY, maxZ, 0.0f, 0.0f, 1.0f, r, g, b},
+    }};
+    addQuad(frontFace, outVerts, outIndices);
+
+    const std::array<Vertex, 4> backFace{{
+        {minX, minY, minZ, 0.0f, 0.0f, -1.0f, r, g, b},
+        {minX, maxY, minZ, 0.0f, 0.0f, -1.0f, r, g, b},
+        {maxX, maxY, minZ, 0.0f, 0.0f, -1.0f, r, g, b},
+        {maxX, minY, minZ, 0.0f, 0.0f, -1.0f, r, g, b},
+    }};
+    addQuad(backFace, outVerts, outIndices);
 }
 
 void pushVertex(const Vertex& v, std::vector<float>& outVerts) {
@@ -147,6 +225,31 @@ void buildConeMesh(int slices, std::vector<float>& outVerts, std::vector<unsigne
     }
 }
 
+glm::vec3 stableUp(const glm::vec3& dir) {
+    const glm::vec3 up(0.0f, 1.0f, 0.0f);
+    if (std::abs(glm::dot(dir, up)) > 0.95f) {
+        return glm::vec3(0.0f, 0.0f, 1.0f);
+    }
+    return up;
+}
+
+glm::mat4 makeOrientationFromDirection(const glm::vec3& direction) {
+    if (glm::dot(direction, direction) < 1.0e-6f) {
+        return glm::mat4(1.0f);
+    }
+
+    const glm::vec3 forward = glm::normalize(direction);
+    const glm::vec3 up = stableUp(forward);
+    const glm::vec3 right = glm::normalize(glm::cross(up, forward));
+    const glm::vec3 actualUp = glm::normalize(glm::cross(forward, right));
+
+    glm::mat4 basis(1.0f);
+    basis[0] = glm::vec4(right, 0.0f);
+    basis[1] = glm::vec4(actualUp, 0.0f);
+    basis[2] = glm::vec4(forward, 0.0f);
+    return basis;
+}
+
 std::string shaderRootPath() {
     char* basePath = SDL_GetBasePath();
     if (!basePath) {
@@ -158,9 +261,38 @@ std::string shaderRootPath() {
     return root;
 }
 
+std::string modelRootPath() {
+    char* basePath = SDL_GetBasePath();
+    if (!basePath) {
+        spdlog::warn("RenderEngine: SDL_GetBasePath failed: {}", SDL_GetError());
+        return "build/models/";
+    }
+    std::string root = std::string(basePath) + "models/";
+    SDL_free(basePath);
+    return root;
+}
+
 }  // namespace
 
 namespace render {
+
+void RenderEngine::LightInstance::setIndex(int index) {
+    index_ = index;
+}
+
+void RenderEngine::LightInstance::setMovableChangedCallback(std::function<void(int, bool)> callback) {
+    movableChangedCallback_ = std::move(callback);
+}
+
+void RenderEngine::LightInstance::setIsMovable(bool movable) {
+    if (isMovable == movable) {
+        return;
+    }
+    isMovable = movable;
+    if (movableChangedCallback_) {
+        movableChangedCallback_(index_, isMovable);
+    }
+}
 
 RenderEngine::RenderEngine(int width, int height, std::string title)
     : width_(width),
@@ -242,6 +374,7 @@ void RenderEngine::run() {
             handleEvent(event, running);
         }
 
+        updateOrbitCamera();
         renderScene();
         SDL_GL_SwapWindow(window_);
     }
@@ -290,6 +423,25 @@ void RenderEngine::handleEvent(const SDL_Event& event, bool& running) {
                 case SDLK_RIGHTBRACKET:
                     shadowDebugCascade_ = std::min(shadowSystem_.directionalCascadeCount() - 1, shadowDebugCascade_ + 1);
                     break;
+                case SDLK_c:
+                    if (event.key.repeat == 0) {
+                        orbitCameraEnabled_ = !orbitCameraEnabled_;
+                        if (orbitCameraEnabled_) {
+                            orbitYawDeg_ = kIsoAngleY;
+                            panX_ = 0.0f;
+                            panY_ = 0.0f;
+                            lastOrbitTickMs_ = SDL_GetTicks();
+                        } else {
+                            lastOrbitTickMs_ = 0;
+                        }
+                        updateProjection();
+                    }
+                    break;
+                case SDLK_l:
+                    if (event.key.repeat == 0) {
+                        showLightDebug_ = !showLightDebug_;
+                    }
+                    break;
                 default:
                     break;
             }
@@ -315,7 +467,7 @@ void RenderEngine::handleEvent(const SDL_Event& event, bool& running) {
             }
             break;
         case SDL_MOUSEMOTION:
-            if (middleDragging_) {
+            if (middleDragging_ && !orbitCameraEnabled_) {
                 constexpr float panSpeed = 0.01f;
                 panX_ -= static_cast<float>(event.motion.xrel) * panSpeed / zoom_;
                 panY_ += static_cast<float>(event.motion.yrel) * panSpeed / zoom_;
@@ -341,27 +493,38 @@ void RenderEngine::updateProjection() {
 
     const float aspect = static_cast<float>(width_) / static_cast<float>(height_ > 0 ? height_ : 1);
     const float halfSize = kBaseOrthoSize / zoom_;
+    const float yawDeg = orbitCameraEnabled_ ? orbitYawDeg_ : kIsoAngleY;
+    const float viewPanX = orbitCameraEnabled_ ? 0.0f : panX_;
+    const float viewPanY = orbitCameraEnabled_ ? 0.0f : panY_;
 
     projection_ = glm::ortho(-halfSize * aspect, halfSize * aspect, -halfSize, halfSize, kNearPlane, kFarPlane);
     invProjection_ = glm::inverse(projection_);
-    // We want an isometric view that looks down onto the scene. The standard
-    // approach is to rotate the world by -35.264° around the X axis (to tip
-    // the view downward) and +45° around the Y axis (to rotate the view
-    // diagonally across the X/Z plane).  In the previous version the
-    // Y‑rotation used a negative angle which effectively flipped the depth
-    // ordering, causing the walls to appear behind the ground even though
-    // they are closer to the camera.  Swapping the sign on the Y rotation
-    // fixes the depth ordering and places the walls in front of the ground as
-    // intended.
-    const glm::mat4 rx = glm::rotate(glm::mat4(1.0f), glm::radians(-kIsoAngleX), glm::vec3(1.0f, 0.0f, 0.0f));
-    const glm::mat4 ry = glm::rotate(glm::mat4(1.0f), glm::radians(kIsoAngleY), glm::vec3(0.0f, 1.0f, 0.0f));
-    const glm::mat4 t = glm::translate(glm::mat4(1.0f), glm::vec3(-panX_, -panY_, -cameraDistance_));
+    const glm::mat4 rx = glm::rotate(glm::mat4(1.0f), glm::radians(kIsoAngleX), glm::vec3(1.0f, 0.0f, 0.0f));
+    const glm::mat4 ry = glm::rotate(glm::mat4(1.0f), glm::radians(-yawDeg), glm::vec3(0.0f, 1.0f, 0.0f));
+    const glm::mat4 t = glm::translate(glm::mat4(1.0f), glm::vec3(-viewPanX, -viewPanY, -cameraDistance_));
 
     view_ = t * rx * ry;
 
     if (rendererPath_ == RendererPath::Deferred41) {
         ensureDeferredResources();
     }
+}
+
+void RenderEngine::updateOrbitCamera() {
+    if (!orbitCameraEnabled_) {
+        return;
+    }
+
+    const Uint32 nowMs = SDL_GetTicks();
+    if (lastOrbitTickMs_ == 0) {
+        lastOrbitTickMs_ = nowMs;
+        return;
+    }
+
+    const float deltaSeconds = static_cast<float>(nowMs - lastOrbitTickMs_) * 0.001f;
+    lastOrbitTickMs_ = nowMs;
+    orbitYawDeg_ = std::fmod(orbitYawDeg_ + kOrbitSpeedDegPerSecond * deltaSeconds, 360.0f);
+    updateProjection();
 }
 
 void RenderEngine::detectLightingCapabilities() {
@@ -388,11 +551,116 @@ void RenderEngine::drawLayer(RenderLayer layer, std::initializer_list<const Mesh
     }
 }
 
+void RenderEngine::drawCharacter() const {
+    character_.draw();
+}
+
+void RenderEngine::evaluateLightTransform(
+    const LightInstance& light,
+    float timeSeconds,
+    glm::vec3& position,
+    glm::vec3& direction
+) const {
+    position = light.basePosition;
+    if (light.isMovable) {
+        const float phase = light.phase + timeSeconds;
+        const float orbitScale = light.type == LightType::Spot ? 2.25f : 0.55f;
+        const float bobScale = light.type == LightType::Spot ? 2.15f : 0.35f;
+
+        position.x += orbitScale * std::cos(phase * 0.7f);
+        position.z += orbitScale * std::sin(phase * 0.9f);
+        position.y += bobScale * std::sin(phase * 1.3f);
+    }
+
+    direction = glm::vec3(0.0f);
+    if (light.type == LightType::Spot) {
+        direction = glm::normalize(light.target - position);
+    }
+}
+
+void RenderEngine::assignStaticLightToVolume(int lightIndex) {
+    if (lightIndex < 0 || lightIndex >= static_cast<int>(lights_.size())) {
+        return;
+    }
+
+    const LightInstance& light = lights_[lightIndex];
+    for (auto& volume : lightVolumes_) {
+        if (volume.intersectsSphere(light.basePosition, light.radius)) {
+            volume.attachStaticLight(lightIndex);
+            return;
+        }
+    }
+}
+
+void RenderEngine::removeStaticLightFromVolumes(int lightIndex) {
+    for (auto& volume : lightVolumes_) {
+        volume.detachStaticLight(lightIndex);
+    }
+}
+
+void RenderEngine::rebuildMovableAssignments(float timeSeconds) {
+    for (auto& volume : lightVolumes_) {
+        volume.clearMovableLights();
+    }
+
+    for (int lightIndex = 0; lightIndex < static_cast<int>(lights_.size()); ++lightIndex) {
+        const LightInstance& light = lights_[lightIndex];
+        if (!light.isMovable) {
+            continue;
+        }
+
+        glm::vec3 position(0.0f);
+        glm::vec3 direction(0.0f);
+        evaluateLightTransform(light, timeSeconds, position, direction);
+        for (auto& volume : lightVolumes_) {
+            if (volume.intersectsSphere(position, light.radius)) {
+                volume.addMovableLight(lightIndex);
+            }
+        }
+    }
+
+    movableAssignmentsDirty_ = false;
+}
+
+void RenderEngine::handleLightMovableChanged(int lightIndex, bool isMovable) {
+    if (lightIndex < 0 || lightIndex >= static_cast<int>(lights_.size())) {
+        return;
+    }
+
+    removeStaticLightFromVolumes(lightIndex);
+    movableAssignmentsDirty_ = true;
+    rebuildMovableAssignments(static_cast<float>(SDL_GetTicks()) * 0.001f);
+    if (!isMovable) {
+        assignStaticLightToVolume(lightIndex);
+    }
+}
+
 void RenderEngine::buildLights() {
     lights_.clear();
+    lightDebugInstances_.clear();
+    activeLightIndices_.clear();
+    lightVolumes_.clear();
+    movableAssignmentsDirty_ = false;
 
-    constexpr int kPointLights = 32;
-    constexpr int kSpotLights = 8;
+    directionalLight_.direction = glm::normalize(glm::vec3(-0.3f, -1.0f, -0.4f));
+    directionalLight_.color = glm::vec3(0., 0., 0.);
+    directionalLight_.intensity = 0.0f;
+    lightVolumes_.emplace_back(glm::vec3(-100.0f), glm::vec3(100.0f));
+
+    auto registerLight = [this](LightInstance light) {
+        const int lightIndex = static_cast<int>(lights_.size());
+        light.setIndex(lightIndex);
+        light.setMovableChangedCallback([this](int changedLightIndex, bool isMovable) {
+            handleLightMovableChanged(changedLightIndex, isMovable);
+        });
+        lights_.push_back(std::move(light));
+        if (!lights_.back().isMovable) {
+            assignStaticLightToVolume(lightIndex);
+        }
+    };
+
+    constexpr int kPointLights = 1;
+    constexpr int kSpotLights = 1;
     constexpr float kTwoPi = 6.283185307f;
 
     for (int i = 0; i < kPointLights; ++i) {
@@ -402,8 +670,8 @@ void RenderEngine::buildLights() {
         const float b = 0.4f + 0.6f * static_cast<float>(std::sin(angle + 4.2f));
 
         LightInstance light{};
-        light.basePosition = glm::vec3(std::cos(angle) * 4.5f, 1.2f, std::sin(angle) * 4.5f);
-        light.radius = 6.0f;
+        light.basePosition = glm::vec3(std::cos(angle) * 1.5f, 1.2f, std::sin(angle) * 4.5f);
+        light.radius = 20.0f;
         light.color = glm::vec3(r, g, b);
         light.intensity = 1.0f;
         light.target = glm::vec3(0.0f);
@@ -411,17 +679,18 @@ void RenderEngine::buildLights() {
         light.outerAngle = 0.0f;
         light.type = LightType::Point;
         light.phase = angle;
-        light.castsShadow = (i == 0);
-        light.shadowBiasMin = 0.0015f;
+        light.isMovable = false;
+        light.castsShadow = true;
+        light.shadowBiasMin = 0.000015f;
         light.shadowBiasSlope = 0.0045f;
-        lights_.push_back(light);
+        registerLight(light);
     }
 
     for (int i = 0; i < kSpotLights; ++i) {
         const float angle = kTwoPi * static_cast<float>(i) / static_cast<float>(kSpotLights);
         LightInstance light{};
-        light.basePosition = glm::vec3(std::cos(angle) * 2.5f, 4.0f, std::sin(angle) * 2.5f);
-        light.radius = 8.0f;
+        light.basePosition = glm::vec3(std::cos(angle) * 5.5f, 1.2f, std::sin(angle) * 2.5f);
+        light.radius = 32.0f;
         light.color = glm::vec3(0.55f, 0.70f, 0.95f);
         light.intensity = 1.4f;
         light.target = glm::vec3(0.0f, 0.0f, 0.0f);
@@ -429,48 +698,72 @@ void RenderEngine::buildLights() {
         light.outerAngle = 25.0f;
         light.type = LightType::Spot;
         light.phase = angle;
-        light.castsShadow = (i == 0);
+        light.isMovable = false;
+        light.castsShadow = true;
         light.shadowBiasMin = 0.0012f;
         light.shadowBiasSlope = 0.004f;
-        lights_.push_back(light);
+        registerLight(light);
     }
 
     gpuLights_.resize(lights_.size());
+    lightDebugInstances_.resize(lights_.size());
+    movableAssignmentsDirty_ = true;
 }
 
 void RenderEngine::updateLights() {
-    if (rendererPath_ != RendererPath::Deferred41) {
-        return;
-    }
-    shadowSystem_.beginFrame();
-    if (lights_.empty()) {
-        lightCount_ = 0;
-        pointLightCount_ = 0;
-        spotLightCount_ = 0;
-        return;
-    }
-
-    const float time = static_cast<float>(SDL_GetTicks()) * 0.001f;
-    const glm::mat4 invView = glm::inverse(view_);
-    gpuLights_.clear();
-    gpuLights_.reserve(lights_.size());
+    const bool deferred = rendererPath_ == RendererPath::Deferred41;
+    activeLightIndices_.clear();
+    lightDebugInstances_.assign(lights_.size(), ActiveLightDebug{});
+    lightCount_ = 0;
     pointLightCount_ = 0;
     spotLightCount_ = 0;
     cameraInsideLightVolume_ = false;
 
-    auto appendLight = [&](const LightInstance& light) {
-        glm::vec3 position = light.basePosition;
-        const float phase = light.phase + time;
-        const float orbitScale = light.type == LightType::Spot ? 2.25f : 0.55f;
-        const float bobScale = light.type == LightType::Spot ? 2.15f : 0.35f;
+    if (deferred) {
+        shadowSystem_.beginFrame();
+    }
 
-        position.x += orbitScale * std::cos(phase * 0.7f);
-        position.z += orbitScale * std::sin(phase * 0.9f);
-        position.y += bobScale * std::sin(phase * 1.3f);
+    if (lights_.empty()) {
+        return;
+    }
 
+    const float time = static_cast<float>(SDL_GetTicks()) * 0.001f;
+    const glm::mat4 invView = deferred ? glm::inverse(view_) : glm::mat4(1.0f);
+    rebuildMovableAssignments(time);
+    if (deferred) {
+        gpuLights_.assign(lights_.size(), GpuLight{});
+    }
+
+    std::vector<bool> processed(lights_.size(), false);
+    auto appendLight = [&](int lightIndex) {
+        if (lightIndex < 0 || lightIndex >= static_cast<int>(lights_.size()) || processed[lightIndex]) {
+            return;
+        }
+        processed[lightIndex] = true;
+
+        const LightInstance& light = lights_[lightIndex];
+        glm::vec3 position(0.0f);
         glm::vec3 direction(0.0f);
-        if (light.type == LightType::Spot) {
-            direction = glm::normalize(light.target - position);
+        evaluateLightTransform(light, time, position, direction);
+
+        activeLightIndices_.push_back(lightIndex);
+        ActiveLightDebug debug{};
+        debug.position = position;
+        debug.radius = light.radius;
+        debug.color = light.color;
+        debug.outerAngle = light.outerAngle;
+        debug.direction = direction;
+        debug.type = light.type;
+        lightDebugInstances_[lightIndex] = debug;
+
+        if (light.type == LightType::Point) {
+            pointLightCount_++;
+        } else if (light.type == LightType::Spot) {
+            spotLightCount_++;
+        }
+
+        if (!deferred) {
+            return;
         }
 
         const glm::vec3 viewPos = glm::vec3(view_ * glm::vec4(position, 1.0f));
@@ -535,24 +828,23 @@ void RenderEngine::updateLights() {
             gpu.spotParams = glm::vec4(0.0f);
         }
 
-        gpuLights_.push_back(gpu);
+        gpuLights_[lightIndex] = gpu;
     };
 
-    for (const auto& light : lights_) {
-        if (light.type == LightType::Point) {
-            appendLight(light);
-            pointLightCount_++;
+    for (const auto& volume : lightVolumes_) {
+        for (int lightIndex : volume.staticLightIndices()) {
+            appendLight(lightIndex);
+        }
+        for (int lightIndex : volume.movableLightIndices()) {
+            appendLight(lightIndex);
         }
     }
 
-    for (const auto& light : lights_) {
-        if (light.type == LightType::Spot) {
-            appendLight(light);
-            spotLightCount_++;
-        }
-    }
+    lightCount_ = static_cast<int>(activeLightIndices_.size());
 
-    lightCount_ = static_cast<int>(gpuLights_.size());
+    if (!deferred) {
+        return;
+    }
 
     if (lightsTbo_ == 0) {
         glGenBuffers(1, &lightsTbo_);
@@ -591,6 +883,125 @@ bool RenderEngine::buildVolumeMeshes() {
     const bool sphereReady = lightSphere_.upload(sphereVerts, sphereIdx);
     const bool coneReady = lightCone_.upload(coneVerts, coneIdx);
     return sphereReady && coneReady;
+}
+
+bool RenderEngine::buildDebugMeshes() {
+    std::vector<float> axisVerts;
+    std::vector<unsigned int> axisIdx;
+
+    addBox(
+        glm::vec3(-kAxisCenterHalfExtent),
+        glm::vec3(kAxisCenterHalfExtent),
+        glm::vec3(0.95f),
+        axisVerts,
+        axisIdx
+    );
+    addBox(
+        glm::vec3(0.0f, -kAxisThickness, -kAxisThickness),
+        glm::vec3(kAxisLength, kAxisThickness, kAxisThickness),
+        glm::vec3(0.95f, 0.20f, 0.18f),
+        axisVerts,
+        axisIdx
+    );
+    addBox(
+        glm::vec3(-kAxisThickness, 0.0f, -kAxisThickness),
+        glm::vec3(kAxisThickness, kAxisLength, kAxisThickness),
+        glm::vec3(0.20f, 0.92f, 0.24f),
+        axisVerts,
+        axisIdx
+    );
+    addBox(
+        glm::vec3(-kAxisThickness, -kAxisThickness, 0.0f),
+        glm::vec3(kAxisThickness, kAxisThickness, kAxisLength),
+        glm::vec3(0.18f, 0.48f, 0.96f),
+        axisVerts,
+        axisIdx
+    );
+
+    return axisGizmo_.upload(axisVerts, axisIdx);
+}
+
+void RenderEngine::drawDebugMesh(const MeshBuffer& mesh, const glm::mat4& model, const glm::vec4& color, bool wireframe) const {
+    if (!mesh.valid() || debugColorShader_.id() == 0) {
+        return;
+    }
+
+    const glm::mat4 mvp = projection_ * view_ * model;
+    glUniformMatrix4fv(debugMvpLocation_, 1, GL_FALSE, glm::value_ptr(mvp));
+    glUniform4fv(debugColorLocation_, 1, glm::value_ptr(color));
+    if (wireframe) {
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    }
+    mesh.draw();
+    if (wireframe) {
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    }
+}
+
+void RenderEngine::renderLightDebugOverlay() {
+    if (!showLightDebug_ || debugColorShader_.id() == 0 || !axisGizmo_.valid()) {
+        return;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, width_, height_);
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_CULL_FACE);
+
+    debugColorShader_.use();
+
+    for (int lightIndex : activeLightIndices_) {
+        const ActiveLightDebug& light = lightDebugInstances_[lightIndex];
+        glm::mat4 axisModel(1.0f);
+        axisModel = glm::translate(axisModel, light.position);
+        if (light.type == LightType::Spot) {
+            axisModel *= makeOrientationFromDirection(light.direction);
+        }
+        const float axisScale = std::clamp(light.radius * kLightGizmoScaleFactor, kLightGizmoScaleMin, kLightGizmoScaleMax);
+        axisModel = glm::scale(axisModel, glm::vec3(axisScale));
+        drawDebugMesh(axisGizmo_, axisModel, glm::vec4(1.0f), false);
+
+        if (light.type == LightType::Point && lightSphere_.valid()) {
+            glm::mat4 sphereModel(1.0f);
+            sphereModel = glm::translate(sphereModel, light.position);
+            sphereModel = glm::scale(sphereModel, glm::vec3(light.radius));
+            drawDebugMesh(lightSphere_, sphereModel, glm::vec4(light.color, kDebugVolumeAlpha), true);
+        } else if (light.type == LightType::Spot && lightCone_.valid()) {
+            glm::mat4 coneModel(1.0f);
+            coneModel = glm::translate(coneModel, light.position);
+            coneModel *= makeOrientationFromDirection(light.direction);
+            const float coneRadius = light.radius * std::tan(glm::radians(light.outerAngle));
+            coneModel = glm::scale(coneModel, glm::vec3(coneRadius, coneRadius, light.radius));
+            drawDebugMesh(lightCone_, coneModel, glm::vec4(light.color, kDebugVolumeAlpha), true);
+        }
+    }
+
+    const glm::vec3 dir = glm::normalize(directionalLight_.direction);
+    glm::mat4 directionalModel(1.0f);
+    directionalModel = glm::translate(directionalModel, -dir * kDirectionalDebugAnchorDistance);
+    directionalModel *= makeOrientationFromDirection(dir);
+    directionalModel = glm::scale(directionalModel, glm::vec3(1.1f));
+    drawDebugMesh(axisGizmo_, directionalModel, glm::vec4(1.0f), false);
+
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glDepthMask(GL_TRUE);
+}
+
+bool RenderEngine::buildCharacterMesh() {
+    StaticMeshData characterMesh;
+    const std::string characterPath = modelRootPath() + "Adventurer.glb";
+    if (!loadStaticCharacterModel(characterPath, characterMesh)) {
+        spdlog::error("RenderEngine: failed to load character model '{}'", characterPath);
+        return false;
+    }
+
+    return character_.upload(characterMesh.vertices, characterMesh.indices);
 }
 
 void RenderEngine::ensureDeferredResources() {
@@ -741,15 +1152,15 @@ void RenderEngine::renderDeferredScene() {
     updateLights();
 
     const glm::mat4 mvp = projection_ * view_;
-    const glm::vec3 dirLightWorld(-0.3f, -1.0f, -0.4f);
+    const glm::vec3 dirLightWorld = glm::normalize(directionalLight_.direction);
     const glm::vec3 dirLightView = glm::normalize(glm::mat3(view_) * dirLightWorld);
     const glm::mat4 invView = glm::inverse(view_);
 
     shadowSystem_.updateDirectional(view_, projection_, dirLightWorld, kNearPlane, kFarPlane);
     shadowDebugCascade_ = std::clamp(shadowDebugCascade_, 0, shadowSystem_.directionalCascadeCount() - 1);
-    shadowSystem_.renderDirectionalShadows({&ground_, &wallA_, &wallB_});
-    shadowSystem_.renderSpotShadows({&ground_, &wallA_, &wallB_});
-    shadowSystem_.renderPointShadows({&ground_, &wallA_, &wallB_});
+    shadowSystem_.renderDirectionalShadows({&ground_, &wallA_, &wallB_, &character_});
+    shadowSystem_.renderSpotShadows({&ground_, &wallA_, &wallB_, &character_});
+    shadowSystem_.renderPointShadows({&ground_, &wallA_, &wallB_, &character_});
 
     glBindFramebuffer(GL_FRAMEBUFFER, gbufferFbo_);
     glViewport(0, 0, width_, height_);
@@ -775,6 +1186,7 @@ void RenderEngine::renderDeferredScene() {
     glDepthMask(GL_TRUE);
     wallA_.draw();
     wallB_.draw();
+    drawCharacter();
 
     glBindFramebuffer(GL_FRAMEBUFFER, lightFbo_);
     glViewport(0, 0, width_, height_);
@@ -787,9 +1199,9 @@ void RenderEngine::renderDeferredScene() {
     deferredDirLightShader_.use();
     glUniformMatrix4fv(deferredInvProjLocation_, 1, GL_FALSE, glm::value_ptr(invProjection_));
     glUniform3fv(deferredDirLightDirLocation_, 1, glm::value_ptr(dirLightView));
-    glUniform3f(deferredDirLightColorLocation_, 1.0f, 1.0f, 1.0f);
-    glUniform1f(deferredDirLightIntensityLocation_, 0.7f);
-    glUniform3f(deferredAmbientLocation_, 0.06f, 0.06f, 0.07f);
+    glUniform3fv(deferredDirLightColorLocation_, 1, glm::value_ptr(directionalLight_.color));
+    glUniform1f(deferredDirLightIntensityLocation_, directionalLight_.intensity);
+    glUniform3f(deferredAmbientLocation_, 0.0f, 0.0f, 0.0f);
     glUniformMatrix4fv(
         deferredShadowMatrixLocation_,
         shadowSystem_.directionalCascadeCount(),
@@ -826,11 +1238,11 @@ void RenderEngine::renderDeferredScene() {
 
     if (lightCount_ > 0) {
         glEnable(GL_DEPTH_TEST);
-        glDepthMask(GL_FALSE);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
-        glEnable(GL_CULL_FACE);
-        glCullFace(cameraInsideLightVolume_ ? GL_FRONT : GL_BACK);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_CULL_FACE);
 
         deferredVolumeShader_.use();
         glUniformMatrix4fv(volumeProjLocation_, 1, GL_FALSE, glm::value_ptr(projection_));
@@ -853,6 +1265,7 @@ void RenderEngine::renderDeferredScene() {
         glUniform1i(volumePointShadowCountLocation_, shadowSystem_.pointShadowCount());
         glUniform1f(volumePointShadowDiskRadiusLocation_, shadowSystem_.pointShadowDiskRadius());
         glUniform1i(volumePointShadowPcfRadiusLocation_, shadowSystem_.pointPcfRadius());
+        glUniform1i(volumeRenderFullscreenLocation_, 1);
 
         glActiveTexture(GL_TEXTURE0 + 0);
         glBindTexture(GL_TEXTURE_2D, gbufferAlbedo_);
@@ -867,20 +1280,27 @@ void RenderEngine::renderDeferredScene() {
         glActiveTexture(GL_TEXTURE0 + 5);
         glBindTexture(GL_TEXTURE_CUBE_MAP_ARRAY, shadowSystem_.pointShadowMap());
 
-        if (pointLightCount_ > 0) {
-            glUniform1i(volumeIsSpotLocation_, 0);
-            glUniform1i(volumeLightOffsetLocation_, 0);
-            lightSphere_.drawInstanced(pointLightCount_);
+        glBindVertexArray(fullscreenVao_);
+        for (const auto& volume : lightVolumes_) {
+            glUniform3fv(volumeBoundsMinLocation_, 1, glm::value_ptr(volume.minCorner()));
+            glUniform3fv(volumeBoundsMaxLocation_, 1, glm::value_ptr(volume.maxCorner()));
+            for (int lightIndex : volume.staticLightIndices()) {
+                glUniform1i(volumeIsSpotLocation_, lights_[lightIndex].type == LightType::Spot ? 1 : 0);
+                glUniform1i(volumeLightOffsetLocation_, lightIndex);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+            }
+            for (int lightIndex : volume.movableLightIndices()) {
+                glUniform1i(volumeIsSpotLocation_, lights_[lightIndex].type == LightType::Spot ? 1 : 0);
+                glUniform1i(volumeLightOffsetLocation_, lightIndex);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+            }
         }
-        if (spotLightCount_ > 0) {
-            glUniform1i(volumeIsSpotLocation_, 1);
-            glUniform1i(volumeLightOffsetLocation_, pointLightCount_);
-            lightCone_.drawInstanced(spotLightCount_);
-        }
+        glBindVertexArray(0);
 
         glDisable(GL_BLEND);
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_CULL_FACE);
         glDepthMask(GL_TRUE);
-        glCullFace(GL_BACK);
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -930,10 +1350,14 @@ void RenderEngine::renderDeferredScene() {
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
 
+    renderLightDebugOverlay();
+
     glDepthMask(GL_TRUE);
 }
 
 void RenderEngine::renderSimpleScene() {
+    updateLights();
+
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, width_, height_);
     glDepthMask(GL_TRUE);
@@ -942,11 +1366,12 @@ void RenderEngine::renderSimpleScene() {
     simpleShader_.use();
     const glm::mat4 mvp = projection_ * view_;
     glUniformMatrix4fv(simpleMvpLocation_, 1, GL_FALSE, glm::value_ptr(mvp));
-    glUniform3f(simpleLightDirLocation_, -0.3f, -1.0f, -0.4f);
+    glUniform3fv(simpleLightDirLocation_, 1, glm::value_ptr(directionalLight_.direction));
 
     drawLayer(RenderLayer::Ground, {&ground_});
     drawLayer(RenderLayer::Geometry, {&wallA_, &wallB_});
-    drawLayer(RenderLayer::Actors, {});
+    drawCharacter();
+    renderLightDebugOverlay();
 }
 
 void RenderEngine::renderScene() {
@@ -963,7 +1388,20 @@ void RenderEngine::renderScene() {
 void RenderEngine::buildScene() {
     bool shadersReady = false;
     bool volumeReady = true;
+    bool debugReady = false;
     const std::string shaderRoot = shaderRootPath();
+    const std::string debugVertexShader = shaderRoot + "debug_color.vert";
+    const std::string debugFragmentShader = shaderRoot + "debug_color.frag";
+
+    if (!debugColorShader_.buildFromFiles(debugVertexShader, debugFragmentShader)) {
+        spdlog::error("RenderEngine: failed to build debug overlay shader");
+        sceneReady_ = false;
+        return;
+    }
+
+    debugMvpLocation_ = debugColorShader_.uniformLocation("uMVP");
+    debugColorLocation_ = debugColorShader_.uniformLocation("uColor");
+    debugReady = debugColorShader_.id() != 0;
 
     if (rendererPath_ == RendererPath::SimpleForward) {
         const std::string simpleVertexShader = shaderRoot + "simple.vert";
@@ -1025,6 +1463,9 @@ void RenderEngine::buildScene() {
         volumeScreenSizeLocation_ = deferredVolumeShader_.uniformLocation("uScreenSize");
         volumeLightOffsetLocation_ = deferredVolumeShader_.uniformLocation("uLightOffset");
         volumeIsSpotLocation_ = deferredVolumeShader_.uniformLocation("uIsSpot");
+        volumeRenderFullscreenLocation_ = deferredVolumeShader_.uniformLocation("uRenderFullscreen");
+        volumeBoundsMinLocation_ = deferredVolumeShader_.uniformLocation("uVolumeMin");
+        volumeBoundsMaxLocation_ = deferredVolumeShader_.uniformLocation("uVolumeMax");
         compositeDebugModeLocation_ = deferredCompositeShader_.uniformLocation("uDebugMode");
         volumeInvViewLocation_ = deferredVolumeShader_.uniformLocation("uInvView");
         volumeSpotShadowMatrixLocation_ = deferredVolumeShader_.uniformLocation("uSpotShadowMatrices[0]");
@@ -1081,23 +1522,23 @@ void RenderEngine::buildScene() {
             return;
         }
 
-        buildLights();
-        volumeReady = buildVolumeMeshes();
-
         shadersReady = deferredGeometryShader_.id() != 0 &&
                        deferredDirLightShader_.id() != 0 &&
                        deferredVolumeShader_.id() != 0 &&
                        deferredCompositeShader_.id() != 0;
     }
 
+    buildLights();
+    volumeReady = buildVolumeMeshes() && buildDebugMeshes();
+
     std::vector<float> groundVerts;
     std::vector<unsigned int> groundIdx;
     const float g = 5.0f;
     const std::array<Vertex, 4> groundQuad{{
         {-g, 0.0f, -g, 0.0f, 1.0f, 0.0f, 0.18f, 0.36f, 0.20f},
-        {g, 0.0f, -g, 0.0f, 1.0f, 0.0f, 0.18f, 0.36f, 0.20f},
-        {g, 0.0f, g, 0.0f, 1.0f, 0.0f, 0.18f, 0.36f, 0.20f},
         {-g, 0.0f, g, 0.0f, 1.0f, 0.0f, 0.18f, 0.36f, 0.20f},
+        {g, 0.0f, g, 0.0f, 1.0f, 0.0f, 0.18f, 0.36f, 0.20f},
+        {g, 0.0f, -g, 0.0f, 1.0f, 0.0f, 0.18f, 0.36f, 0.20f},
     }};
     addQuad(groundQuad, groundVerts, groundIdx);
 
@@ -1106,40 +1547,32 @@ void RenderEngine::buildScene() {
     const float wallHeight = 2.5f;
     const float wallOffset = 3.0f;
     const float wallLength = 5.0f;
+    const float wallThickness = 0.5f;
+    addBox(
+        glm::vec3(-wallOffset - wallThickness * 0.5f, 0.0f, -wallLength),
+        glm::vec3(-wallOffset + wallThickness * 0.5f, wallHeight, wallLength),
+        glm::vec3(0.70f, 0.25f, 0.25f),
+        wallVerts,
+        wallIdx
+    );
 
-    // The vertical walls must be defined in a counter‑clockwise order from the
-    // camera’s point of view in our isometric projection.  When we flipped the
-    // Y‑rotation to +45° the original vertex order resulted in a clockwise
-    // winding for the walls, so they were culled as back faces.  Reordering
-    // the vertices here restores a CCW winding without disabling face
-    // culling.  The normals remain the same; we still want wallA facing +X
-    // and wallB facing −X.
-
-    // Wall A (x = -wallOffset) ordered: bottom‑near, bottom‑far, top‑far, top‑near
-    const std::array<Vertex, 4> wallAQuad{{
-        {-wallOffset, 0.0f, -wallLength, 1.0f, 0.0f, 0.0f, 0.70f, 0.25f, 0.25f},   // bottom near
-        {-wallOffset, 0.0f,  wallLength, 1.0f, 0.0f, 0.0f, 0.70f, 0.25f, 0.25f},   // bottom far
-        {-wallOffset, wallHeight,  wallLength, 1.0f, 0.0f, 0.0f, 0.70f, 0.25f, 0.25f}, // top far
-        {-wallOffset, wallHeight, -wallLength, 1.0f, 0.0f, 0.0f, 0.70f, 0.25f, 0.25f}, // top near
-    }};
-    addQuad(wallAQuad, wallVerts, wallIdx);
-
-    // Wall B (x = +wallOffset) ordered similarly
-    const std::array<Vertex, 4> wallBQuad{{
-        { wallOffset, 0.0f, -wallLength, -1.0f, 0.0f, 0.0f, 0.25f, 0.45f, 0.70f},   // bottom near
-        { wallOffset, 0.0f,  wallLength, -1.0f, 0.0f, 0.0f, 0.25f, 0.45f, 0.70f},   // bottom far
-        { wallOffset, wallHeight,  wallLength, -1.0f, 0.0f, 0.0f, 0.25f, 0.45f, 0.70f}, // top far
-        { wallOffset, wallHeight, -wallLength, -1.0f, 0.0f, 0.0f, 0.25f, 0.45f, 0.70f}, // top near
-    }};
     std::vector<float> wallBVerts;
     std::vector<unsigned int> wallBIdx;
-    addQuad(wallBQuad, wallBVerts, wallBIdx);
+    addBox(
+        glm::vec3(wallOffset - wallThickness * 0.5f, 0.0f, -wallLength),
+        glm::vec3(wallOffset + wallThickness * 0.5f, wallHeight, wallLength),
+        glm::vec3(0.25f, 0.45f, 0.70f),
+        wallBVerts,
+        wallBIdx
+    );
 
     sceneReady_ = shadersReady &&
                   volumeReady &&
+                  debugReady &&
                   ground_.upload(groundVerts, groundIdx) &&
                   wallA_.upload(wallVerts, wallIdx) &&
-                  wallB_.upload(wallBVerts, wallBIdx);
+                  wallB_.upload(wallBVerts, wallBIdx) &&
+                  buildCharacterMesh();
 }
 
 }  // namespace render

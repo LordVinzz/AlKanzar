@@ -10,6 +10,8 @@ uniform mat4 uInvProj;
 uniform mat4 uInvView;
 uniform vec2 uScreenSize;
 uniform int uIsSpot;
+uniform vec3 uVolumeMin;
+uniform vec3 uVolumeMax;
 uniform sampler2DArray uSpotShadowMap;
 uniform samplerCubeArray uPointShadowMap;
 uniform mat4 uSpotShadowMatrices[4];
@@ -86,6 +88,12 @@ void main() {
     float roughness = normalRough.a;
 
     vec3 viewPos = reconstructViewPos(uv, depth);
+    vec3 worldPos = vec3(uInvView * vec4(viewPos, 1.0));
+    bvec3 belowMin = lessThan(worldPos, uVolumeMin);
+    bvec3 aboveMax = greaterThan(worldPos, uVolumeMax);
+    if (any(belowMin) || any(aboveMax)) {
+        discard;
+    }
 
     int base = vLightIndex * 5;
     vec4 posRadius = texelFetch(uLightBuffer, base);
@@ -149,7 +157,6 @@ void main() {
             uSpotShadowPcfRadius
         );
     } else if (shadowType == 2 && shadowIndex >= 0 && shadowIndex < uPointShadowCount) {
-        vec3 worldPos = vec3(uInvView * vec4(viewPos, 1.0));
         vec3 lightWorld = vec3(uInvView * vec4(lightPos, 1.0));
         vec3 toLightWorld = worldPos - lightWorld;
         float worldDist = length(toLightWorld);

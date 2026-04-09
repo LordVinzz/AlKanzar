@@ -58,6 +58,9 @@ bool ShadowSystem::init(const std::string& shaderRoot) {
         return false;
     }
     shadowMvpLocation_ = shadowDepthShader_.uniformLocation("uLightMVP");
+    shadowModeLocation_ = shadowDepthShader_.uniformLocation("uShadowMode");
+    shadowLightPositionLocation_ = shadowDepthShader_.uniformLocation("uLightPositionWorld");
+    shadowFarPlaneLocation_ = shadowDepthShader_.uniformLocation("uLightFarPlane");
 
     ensureDirectionalResources();
     ensureSpotResources();
@@ -312,6 +315,8 @@ int ShadowSystem::registerPointShadow(const PointShadowDesc& desc) {
     (void)desc.biasSlope;
     const int idx = pointShadowCount_++;
     const float farPlane = std::max(desc.radius, 0.2f);
+    pointShadowPositions_[idx] = desc.position;
+    pointShadowFarPlanes_[idx] = farPlane;
     const glm::mat4 lightProj = glm::perspective(glm::radians(90.0f), 1.0f, kPointNearPlane, farPlane);
 
     const std::array<glm::vec3, 6> directions = {
@@ -356,6 +361,7 @@ void ShadowSystem::renderDirectionalShadows(std::initializer_list<const MeshBuff
     glPolygonOffset(2.0f, 4.0f);
 
     shadowDepthShader_.use();
+    glUniform1i(shadowModeLocation_, 0);
     for (int cascade = 0; cascade < dirCascadeCount_; ++cascade) {
         glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, dirShadowMap_, 0, cascade);
         glClear(GL_DEPTH_BUFFER_BIT);
@@ -388,6 +394,7 @@ void ShadowSystem::renderSpotShadows(std::initializer_list<const MeshBuffer*> me
     glPolygonOffset(2.0f, 4.0f);
 
     shadowDepthShader_.use();
+    glUniform1i(shadowModeLocation_, 0);
     for (int i = 0; i < spotShadowCount_; ++i) {
         glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, spotShadowMap_, 0, i);
         glClear(GL_DEPTH_BUFFER_BIT);
@@ -421,6 +428,9 @@ void ShadowSystem::renderPointShadows(std::initializer_list<const MeshBuffer*> m
 
     shadowDepthShader_.use();
     for (int i = 0; i < pointShadowCount_; ++i) {
+        glUniform1i(shadowModeLocation_, 1);
+        glUniform3fv(shadowLightPositionLocation_, 1, glm::value_ptr(pointShadowPositions_[i]));
+        glUniform1f(shadowFarPlaneLocation_, pointShadowFarPlanes_[i]);
         for (int face = 0; face < 6; ++face) {
             const int layer = i * 6 + face;
             glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, pointShadowMap_, 0, layer);

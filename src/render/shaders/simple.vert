@@ -10,6 +10,6 @@ out vec3 vColor;
 
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
-    float ndotl = max(dot(normalize(aNormal), -normalize(uLightDir)), 0.2);
+    float ndotl = max(dot(normalize(aNormal), -normalize(uLightDir)), 0.0);
     vColor = aColor * ndotl;
 }

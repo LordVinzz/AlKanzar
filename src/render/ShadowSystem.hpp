@@ -210,6 +210,9 @@ private:
 
     ShaderProgram shadowDepthShader_;
     GLint shadowMvpLocation_{-1};
+    GLint shadowModeLocation_{-1};
+    GLint shadowLightPositionLocation_{-1};
+    GLint shadowFarPlaneLocation_{-1};
 
     int dirCascadeCount_{3};
     int dirShadowResolution_{2048};
@@ -245,6 +248,8 @@ private:
 
     int pointShadowCount_{0};
     std::array<std::array<glm::mat4, 6>, kMaxPointShadows> pointShadowViewProj_{};
+    std::array<glm::vec3, kMaxPointShadows> pointShadowPositions_{};
+    std::array<float, kMaxPointShadows> pointShadowFarPlanes_{};
 
     int frameIndex_{0};
     int dirUpdateEvery_{1};

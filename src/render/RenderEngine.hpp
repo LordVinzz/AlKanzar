@@ -7,6 +7,7 @@
 #include <SDL_opengl.h>
 
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <string>
 #include <vector>
@@ -16,6 +17,7 @@
 #include <glm/vec4.hpp>
 
 #include "MeshBuffer.hpp"
+#include "LightExecutionVolume.hpp"
 #include "ShadowSystem.hpp"
 #include "ShaderProgram.hpp"
 
@@ -93,9 +95,18 @@ private:
         float outerAngle;
         LightType type;
         float phase;
+        bool isMovable{false};
         bool castsShadow{false};
         float shadowBiasMin{0.0f};
         float shadowBiasSlope{0.0f};
+
+        void setIndex(int index);
+        void setMovableChangedCallback(std::function<void(int, bool)> callback);
+        void setIsMovable(bool movable);
+
+    private:
+        int index_{-1};
+        std::function<void(int, bool)> movableChangedCallback_{};
     };
 
     struct GpuLight {
@@ -104,6 +115,21 @@ private:
         glm::vec4 directionType;
         glm::vec4 spotParams;
         glm::vec4 shadowInfo;
+    };
+
+    struct DirectionalLightDebug {
+        glm::vec3 direction{0.0f, -1.0f, 0.0f};
+        glm::vec3 color{1.0f};
+        float intensity{1.0f};
+    };
+
+    struct ActiveLightDebug {
+        glm::vec3 position{0.0f};
+        float radius{0.0f};
+        glm::vec3 color{1.0f};
+        float outerAngle{0.0f};
+        glm::vec3 direction{0.0f, 0.0f, 1.0f};
+        LightType type{LightType::Point};
     };
 
     /**
@@ -117,6 +143,10 @@ private:
      */
     void updateProjection();
     /**
+     * Advances the orbit camera animation when model lock is enabled.
+     */
+    void updateOrbitCamera();
+    /**
      * Chooses the rendering path based on GL version support.
      */
     void detectLightingCapabilities();
@@ -128,6 +158,11 @@ private:
      * Builds shaders, meshes, and uploads scene geometry.
      */
     void buildScene();
+    /**
+     * Loads and uploads the static character mesh.
+     * @return true when the character is ready to render.
+     */
+    bool buildCharacterMesh();
     /**
      * Initializes the light list used by deferred rendering.
      */
@@ -157,6 +192,23 @@ private:
      * Renders the scene using the simple forward path.
      */
     void renderSimpleScene();
+    /**
+     * Builds meshes used by the light debug overlay.
+     * @return true when the overlay meshes upload successfully.
+     */
+    bool buildDebugMeshes();
+    /**
+     * Draws world-space light gizmos and bounds when enabled.
+     */
+    void renderLightDebugOverlay();
+    /**
+     * Draws one debug mesh with a model transform and color tint.
+     * @param mesh Mesh to render.
+     * @param model World transform.
+     * @param color RGBA tint applied in the debug shader.
+     * @param wireframe Whether to render the mesh in wireframe mode.
+     */
+    void drawDebugMesh(const MeshBuffer& mesh, const glm::mat4& model, const glm::vec4& color, bool wireframe) const;
 
     /**
      * Draws meshes for a layer with appropriate depth mask behavior.
@@ -164,6 +216,39 @@ private:
      * @param meshes Mesh buffers to draw.
      */
     void drawLayer(RenderLayer layer, std::initializer_list<const MeshBuffer*> meshes) const;
+    /**
+     * Draws the imported character mesh.
+     */
+    void drawCharacter() const;
+    /**
+     * Assigns a static light to its owning execution volume.
+     * @param lightIndex Index into lights_.
+     */
+    void assignStaticLightToVolume(int lightIndex);
+    /**
+     * Removes a static light from all execution volumes.
+     * @param lightIndex Index into lights_.
+     */
+    void removeStaticLightFromVolumes(int lightIndex);
+    /**
+     * Rebuilds movable-light ownership for all volumes using current runtime transforms.
+     * @param timeSeconds Current scene time in seconds.
+     */
+    void rebuildMovableAssignments(float timeSeconds);
+    /**
+     * Handles isMovable changes coming from LightInstance callbacks.
+     * @param lightIndex Index into lights_.
+     * @param isMovable New movable state.
+     */
+    void handleLightMovableChanged(int lightIndex, bool isMovable);
+    /**
+     * Computes the current world-space transform of a light from authored data.
+     * @param light Source light.
+     * @param timeSeconds Current scene time in seconds.
+     * @param position Output light position.
+     * @param direction Output spotlight direction, if any.
+     */
+    void evaluateLightTransform(const LightInstance& light, float timeSeconds, glm::vec3& position, glm::vec3& direction) const;
 
     SDL_Window* window_{nullptr};
     SDL_GLContext glContext_{nullptr};
@@ -173,6 +258,9 @@ private:
     float panX_{0.0f};
     float panY_{0.0f};
     float cameraDistance_{15.0f};
+    float orbitYawDeg_{45.0f};
+    bool orbitCameraEnabled_{false};
+    Uint32 lastOrbitTickMs_{0};
     bool middleDragging_{false};
     int lastMouseX_{0};
     int lastMouseY_{0};
@@ -183,11 +271,14 @@ private:
     ShaderProgram deferredDirLightShader_;
     ShaderProgram deferredVolumeShader_;
     ShaderProgram deferredCompositeShader_;
+    ShaderProgram debugColorShader_;
     MeshBuffer ground_;
     MeshBuffer wallA_;
     MeshBuffer wallB_;
+    MeshBuffer character_;
     MeshBuffer lightSphere_;
     MeshBuffer lightCone_;
+    MeshBuffer axisGizmo_;
     GLint simpleMvpLocation_{-1};
     GLint simpleLightDirLocation_{-1};
     GLint gbufferMvpLocation_{-1};
@@ -204,6 +295,9 @@ private:
     GLint volumeScreenSizeLocation_{-1};
     GLint volumeLightOffsetLocation_{-1};
     GLint volumeIsSpotLocation_{-1};
+    GLint volumeRenderFullscreenLocation_{-1};
+    GLint volumeBoundsMinLocation_{-1};
+    GLint volumeBoundsMaxLocation_{-1};
     GLint volumeInvViewLocation_{-1};
     GLint volumeSpotShadowMatrixLocation_{-1};
     GLint volumeSpotShadowCountLocation_{-1};
@@ -232,6 +326,8 @@ private:
     GLint compositeShadowBiasSlopeLocation_{-1};
     GLint compositeShadowDebugCascadeLocation_{-1};
     GLint compositeDirLightDirLocation_{-1};
+    GLint debugMvpLocation_{-1};
+    GLint debugColorLocation_{-1};
 
     GLuint gbufferFbo_{0};
     GLuint gbufferAlbedo_{0};
@@ -253,13 +349,19 @@ private:
 
     RendererPath rendererPath_{RendererPath::SimpleForward};
     DebugView debugView_{DebugView::Final};
+    bool showLightDebug_{false};
     bool cameraInsideLightVolume_{false};
     int shadowDebugCascade_{0};
 
     ShadowSystem shadowSystem_{};
+    DirectionalLightDebug directionalLight_{};
 
     std::vector<LightInstance> lights_;
     std::vector<GpuLight> gpuLights_;
+    std::vector<ActiveLightDebug> lightDebugInstances_;
+    std::vector<int> activeLightIndices_;
+    std::vector<LightExecutionVolume> lightVolumes_;
+    bool movableAssignmentsDirty_{false};
 
     glm::mat4 projection_{1.0f};
     glm::mat4 invProjection_{1.0f};

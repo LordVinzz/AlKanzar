@@ -5,12 +5,27 @@ uniform mat4 uProj;
 uniform samplerBuffer uLightBuffer;
 uniform int uLightOffset;
 uniform int uIsSpot;
+uniform int uRenderFullscreen;
 
 flat out int vLightIndex;
 
 void main() {
     int lightIndex = uLightOffset + gl_InstanceID;
     vLightIndex = lightIndex;
+
+    if (uRenderFullscreen == 1) {
+        vec2 pos;
+        if (gl_VertexID == 0) {
+            pos = vec2(-1.0, -1.0);
+        } else if (gl_VertexID == 1) {
+            pos = vec2(3.0, -1.0);
+        } else {
+            pos = vec2(-1.0, 3.0);
+        }
+        gl_Position = vec4(pos, 0.0, 1.0);
+        return;
+    }
+
     int base = lightIndex * 5;
 
     vec4 posRadius = texelFetch(uLightBuffer, base);
