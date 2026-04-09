@@ -392,6 +392,74 @@ void drawSceneHierarchyWindow(EngineServices& services) {
     services.editorSession.sceneHierarchyFocusRequested = false;
 }
 
+void drawEditorMainWindow(EngineServices& services) {
+    if (!services.editorSession.mainWindowVisible) {
+        services.editorSession.mainWindowFocusRequested = false;
+        return;
+    }
+
+    if (services.editorSession.mainWindowFocusRequested) {
+        ImGui::SetNextWindowFocus();
+    }
+    ImGui::SetNextWindowSize(ImVec2(360.0f, 220.0f), ImGuiCond_FirstUseEver);
+
+    bool open = services.editorSession.mainWindowVisible;
+    if (ImGui::Begin("Editor", &open)) {
+        ImGui::TextUnformatted("Window Toggles");
+        ImGui::Separator();
+
+        bool sceneHierarchyVisible = services.editorSession.sceneHierarchyVisible;
+        if (ImGui::Checkbox("Scene Hierarchy", &sceneHierarchyVisible)) {
+            services.editorSession.sceneHierarchyVisible = sceneHierarchyVisible;
+            services.editorSession.sceneHierarchyFocusRequested = sceneHierarchyVisible;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("Ctrl+S");
+
+        bool inspectorVisible = services.editorSession.inspectorWindowVisible;
+        if (ImGui::Checkbox("Inspector", &inspectorVisible)) {
+            services.editorSession.inspectorWindowVisible = inspectorVisible;
+            services.editorSession.inspectorWindowFocusRequested = inspectorVisible;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("Ctrl+I");
+
+        bool profilerVisible = services.editorSession.profilerWindowVisible;
+        if (ImGui::Checkbox("Profiler", &profilerVisible)) {
+            services.editorSession.profilerWindowVisible = profilerVisible;
+            services.editorSession.profilerWindowFocusRequested = profilerVisible;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("Ctrl+P");
+
+        ImGui::Separator();
+        if (ImGui::Button("Show All")) {
+            services.editorSession.sceneHierarchyVisible = true;
+            services.editorSession.sceneHierarchyFocusRequested = true;
+            services.editorSession.inspectorWindowVisible = true;
+            services.editorSession.inspectorWindowFocusRequested = true;
+            services.editorSession.profilerWindowVisible = true;
+            services.editorSession.profilerWindowFocusRequested = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Hide All")) {
+            services.editorSession.sceneHierarchyVisible = false;
+            services.editorSession.sceneHierarchyFocusRequested = false;
+            services.editorSession.inspectorWindowVisible = false;
+            services.editorSession.inspectorWindowFocusRequested = false;
+            services.editorSession.profilerWindowVisible = false;
+            services.editorSession.profilerWindowFocusRequested = false;
+        }
+
+        ImGui::Separator();
+        ImGui::TextDisabled("Press E to show or hide this window.");
+    }
+    ImGui::End();
+
+    services.editorSession.mainWindowVisible = open;
+    services.editorSession.mainWindowFocusRequested = false;
+}
+
 std::string formatProfilerBytes(std::uint64_t bytes) {
     static constexpr const char* kUnits[] = {"B", "KiB", "MiB", "GiB"};
     double value = static_cast<double>(bytes);
@@ -514,14 +582,19 @@ void drawProfilerMemoryGroup(const char* label, const std::vector<const Resource
 
 void drawProfilerWindow(EngineServices& services) {
     if (!services.editorSession.profilerWindowVisible) {
+        services.editorSession.profilerWindowFocusRequested = false;
         return;
     }
 
+    if (services.editorSession.profilerWindowFocusRequested) {
+        ImGui::SetNextWindowFocus();
+    }
     ImGui::SetNextWindowSize(ImVec2(860.0f, 720.0f), ImGuiCond_FirstUseEver);
     bool open = services.editorSession.profilerWindowVisible;
     if (!ImGui::Begin("Profiler", &open)) {
         ImGui::End();
         services.editorSession.profilerWindowVisible = open;
+        services.editorSession.profilerWindowFocusRequested = false;
         return;
     }
 
@@ -706,6 +779,7 @@ void drawProfilerWindow(EngineServices& services) {
 
     ImGui::End();
     services.editorSession.profilerWindowVisible = open;
+    services.editorSession.profilerWindowFocusRequested = false;
 }
 
 void drawTextureBrowser(EngineServices& services, render::Material& material, MaterialHandle materialHandle) {
@@ -985,77 +1059,106 @@ void drawTextureSlotEditor(
     ImGui::PopID();
 }
 
-}  // namespace
+void drawMaterialTextureSlotGrid(
+    EngineServices& services,
+    const std::string& materialName,
+    MaterialHandle materialHandle,
+    render::Material& material
+) {
+    static constexpr render::MaterialTextureSlot kTextureSlots[] = {
+        render::MaterialTextureSlot::BaseColor,
+        render::MaterialTextureSlot::MetallicRoughness,
+        render::MaterialTextureSlot::Normal,
+        render::MaterialTextureSlot::Ao,
+        render::MaterialTextureSlot::Emissive,
+        render::MaterialTextureSlot::Alpha,
+        render::MaterialTextureSlot::Clearcoat,
+        render::MaterialTextureSlot::DetailNormal,
+        render::MaterialTextureSlot::Height,
+    };
 
-void BootstrapState::onEnter(EngineServices& services) {
-    if (!services.renderer.init()) {
-        services.requestedMode = AppMode::Shutdown;
+    ImGui::SeparatorText("Texture Slots");
+
+    constexpr float kSlotColumnMinWidth = 280.0f;
+    const float availableWidth = std::max(ImGui::GetContentRegionAvail().x, kSlotColumnMinWidth);
+    const int columnCount = std::clamp(static_cast<int>(availableWidth / kSlotColumnMinWidth), 1, 2);
+    if (!ImGui::BeginTable(
+            "MaterialTextureSlots",
+            columnCount,
+            ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_PadOuterX | ImGuiTableFlags_NoSavedSettings)) {
         return;
     }
-    services.sceneLoaded = services.sceneFactory.buildScene(
-        services.sceneRegistry.defaultScene(),
-        services.world,
-        services.materials,
-        services.renderer
-    );
-    if (!services.sceneLoaded) {
-        spdlog::error("Application: failed to build default scene");
-        services.requestedMode = AppMode::Shutdown;
-        return;
+
+    for (render::MaterialTextureSlot slot : kTextureSlots) {
+        ImGui::TableNextColumn();
+        ImGui::PushID(static_cast<int>(slot));
+
+        constexpr float kSlotCardPadding = 8.0f;
+        constexpr float kSlotCardRounding = 6.0f;
+
+        const ImVec2 cellStartScreen = ImGui::GetCursorScreenPos();
+        const ImVec2 cellStart = ImGui::GetCursorPos();
+        const float cellWidth = ImGui::GetContentRegionAvail().x;
+
+        ImGui::SetCursorPos(ImVec2(cellStart.x + kSlotCardPadding, cellStart.y + kSlotCardPadding));
+        ImGui::BeginGroup();
+        drawTextureSlotEditor(services, materialName, materialHandle, slot, material);
+        ImGui::EndGroup();
+
+        const ImVec2 groupMax = ImGui::GetItemRectMax();
+        ImGui::Dummy(ImVec2(0.0f, kSlotCardPadding));
+
+        const ImVec2 cardMin = cellStartScreen;
+        const ImVec2 cardMax(cellStartScreen.x + cellWidth, groupMax.y + kSlotCardPadding);
+        ImGui::GetWindowDrawList()->AddRect(
+            cardMin,
+            cardMax,
+            ImGui::GetColorU32(ImVec4(0.48f, 0.48f, 0.48f, 0.9f)),
+            kSlotCardRounding,
+            0,
+            1.0f
+        );
+
+        ImGui::PopID();
     }
-    services.requestedMode = AppMode::Gameplay;
+
+    ImGui::EndTable();
 }
 
-void BootstrapState::onExit(EngineServices&) {}
-void BootstrapState::update(EngineServices&) {}
-void BootstrapState::renderUi(EngineServices&) {}
-
-void GameplayState::onEnter(EngineServices&) {}
-
-void GameplayState::onExit(EngineServices&) {}
-
-void GameplayState::update(EngineServices& services) {
-    updateOrbitCamera(services.camera, services.time);
-}
-
-void GameplayState::renderUi(EngineServices&) {}
-
-void EditorState::onEnter(EngineServices&) {}
-
-void EditorState::onExit(EngineServices& services) {
-    services.editorSession.profilerWindowVisible = false;
-}
-
-void EditorState::update(EngineServices& services) {
-    updateOrbitCamera(services.camera, services.time);
-}
-
-void EditorState::renderUi(EngineServices& services) {
-    const auto profilerWindowStart = std::chrono::steady_clock::now();
-    drawProfilerWindow(services);
-    const auto profilerWindowEnd = std::chrono::steady_clock::now();
-    services.profiler.recordProfilerUiTime(
-        std::chrono::duration<double, std::milli>(profilerWindowEnd - profilerWindowStart).count()
-    );
-
-    ALKANZAR_PROFILE_SCOPE(services.profiler, "State UI Render");
-    drawSceneHierarchyWindow(services);
-    if (!services.editorSession.sceneHierarchyVisible) {
+void drawInspectorWindow(EngineServices& services) {
+    if (!services.editorSession.inspectorWindowVisible) {
+        services.editorSession.inspectorWindowFocusRequested = false;
         services.editorSession.textureBrowserFocusRequested = false;
         return;
     }
 
+    if (services.editorSession.inspectorWindowFocusRequested) {
+        ImGui::SetNextWindowFocus();
+    }
     ImGui::SetNextWindowBgAlpha(0.92f);
+    ImGui::SetNextWindowSize(ImVec2(640.0f, 720.0f), ImGuiCond_FirstUseEver);
+
     std::string inspectorTitle = "Inspector";
     if (services.selection.current().has_value()) {
         inspectorTitle += " - " + selectionLabel(services);
     }
     inspectorTitle += "###Inspector";
-    ImGui::Begin(inspectorTitle.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+
+    bool open = services.editorSession.inspectorWindowVisible;
+    if (!ImGui::Begin(inspectorTitle.c_str(), &open)) {
+        ImGui::End();
+        services.editorSession.inspectorWindowVisible = open;
+        services.editorSession.inspectorWindowFocusRequested = false;
+        services.editorSession.textureBrowserFocusRequested = false;
+        return;
+    }
 
     if (!services.selection.current().has_value()) {
         ImGui::TextUnformatted("Click an object or light to inspect it.");
         ImGui::End();
+        services.editorSession.inspectorWindowVisible = open;
+        services.editorSession.inspectorWindowFocusRequested = false;
+        services.editorSession.textureBrowserFocusRequested = false;
         return;
     }
 
@@ -1074,6 +1177,7 @@ void EditorState::renderUi(EngineServices& services) {
     if (ImGui::BeginTabBar("InspectorTabs")) {
         if (ImGui::BeginTabItem("Selection", nullptr, selectionTabFlags)) {
             services.editorSession.activeInspectorTab = InspectorTab::Selection;
+            ImGui::BeginChild("SelectionInspectorContent", ImVec2(0.0f, 0.0f), false);
 
             if (services.world.renderables.contains(selected)) {
                 const EntityId transformEntity = services.world.editableTransformEntity(selected);
@@ -1165,15 +1269,7 @@ void EditorState::renderUi(EngineServices& services) {
                         services.commands
                     );
 
-                    drawTextureSlotEditor(services, material->name, renderable.material, render::MaterialTextureSlot::BaseColor, *material);
-                    drawTextureSlotEditor(services, material->name, renderable.material, render::MaterialTextureSlot::MetallicRoughness, *material);
-                    drawTextureSlotEditor(services, material->name, renderable.material, render::MaterialTextureSlot::Normal, *material);
-                    drawTextureSlotEditor(services, material->name, renderable.material, render::MaterialTextureSlot::Ao, *material);
-                    drawTextureSlotEditor(services, material->name, renderable.material, render::MaterialTextureSlot::Emissive, *material);
-                    drawTextureSlotEditor(services, material->name, renderable.material, render::MaterialTextureSlot::Alpha, *material);
-                    drawTextureSlotEditor(services, material->name, renderable.material, render::MaterialTextureSlot::Clearcoat, *material);
-                    drawTextureSlotEditor(services, material->name, renderable.material, render::MaterialTextureSlot::DetailNormal, *material);
-                    drawTextureSlotEditor(services, material->name, renderable.material, render::MaterialTextureSlot::Height, *material);
+                    drawMaterialTextureSlotGrid(services, material->name, renderable.material, *material);
                 }
             } else if (PointLightComponent* pointLight = services.world.pointLights.tryGet(selected)) {
                 if (TransformComponent* transform = services.world.transforms.tryGet(selected)) {
@@ -1296,6 +1392,7 @@ void EditorState::renderUi(EngineServices& services) {
                 }
             }
 
+            ImGui::EndChild();
             ImGui::EndTabItem();
         }
 
@@ -1311,8 +1408,87 @@ void EditorState::renderUi(EngineServices& services) {
         ImGui::EndTabBar();
     }
 
-    services.editorSession.textureBrowserFocusRequested = false;
     ImGui::End();
+    services.editorSession.inspectorWindowVisible = open;
+    services.editorSession.inspectorWindowFocusRequested = false;
+    services.editorSession.textureBrowserFocusRequested = false;
+}
+
+}  // namespace
+
+void BootstrapState::onEnter(EngineServices& services) {
+    if (!services.renderer.init()) {
+        services.requestedMode = AppMode::Shutdown;
+        return;
+    }
+    services.sceneLoaded = services.sceneFactory.buildScene(
+        services.sceneRegistry.defaultScene(),
+        services.world,
+        services.materials,
+        services.renderer
+    );
+    if (!services.sceneLoaded) {
+        spdlog::error("Application: failed to build default scene");
+        services.requestedMode = AppMode::Shutdown;
+        return;
+    }
+    services.requestedMode = AppMode::Gameplay;
+}
+
+void BootstrapState::onExit(EngineServices&) {}
+void BootstrapState::update(EngineServices&) {}
+void BootstrapState::renderUi(EngineServices&) {}
+
+void GameplayState::onEnter(EngineServices&) {}
+
+void GameplayState::onExit(EngineServices&) {}
+
+void GameplayState::update(EngineServices& services) {
+    updateOrbitCamera(services.camera, services.time);
+}
+
+void GameplayState::renderUi(EngineServices&) {}
+
+void EditorState::onEnter(EngineServices& services) {
+    if (!services.editorSession.mainWindowVisible &&
+        !services.editorSession.sceneHierarchyVisible &&
+        !services.editorSession.inspectorWindowVisible &&
+        !services.editorSession.profilerWindowVisible) {
+        services.editorSession.mainWindowVisible = true;
+        services.editorSession.mainWindowFocusRequested = true;
+        services.editorSession.sceneHierarchyVisible = true;
+        services.editorSession.sceneHierarchyFocusRequested = true;
+        services.editorSession.inspectorWindowVisible = true;
+        services.editorSession.profilerWindowVisible = true;
+    }
+}
+
+void EditorState::onExit(EngineServices& services) {
+    services.editorSession.mainWindowVisible = false;
+    services.editorSession.mainWindowFocusRequested = false;
+    services.editorSession.sceneHierarchyFocusRequested = false;
+    services.editorSession.inspectorWindowFocusRequested = false;
+    services.editorSession.profilerWindowFocusRequested = false;
+    services.editorSession.textureBrowserFocusRequested = false;
+}
+
+void EditorState::update(EngineServices& services) {
+    updateOrbitCamera(services.camera, services.time);
+}
+
+void EditorState::renderUi(EngineServices& services) {
+    drawEditorMainWindow(services);
+
+    const auto profilerWindowStart = std::chrono::steady_clock::now();
+    drawProfilerWindow(services);
+    const auto profilerWindowEnd = std::chrono::steady_clock::now();
+    services.profiler.recordProfilerUiTime(
+        std::chrono::duration<double, std::milli>(profilerWindowEnd - profilerWindowStart).count()
+    );
+
+    ALKANZAR_PROFILE_SCOPE(services.profiler, "State UI Render");
+    drawSceneHierarchyWindow(services);
+    drawInspectorWindow(services);
 }
 
 void ShutdownState::onEnter(EngineServices& services) {

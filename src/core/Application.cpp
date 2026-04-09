@@ -6,6 +6,38 @@
 
 namespace core {
 
+namespace {
+
+bool anyEditorToolWindowVisible(const EditorSession& session) {
+    return session.sceneHierarchyVisible || session.inspectorWindowVisible || session.profilerWindowVisible;
+}
+
+void ensureEditorToolWindowsVisible(EditorSession& session) {
+    if (anyEditorToolWindowVisible(session)) {
+        return;
+    }
+
+    session.sceneHierarchyVisible = true;
+    session.inspectorWindowVisible = true;
+    session.profilerWindowVisible = true;
+}
+
+void openEditorMainWindow(EditorSession& session) {
+    ensureEditorToolWindowsVisible(session);
+    session.mainWindowVisible = true;
+    session.mainWindowFocusRequested = true;
+}
+
+void clearEditorWindowFocus(EditorSession& session) {
+    session.mainWindowFocusRequested = false;
+    session.sceneHierarchyFocusRequested = false;
+    session.inspectorWindowFocusRequested = false;
+    session.profilerWindowFocusRequested = false;
+    session.textureBrowserFocusRequested = false;
+}
+
+}  // namespace
+
 Application::Application(int width, int height)
     : services_(width, height) {
     bindEventHandlers();
@@ -75,7 +107,7 @@ void Application::run() {
             services_.debugView,
             services_.shadowDebugCascade,
             services_.showLightDebug,
-            currentMode_ == AppMode::Editor && services_.editorSession.sceneHierarchyVisible,
+            currentMode_ == AppMode::Editor,
         };
         {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Render Frame");
@@ -143,11 +175,10 @@ void Application::bindEventHandlers() {
     });
     services_.events.subscribe<ToggleEditorEvent>([this](const ToggleEditorEvent&) {
         if (currentMode_ == AppMode::Editor) {
-            services_.editorSession.sceneHierarchyVisible = false;
-            services_.editorSession.sceneHierarchyFocusRequested = false;
-            services_.editorSession.profilerWindowVisible = false;
+            services_.editorSession.mainWindowVisible = false;
+            clearEditorWindowFocus(services_.editorSession);
         } else {
-            services_.editorSession.profilerWindowVisible = true;
+            openEditorMainWindow(services_.editorSession);
         }
         services_.requestedMode = currentMode_ == AppMode::Editor ? AppMode::Gameplay : AppMode::Editor;
     });
@@ -226,19 +257,45 @@ void Application::translateSdlEvent(const SDL_Event& event) {
             if (event.key.keysym.sym == SDLK_e && event.key.repeat == 0) {
                 if (currentMode_ != AppMode::Editor) {
                     services_.requestedMode = AppMode::Editor;
-                    services_.editorSession.sceneHierarchyVisible = true;
-                    services_.editorSession.profilerWindowVisible = true;
+                    openEditorMainWindow(services_.editorSession);
                 } else {
-                    services_.editorSession.sceneHierarchyVisible = !services_.editorSession.sceneHierarchyVisible;
-                    services_.editorSession.profilerWindowVisible = services_.editorSession.sceneHierarchyVisible;
+                    services_.editorSession.mainWindowVisible = !services_.editorSession.mainWindowVisible;
+                    services_.editorSession.mainWindowFocusRequested = services_.editorSession.mainWindowVisible;
                 }
-                services_.editorSession.sceneHierarchyFocusRequested = services_.editorSession.sceneHierarchyVisible;
                 break;
             }
 
             const SDL_Keymod modifiers = SDL_GetModState();
             const bool primaryModifier = (modifiers & KMOD_CTRL) != 0 || (modifiers & KMOD_GUI) != 0;
             if (primaryModifier && event.key.repeat == 0) {
+                if (currentMode_ == AppMode::Editor) {
+                    switch (event.key.keysym.sym) {
+                        case SDLK_i:
+                            services_.editorSession.inspectorWindowVisible = !services_.editorSession.inspectorWindowVisible;
+                            services_.editorSession.inspectorWindowFocusRequested =
+                                services_.editorSession.inspectorWindowVisible;
+                            break;
+                        case SDLK_p:
+                            services_.editorSession.profilerWindowVisible = !services_.editorSession.profilerWindowVisible;
+                            services_.editorSession.profilerWindowFocusRequested =
+                                services_.editorSession.profilerWindowVisible;
+                            break;
+                        case SDLK_s:
+                            services_.editorSession.sceneHierarchyVisible = !services_.editorSession.sceneHierarchyVisible;
+                            services_.editorSession.sceneHierarchyFocusRequested =
+                                services_.editorSession.sceneHierarchyVisible;
+                            break;
+                        default:
+                            break;
+                    }
+
+                    if (event.key.keysym.sym == SDLK_i ||
+                        event.key.keysym.sym == SDLK_p ||
+                        event.key.keysym.sym == SDLK_s) {
+                        break;
+                    }
+                }
+
                 if (event.key.keysym.sym == SDLK_z) {
                     if ((modifiers & KMOD_SHIFT) != 0) {
                         services_.events.publish(RedoRequestedEvent{});
