@@ -36,6 +36,7 @@ set(MODEL_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/models)
 set(MODEL_OUTPUT_DIR ${CMAKE_BINARY_DIR}/models)
 set(MODEL_FILES
     ${MODEL_SOURCE_DIR}/Adventurer.glb
+    ${MODEL_SOURCE_DIR}/FantasyHouse.glb
 )
 
 add_custom_target(copy_models ALL

@@ -114,6 +114,11 @@ void main() {
     vec3 L = toLight / max(dist, 0.0001);
     float attenuation = clamp(1.0 - dist / radius, 0.0, 1.0);
     attenuation *= attenuation;
+    if (uIsSpot == 0) {
+        float d2r2 = dist2 / max(radius * radius, 0.0001);
+        float windowing = clamp(1.0 - d2r2 * d2r2, 0.0, 1.0);
+        attenuation = (windowing * windowing) / (dist2 + 1.0);
+    }
 
     if (uIsSpot == 1) {
         vec3 spotDir = normalize(dirType.xyz);
@@ -157,17 +162,26 @@ void main() {
             uSpotShadowPcfRadius
         );
     } else if (shadowType == 2 && shadowIndex >= 0 && shadowIndex < uPointShadowCount) {
+        // Point shadows store normalized radial depth, so use a world-space receiver offset
+        // to keep small-radius lights from self-shadowing in visible bands.
         vec3 lightWorld = vec3(uInvView * vec4(lightPos, 1.0));
+        vec3 normalWorld = normalize(mat3(uInvView) * normal);
         vec3 toLightWorld = worldPos - lightWorld;
         float worldDist = length(toLightWorld);
-        float depth01 = clamp(worldDist / radius, 0.0, 1.0);
-        vec3 dir = normalize(toLightWorld);
+        float receiverOffsetWorld = max(
+            bias * radius,
+            worldDist * uPointShadowDiskRadius * float(max(uPointShadowPcfRadius, 1) + 1)
+        );
+        vec3 sampleWorldPos = worldPos + normalWorld * receiverOffsetWorld;
+        vec3 sampleToLightWorld = sampleWorldPos - lightWorld;
+        float depth01 = clamp(length(sampleToLightWorld) / radius, 0.0, 1.0);
+        vec3 dir = normalize(sampleToLightWorld);
         shadow = sampleShadowMapCube(
             uPointShadowMap,
             dir,
             depth01,
             shadowIndex,
-            bias,
+            0.0,
             uPointShadowDiskRadius,
             uPointShadowPcfRadius
         );

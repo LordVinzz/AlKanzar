@@ -21,7 +21,7 @@ constexpr float kIsoAngleY = 45.0f;
 constexpr float kBaseOrthoSize = 10.0f;
 constexpr float kMinZoom = 0.2f;
 constexpr float kMaxZoom = 5.0f;
-constexpr float kNearPlane = 1.0f;
+constexpr float kNearPlane = 0.10f;
 constexpr float kFarPlane = 100.0f;
 constexpr float kOrbitSpeedDegPerSecond = 40.0f;
 constexpr float kAxisLength = 1.0f;
@@ -37,6 +37,11 @@ struct Vertex {
     float px, py, pz;
     float nx, ny, nz;
     float r, g, b;
+};
+
+struct MeshBounds {
+    glm::vec3 min{0.0f};
+    glm::vec3 max{0.0f};
 };
 
 void addQuad(const std::array<Vertex, 4>& verts, std::vector<float>& outVerts, std::vector<unsigned int>& outIndices) {
@@ -115,6 +120,58 @@ void addBox(
 
 void pushVertex(const Vertex& v, std::vector<float>& outVerts) {
     outVerts.insert(outVerts.end(), {v.px, v.py, v.pz, v.nx, v.ny, v.nz, v.r, v.g, v.b});
+}
+
+MeshBounds computeMeshBounds(const render::StaticMeshData& mesh) {
+    MeshBounds bounds{};
+    if (mesh.vertices.size() < 9) {
+        return bounds;
+    }
+
+    bounds.min = glm::vec3(mesh.vertices[0], mesh.vertices[1], mesh.vertices[2]);
+    bounds.max = bounds.min;
+
+    for (std::size_t offset = 0; offset + 8 < mesh.vertices.size(); offset += 9) {
+        const glm::vec3 position(mesh.vertices[offset + 0], mesh.vertices[offset + 1], mesh.vertices[offset + 2]);
+        bounds.min = glm::min(bounds.min, position);
+        bounds.max = glm::max(bounds.max, position);
+    }
+
+    return bounds;
+}
+
+void transformStaticMesh(render::StaticMeshData& mesh, const glm::mat4& transform) {
+    const glm::mat3 normalMatrix = glm::mat3(glm::transpose(glm::inverse(transform)));
+    for (std::size_t offset = 0; offset + 8 < mesh.vertices.size(); offset += 9) {
+        const glm::vec3 position(mesh.vertices[offset + 0], mesh.vertices[offset + 1], mesh.vertices[offset + 2]);
+        const glm::vec3 normal(mesh.vertices[offset + 3], mesh.vertices[offset + 4], mesh.vertices[offset + 5]);
+
+        const glm::vec3 transformedPosition = glm::vec3(transform * glm::vec4(position, 1.0f));
+        glm::vec3 transformedNormal = normalMatrix * normal;
+        if (glm::dot(transformedNormal, transformedNormal) > 1.0e-6f) {
+            transformedNormal = glm::normalize(transformedNormal);
+        }
+
+        mesh.vertices[offset + 0] = transformedPosition.x;
+        mesh.vertices[offset + 1] = transformedPosition.y;
+        mesh.vertices[offset + 2] = transformedPosition.z;
+        mesh.vertices[offset + 3] = transformedNormal.x;
+        mesh.vertices[offset + 4] = transformedNormal.y;
+        mesh.vertices[offset + 5] = transformedNormal.z;
+    }
+}
+
+bool fitMeshToFootprint(render::StaticMeshData& mesh, float targetFootprint) {
+    const MeshBounds bounds = computeMeshBounds(mesh);
+    const glm::vec3 size = bounds.max - bounds.min;
+    const float footprint = std::max(size.x, size.z);
+    if (footprint <= 1.0e-4f) {
+        return false;
+    }
+
+    const float scale = targetFootprint / footprint;
+    transformStaticMesh(mesh, glm::scale(glm::mat4(1.0f), glm::vec3(scale)));
+    return true;
 }
 
 void buildSphereMesh(int stacks, int slices, std::vector<float>& outVerts, std::vector<unsigned int>& outIndices) {
@@ -555,6 +612,10 @@ void RenderEngine::drawCharacter() const {
     character_.draw();
 }
 
+void RenderEngine::drawHouse() const {
+    house_.draw();
+}
+
 void RenderEngine::evaluateLightTransform(
     const LightInstance& light,
     float timeSeconds,
@@ -663,47 +724,43 @@ void RenderEngine::buildLights() {
     constexpr int kSpotLights = 1;
     constexpr float kTwoPi = 6.283185307f;
 
-    for (int i = 0; i < kPointLights; ++i) {
-        const float angle = kTwoPi * static_cast<float>(i) / static_cast<float>(kPointLights);
-        const float r = 0.4f + 0.6f * static_cast<float>(std::sin(angle));
-        const float g = 0.4f + 0.6f * static_cast<float>(std::sin(angle + 2.1f));
-        const float b = 0.4f + 0.6f * static_cast<float>(std::sin(angle + 4.2f));
+    
+        const float r = 0.9f;
+        const float g = 0.7f;
+        const float b = 1.f;
 
-        LightInstance light{};
-        light.basePosition = glm::vec3(std::cos(angle) * 1.5f, 1.2f, std::sin(angle) * 4.5f);
-        light.radius = 20.0f;
-        light.color = glm::vec3(r, g, b);
-        light.intensity = 1.0f;
-        light.target = glm::vec3(0.0f);
-        light.innerAngle = 0.0f;
-        light.outerAngle = 0.0f;
-        light.type = LightType::Point;
-        light.phase = angle;
-        light.isMovable = false;
-        light.castsShadow = true;
-        light.shadowBiasMin = 0.000015f;
-        light.shadowBiasSlope = 0.0045f;
-        registerLight(light);
-    }
-
-    for (int i = 0; i < kSpotLights; ++i) {
-        const float angle = kTwoPi * static_cast<float>(i) / static_cast<float>(kSpotLights);
-        LightInstance light{};
-        light.basePosition = glm::vec3(std::cos(angle) * 5.5f, 1.2f, std::sin(angle) * 2.5f);
-        light.radius = 32.0f;
-        light.color = glm::vec3(0.55f, 0.70f, 0.95f);
-        light.intensity = 1.4f;
-        light.target = glm::vec3(0.0f, 0.0f, 0.0f);
-        light.innerAngle = 15.0f;
-        light.outerAngle = 25.0f;
-        light.type = LightType::Spot;
-        light.phase = angle;
-        light.isMovable = false;
-        light.castsShadow = true;
-        light.shadowBiasMin = 0.0012f;
-        light.shadowBiasSlope = 0.004f;
-        registerLight(light);
-    }
+    LightInstance light{};
+    light.basePosition = glm::vec3(1.5f, 1.2f, 0.f);
+    light.radius = 40.0f;
+    light.color = glm::vec3(r, g, b);
+    light.intensity = 20.0f;
+    light.target = glm::vec3(0.0f);
+    light.innerAngle = 0.0f;
+    light.outerAngle = 0.0f;
+    light.type = LightType::Point;
+    light.phase = 0.f;
+    light.isMovable = false;
+    light.castsShadow = true;
+    light.shadowBiasMin = 0.000015f;
+    light.shadowBiasSlope = 0.0045f;
+    registerLight(light);
+    
+    LightInstance light2{};
+    light2.basePosition = glm::vec3(5.5f, 10.2f, 0.f);
+    light2.radius = 32.0f;
+    light2.color = glm::vec3(0.55f, 0.70f, 0.95f);
+    light2.intensity = 1.4f;
+    light2.target = glm::vec3(-3.f, 1.2f, -8.f);
+    light2.innerAngle = 15.0f;
+    light2.outerAngle = 25.0f;
+    light2.type = LightType::Spot;
+    light2.phase = 0;
+    light2.isMovable = false;
+    light2.castsShadow = true;
+    light2.shadowBiasMin = 0.0012f;
+    light2.shadowBiasSlope = 0.004f;
+    registerLight(light2);
+    
 
     gpuLights_.resize(lights_.size());
     lightDebugInstances_.resize(lights_.size());
@@ -996,12 +1053,37 @@ void RenderEngine::renderLightDebugOverlay() {
 bool RenderEngine::buildCharacterMesh() {
     StaticMeshData characterMesh;
     const std::string characterPath = modelRootPath() + "Adventurer.glb";
-    if (!loadStaticCharacterModel(characterPath, characterMesh)) {
+    if (!loadStaticGltfModel(characterPath, characterMesh)) {
         spdlog::error("RenderEngine: failed to load character model '{}'", characterPath);
         return false;
     }
 
     return character_.upload(characterMesh.vertices, characterMesh.indices);
+}
+
+bool RenderEngine::buildHouseMesh() {
+    StaticMeshData houseMesh;
+    const std::string housePath = modelRootPath() + "FantasyHouse.glb";
+    if (!loadStaticGltfModel(housePath, houseMesh)) {
+        spdlog::error("RenderEngine: failed to load house model '{}'", housePath);
+        return false;
+    }
+
+    constexpr float kHouseFootprint = 7.5f;
+    constexpr glm::vec3 kHousePosition(-3.0f, 0.0f, -8.0f);
+    constexpr float kHouseYawDeg = -35.0f;
+
+    if (!fitMeshToFootprint(houseMesh, kHouseFootprint)) {
+        spdlog::error("RenderEngine: failed to fit house model '{}'", housePath);
+        return false;
+    }
+
+    glm::mat4 houseTransform(1.0f);
+    houseTransform = glm::translate(houseTransform, kHousePosition);
+    houseTransform *= glm::rotate(glm::mat4(1.0f), glm::radians(kHouseYawDeg), glm::vec3(0.0f, 1.0f, 0.0f));
+    transformStaticMesh(houseMesh, houseTransform);
+
+    return house_.upload(houseMesh.vertices, houseMesh.indices);
 }
 
 void RenderEngine::ensureDeferredResources() {
@@ -1158,9 +1240,9 @@ void RenderEngine::renderDeferredScene() {
 
     shadowSystem_.updateDirectional(view_, projection_, dirLightWorld, kNearPlane, kFarPlane);
     shadowDebugCascade_ = std::clamp(shadowDebugCascade_, 0, shadowSystem_.directionalCascadeCount() - 1);
-    shadowSystem_.renderDirectionalShadows({&ground_, &wallA_, &wallB_, &character_});
-    shadowSystem_.renderSpotShadows({&ground_, &wallA_, &wallB_, &character_});
-    shadowSystem_.renderPointShadows({&ground_, &wallA_, &wallB_, &character_});
+    shadowSystem_.renderDirectionalShadows({&ground_, &wallA_, &wallB_, &character_, &house_});
+    shadowSystem_.renderSpotShadows({&ground_, &wallA_, &wallB_, &character_, &house_});
+    shadowSystem_.renderPointShadows({&ground_, &wallA_, &wallB_, &character_, &house_});
 
     glBindFramebuffer(GL_FRAMEBUFFER, gbufferFbo_);
     glViewport(0, 0, width_, height_);
@@ -1187,6 +1269,7 @@ void RenderEngine::renderDeferredScene() {
     wallA_.draw();
     wallB_.draw();
     drawCharacter();
+    drawHouse();
 
     glBindFramebuffer(GL_FRAMEBUFFER, lightFbo_);
     glViewport(0, 0, width_, height_);
@@ -1369,7 +1452,7 @@ void RenderEngine::renderSimpleScene() {
     glUniform3fv(simpleLightDirLocation_, 1, glm::value_ptr(directionalLight_.direction));
 
     drawLayer(RenderLayer::Ground, {&ground_});
-    drawLayer(RenderLayer::Geometry, {&wallA_, &wallB_});
+    drawLayer(RenderLayer::Geometry, {&wallA_, &wallB_, &house_});
     drawCharacter();
     renderLightDebugOverlay();
 }
@@ -1533,7 +1616,7 @@ void RenderEngine::buildScene() {
 
     std::vector<float> groundVerts;
     std::vector<unsigned int> groundIdx;
-    const float g = 5.0f;
+    const float g = 500.0f;
     const std::array<Vertex, 4> groundQuad{{
         {-g, 0.0f, -g, 0.0f, 1.0f, 0.0f, 0.18f, 0.36f, 0.20f},
         {-g, 0.0f, g, 0.0f, 1.0f, 0.0f, 0.18f, 0.36f, 0.20f},
@@ -1572,7 +1655,8 @@ void RenderEngine::buildScene() {
                   ground_.upload(groundVerts, groundIdx) &&
                   wallA_.upload(wallVerts, wallIdx) &&
                   wallB_.upload(wallBVerts, wallBIdx) &&
-                  buildCharacterMesh();
+                  buildCharacterMesh() &&
+                  buildHouseMesh();
 }
 
 }  // namespace render

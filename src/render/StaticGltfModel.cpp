@@ -313,7 +313,7 @@ bool centerAndGroundMesh(render::StaticMeshData& mesh) {
     }
 
     spdlog::info(
-        "StaticGltfModel: grounded character bounds min ({:.3f}, {:.3f}, {:.3f}) max ({:.3f}, {:.3f}, {:.3f})",
+        "StaticGltfModel: grounded model bounds min ({:.3f}, {:.3f}, {:.3f}) max ({:.3f}, {:.3f}, {:.3f})",
         minBounds.x, minBounds.y, minBounds.z,
         maxBounds.x, maxBounds.y, maxBounds.z
     );
@@ -325,7 +325,7 @@ bool centerAndGroundMesh(render::StaticMeshData& mesh) {
 
 namespace render {
 
-bool loadStaticCharacterModel(const std::string& path, StaticMeshData& outMesh) {
+bool loadStaticGltfModel(const std::string& path, StaticMeshData& outMesh) {
     outMesh.vertices.clear();
     outMesh.indices.clear();
 
@@ -420,6 +420,10 @@ bool loadStaticCharacterModel(const std::string& path, StaticMeshData& outMesh) 
     const bool ready = centerAndGroundMesh(outMesh);
     cleanup();
     return ready;
+}
+
+bool loadStaticCharacterModel(const std::string& path, StaticMeshData& outMesh) {
+    return loadStaticGltfModel(path, outMesh);
 }
 
 }  // namespace render

@@ -164,6 +164,11 @@ private:
      */
     bool buildCharacterMesh();
     /**
+     * Loads, fits, and uploads the static house mesh.
+     * @return true when the house is ready to render.
+     */
+    bool buildHouseMesh();
+    /**
      * Initializes the light list used by deferred rendering.
      */
     void buildLights();
@@ -221,6 +226,10 @@ private:
      */
     void drawCharacter() const;
     /**
+     * Draws the imported house mesh.
+     */
+    void drawHouse() const;
+    /**
      * Assigns a static light to its owning execution volume.
      * @param lightIndex Index into lights_.
      */
@@ -276,6 +285,7 @@ private:
     MeshBuffer wallA_;
     MeshBuffer wallB_;
     MeshBuffer character_;
+    MeshBuffer house_;
     MeshBuffer lightSphere_;
     MeshBuffer lightCone_;
     MeshBuffer axisGizmo_;
