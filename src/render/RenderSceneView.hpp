@@ -27,12 +27,14 @@ enum class RenderSelectionKind {
     None = 0,
     Renderable,
     Light,
+    Node,
 };
 
 struct RenderSelectionView {
     RenderSelectionKind kind{RenderSelectionKind::None};
     int index{-1};
     Bounds3 worldBounds{};
+    bool hasWorldBounds{false};
     glm::mat4 transformMatrix{1.0f};
 };
 

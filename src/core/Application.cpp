@@ -60,7 +60,7 @@ void Application::run() {
             services_.debugView,
             services_.shadowDebugCascade,
             services_.showLightDebug,
-            currentMode_ == AppMode::Editor,
+            currentMode_ == AppMode::Editor && services_.editorSession.sceneHierarchyVisible,
         };
         services_.renderer.renderFrame(
             services_.frame,
@@ -117,6 +117,10 @@ void Application::bindEventHandlers() {
         services_.requestedMode = AppMode::Shutdown;
     });
     services_.events.subscribe<ToggleEditorEvent>([this](const ToggleEditorEvent&) {
+        if (currentMode_ == AppMode::Editor) {
+            services_.editorSession.sceneHierarchyVisible = false;
+            services_.editorSession.sceneHierarchyFocusRequested = false;
+        }
         services_.requestedMode = currentMode_ == AppMode::Editor ? AppMode::Gameplay : AppMode::Editor;
     });
     services_.events.subscribe<UndoRequestedEvent>([this](const UndoRequestedEvent&) {
@@ -175,7 +179,8 @@ void Application::bindEventHandlers() {
             services_.renderer.width(),
             services_.renderer.height(),
             event.x,
-            event.y
+            event.y,
+            false
         ));
     });
 }
@@ -191,7 +196,13 @@ void Application::translateSdlEvent(const SDL_Event& event) {
                 break;
             }
             if (event.key.keysym.sym == SDLK_e && event.key.repeat == 0) {
-                services_.events.publish(ToggleEditorEvent{});
+                if (currentMode_ != AppMode::Editor) {
+                    services_.requestedMode = AppMode::Editor;
+                    services_.editorSession.sceneHierarchyVisible = true;
+                } else {
+                    services_.editorSession.sceneHierarchyVisible = !services_.editorSession.sceneHierarchyVisible;
+                }
+                services_.editorSession.sceneHierarchyFocusRequested = services_.editorSession.sceneHierarchyVisible;
                 break;
             }
 
@@ -217,6 +228,11 @@ void Application::translateSdlEvent(const SDL_Event& event) {
             }
 
             switch (event.key.keysym.sym) {
+                case SDLK_F1:
+                    if (event.key.repeat == 0) {
+                        services_.events.publish(ToggleEditorEvent{});
+                    }
+                    break;
                 case SDLK_0:
                     services_.events.publish(DebugViewSelectedEvent{render::DebugView::Final});
                     break;
@@ -253,11 +269,6 @@ void Application::translateSdlEvent(const SDL_Event& event) {
                 case SDLK_c:
                     if (event.key.repeat == 0) {
                         services_.events.publish(ToggleOrbitCameraEvent{});
-                    }
-                    break;
-                case SDLK_l:
-                    if (event.key.repeat == 0) {
-                        services_.events.publish(ToggleLightDebugEvent{});
                     }
                     break;
                 default:

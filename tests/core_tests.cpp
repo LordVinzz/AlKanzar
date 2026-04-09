@@ -3,12 +3,15 @@
 #include <memory>
 #include <variant>
 
+#include <glm/ext/matrix_clip_space.hpp>
+
 #include "core/CommandHistory.hpp"
 #include "core/ComponentStore.hpp"
 #include "core/EventBus.hpp"
 #include "core/Events.hpp"
 #include "core/LightSystem.hpp"
 #include "core/MaterialLibrary.hpp"
+#include "core/PickingSystem.hpp"
 #include "core/RenderExtractionSystem.hpp"
 #include "core/SelectionModel.hpp"
 #include "core/TransformSystem.hpp"
@@ -84,21 +87,33 @@ void testCommandHistoryUndoRedoAndMerge() {
 void testTransformHierarchyAndBounds() {
     core::World world;
     const core::EntityId parent = world.createEntity();
-    const core::EntityId child = world.createEntity();
+    const core::EntityId childA = world.createEntity();
+    const core::EntityId childB = world.createEntity();
 
     world.transforms.emplace(parent, core::TransformComponent{glm::vec3(2.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
-    world.parents.emplace(child, core::ParentComponent{parent});
-    world.bounds.emplace(child, core::BoundsComponent{render::Bounds3{glm::vec3(-1.0f), glm::vec3(1.0f)}});
-    world.renderables.emplace(child, core::RenderableComponent{render::MeshHandle{0}, {}, render::RenderLayer::Geometry});
+    world.parents.emplace(childA, core::ParentComponent{parent});
+    world.parents.emplace(childB, core::ParentComponent{parent});
+    world.transforms.emplace(childB, core::TransformComponent{glm::vec3(4.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.bounds.emplace(childA, core::BoundsComponent{render::Bounds3{glm::vec3(-1.0f), glm::vec3(1.0f)}});
+    world.bounds.emplace(childB, core::BoundsComponent{render::Bounds3{glm::vec3(-1.0f), glm::vec3(1.0f)}});
+    world.renderables.emplace(childA, core::RenderableComponent{render::MeshHandle{0}, {}, render::RenderLayer::Geometry});
+    world.renderables.emplace(childB, core::RenderableComponent{render::MeshHandle{1}, {}, render::RenderLayer::Geometry});
     world.markTransformsDirty(parent);
-    world.markTransformsDirty(child);
+    world.markTransformsDirty(childA);
+    world.markTransformsDirty(childB);
 
     core::TransformSystem system;
     system.update(world);
 
-    assert(world.transformCache_[child.index].valid);
-    assert(world.transformCache_[child.index].worldBounds.min.x == 1.0f);
-    assert(world.transformCache_[child.index].worldBounds.max.x == 3.0f);
+    assert(world.transformCache_[childA.index].valid);
+    assert(world.transformCache_[childA.index].worldBounds.min.x == 1.0f);
+    assert(world.transformCache_[childA.index].worldBounds.max.x == 3.0f);
+    assert(world.transformCache_[childA.index].hasWorldBounds);
+    assert(world.transformCache_[childB.index].worldBounds.min.x == 5.0f);
+    assert(world.transformCache_[childB.index].worldBounds.max.x == 7.0f);
+    assert(world.transformCache_[parent.index].hasWorldBounds);
+    assert(world.transformCache_[parent.index].worldBounds.min.x == 1.0f);
+    assert(world.transformCache_[parent.index].worldBounds.max.x == 7.0f);
 }
 
 void testLightVolumeAssignment() {
@@ -184,6 +199,22 @@ void testRenderSceneViewBuildResolvesLightSelection() {
     assert(scene.selection.index == 0);
 }
 
+void testRenderSceneViewBuildResolvesNodeSelection() {
+    core::FrameSceneData frame;
+    frame.selection.entity = core::EntityId{9, 1};
+    frame.selection.worldBounds = render::Bounds3{glm::vec3(1.0f), glm::vec3(4.0f)};
+    frame.selection.hasWorldBounds = true;
+    frame.selection.transformMatrix = glm::mat4(3.0f);
+
+    const render::RenderSceneView scene = render::buildRenderSceneView(frame, {});
+    assert(scene.selection.kind == render::RenderSelectionKind::Node);
+    assert(scene.selection.index == -1);
+    assert(scene.selection.hasWorldBounds);
+    assert(scene.selection.worldBounds.min.x == 1.0f);
+    assert(scene.selection.worldBounds.max.x == 4.0f);
+    assert(scene.selection.transformMatrix[0][0] == 3.0f);
+}
+
 void testActiveLightSelectionDeduplicatesAcrossVolumes() {
     std::vector<core::FrameLight> lights{
         core::FrameLight{core::EntityId{1, 1}, render::LightType::Point},
@@ -204,6 +235,43 @@ void testActiveLightSelectionDeduplicatesAcrossVolumes() {
     assert(selection.indices[2] == 2);
 }
 
+void testPickingSystemCanIgnoreLights() {
+    core::FrameSceneData frame;
+    frame.renderables.push_back(core::FrameRenderable{
+        core::EntityId{1, 1},
+        render::MeshHandle{0},
+        {},
+        {},
+        render::RenderLayer::Geometry,
+        render::Bounds3{glm::vec3(0.0f)},
+        render::Bounds3{glm::vec3(-0.25f, -0.25f, -6.0f), glm::vec3(0.25f, 0.25f, -4.0f)},
+        glm::mat4(1.0f),
+        true
+    });
+    frame.lights.push_back(core::FrameLight{
+        core::EntityId{2, 1},
+        render::LightType::Point,
+        glm::vec3(0.0f, 0.0f, -2.0f),
+        0.75f,
+        glm::vec3(1.0f),
+        1.0f
+    });
+
+    render::CameraMatrices camera{};
+    camera.projection = glm::ortho(-1.0f, 1.0f, -1.0f, 1.0f, 0.0f, 10.0f);
+    camera.invProjection = glm::inverse(camera.projection);
+    camera.view = glm::mat4(1.0f);
+
+    core::PickingSystem picking;
+    const std::optional<core::EntityId> withLights = picking.pick(frame, camera, 100, 100, 50, 50, true);
+    const std::optional<core::EntityId> withoutLights = picking.pick(frame, camera, 100, 100, 50, 50, false);
+
+    assert(withLights.has_value());
+    assert(withLights->index == 2u);
+    assert(withoutLights.has_value());
+    assert(withoutLights->index == 1u);
+}
+
 }  // namespace
 
 int main() {
@@ -216,6 +284,8 @@ int main() {
     testMaterialHandleSharingExtraction();
     testRenderSceneViewBuildResolvesRenderableSelection();
     testRenderSceneViewBuildResolvesLightSelection();
+    testRenderSceneViewBuildResolvesNodeSelection();
     testActiveLightSelectionDeduplicatesAcrossVolumes();
+    testPickingSystemCanIgnoreLights();
     return EXIT_SUCCESS;
 }

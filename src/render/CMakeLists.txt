@@ -55,6 +55,8 @@ set(SHADER_FILES
     ${SHADER_SOURCE_DIR}/simple.frag
     ${SHADER_SOURCE_DIR}/debug_color.vert
     ${SHADER_SOURCE_DIR}/debug_color.frag
+    ${SHADER_SOURCE_DIR}/light_icon.vert
+    ${SHADER_SOURCE_DIR}/light_icon.frag
     ${SHADER_SOURCE_DIR}/deferred_gbuffer.vert
     ${SHADER_SOURCE_DIR}/deferred_gbuffer.frag
     ${SHADER_SOURCE_DIR}/fullscreen_tri.vert
@@ -82,7 +84,7 @@ set(MODEL_FILES
 
 set(TEXTURE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/textures)
 set(TEXTURE_OUTPUT_DIR ${CMAKE_BINARY_DIR}/textures)
-file(GLOB TEXTURE_FILES
+file(GLOB_RECURSE TEXTURE_FILES
     ${TEXTURE_SOURCE_DIR}/*
 )
 
@@ -95,7 +97,7 @@ add_custom_target(copy_models ALL
 
 add_custom_target(copy_textures ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory ${TEXTURE_OUTPUT_DIR}
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TEXTURE_FILES} ${TEXTURE_OUTPUT_DIR}
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${TEXTURE_SOURCE_DIR} ${TEXTURE_OUTPUT_DIR}
     DEPENDS ${TEXTURE_FILES}
     COMMENT "Copying textures to build/textures"
 )

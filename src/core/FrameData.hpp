@@ -53,6 +53,7 @@ struct FrameSelection {
     std::optional<EntityId> entity{};
     bool isLight{false};
     render::Bounds3 worldBounds{};
+    bool hasWorldBounds{false};
     glm::mat4 transformMatrix{1.0f};
 };
 

@@ -15,7 +15,8 @@ public:
         int viewportWidth,
         int viewportHeight,
         int mouseX,
-        int mouseY
+        int mouseY,
+        bool includeLights = true
     ) const;
 };
 

@@ -9,6 +9,7 @@ RenderSelectionView resolveRenderSelection(const core::FrameSceneData& frame) {
     }
 
     selection.worldBounds = frame.selection.worldBounds;
+    selection.hasWorldBounds = frame.selection.hasWorldBounds;
     selection.transformMatrix = frame.selection.transformMatrix;
 
     for (std::size_t index = 0; index < frame.renderables.size(); ++index) {
@@ -27,6 +28,7 @@ RenderSelectionView resolveRenderSelection(const core::FrameSceneData& frame) {
         }
     }
 
+    selection.kind = RenderSelectionKind::Node;
     return selection;
 }
 

@@ -4,10 +4,13 @@
 #include <array>
 #include <cmath>
 
+#include <SDL.h>
 #include <glm/geometric.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/trigonometric.hpp>
+
+#include "Material.hpp"
 
 namespace {
 
@@ -23,6 +26,8 @@ constexpr float kSelectionBoundsAlpha = 0.95f;
 constexpr float kSelectionAxisScaleMin = 0.55f;
 constexpr float kSelectionAxisScaleMax = 1.35f;
 constexpr float kSelectionScaleFactor = 0.2f;
+constexpr float kLightIconPixelSize = 34.0f;
+constexpr float kLightIconOpacity = 0.5f;
 
 struct Vertex {
     glm::vec3 position{0.0f};
@@ -220,6 +225,44 @@ glm::mat4 makeOrientationFromDirection(const glm::vec3& direction) {
     return basis;
 }
 
+std::string assetRootPath(const char* subdir) {
+    char* basePath = SDL_GetBasePath();
+    std::string root = basePath ? basePath : "";
+    if (basePath) {
+        SDL_free(basePath);
+    }
+    return root + subdir;
+}
+
+GLuint uploadOverlayTexture(const std::shared_ptr<render::Texture>& texture) {
+    if (!texture || !texture->valid()) {
+        return 0;
+    }
+
+    GLuint handle = 0;
+    glGenTextures(1, &handle);
+    glBindTexture(GL_TEXTURE_2D, handle);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        GL_RGBA8,
+        texture->width,
+        texture->height,
+        0,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        texture->bytes.data()
+    );
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return handle;
+}
+
 }  // namespace
 
 namespace render {
@@ -235,12 +278,23 @@ bool SceneOverlayRenderer::init(const std::string& shaderRoot) {
 
     debugMvpLocation_ = debugColorShader_.uniformLocation("uMVP");
     debugColorLocation_ = debugColorShader_.uniformLocation("uColor");
-    return buildVolumeMeshes() && buildDebugMeshes();
+    return buildVolumeMeshes() && buildDebugMeshes() && buildLightIconResources(shaderRoot);
 }
 
 void SceneOverlayRenderer::destroy() {
+    if (pointLightIconTexture_ != 0) {
+        glDeleteTextures(1, &pointLightIconTexture_);
+        pointLightIconTexture_ = 0;
+    }
+    if (spotLightIconTexture_ != 0) {
+        glDeleteTextures(1, &spotLightIconTexture_);
+        spotLightIconTexture_ = 0;
+    }
     debugMvpLocation_ = -1;
     debugColorLocation_ = -1;
+    lightIconClipCenterLocation_ = -1;
+    lightIconSizeLocation_ = -1;
+    lightIconOpacityLocation_ = -1;
 }
 
 bool SceneOverlayRenderer::buildVolumeMeshes() {
@@ -291,6 +345,48 @@ bool SceneOverlayRenderer::buildDebugMeshes() {
     return axisGizmo_.upload(axisMesh) && selectionBox_.upload(selectionMesh);
 }
 
+bool SceneOverlayRenderer::buildLightIconResources(const std::string& shaderRoot) {
+    if (!lightIconShader_.buildFromFiles(shaderRoot + "light_icon.vert", shaderRoot + "light_icon.frag")) {
+        return false;
+    }
+
+    lightIconClipCenterLocation_ = lightIconShader_.uniformLocation("uClipCenter");
+    lightIconSizeLocation_ = lightIconShader_.uniformLocation("uSizeNdc");
+    lightIconOpacityLocation_ = lightIconShader_.uniformLocation("uOpacity");
+
+    Mesh iconQuad{};
+    addQuad(
+        {{
+            {glm::vec3(-0.5f, -0.5f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f), glm::vec2(0.0f, 0.0f), glm::vec2(0.0f), glm::vec4(1.0f)},
+            {glm::vec3(-0.5f, 0.5f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f), glm::vec2(0.0f, 1.0f), glm::vec2(0.0f), glm::vec4(1.0f)},
+            {glm::vec3(0.5f, 0.5f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f), glm::vec2(1.0f, 1.0f), glm::vec2(0.0f), glm::vec4(1.0f)},
+            {glm::vec3(0.5f, -0.5f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f), glm::vec2(1.0f, 0.0f), glm::vec2(0.0f), glm::vec4(1.0f)},
+        }},
+        iconQuad
+    );
+
+    lightIconShader_.use();
+    glUniform1i(lightIconShader_.uniformLocation("uIconTexture"), 0);
+    return lightIconQuad_.upload(iconQuad) && loadLightIconTextures();
+}
+
+bool SceneOverlayRenderer::loadLightIconTextures() {
+    const std::string textureRoot = assetRootPath("textures/engine/");
+    pointLightIconTexture_ = uploadOverlayTexture(loadTextureFromFile(
+        textureRoot + "point_light_gizmo.png",
+        "PointLightGizmo",
+        false,
+        TextureSemantic::Generic
+    ));
+    spotLightIconTexture_ = uploadOverlayTexture(loadTextureFromFile(
+        textureRoot + "spot_light_gizmo.png",
+        "SpotLightGizmo",
+        false,
+        TextureSemantic::Generic
+    ));
+    return pointLightIconTexture_ != 0 && spotLightIconTexture_ != 0;
+}
+
 void SceneOverlayRenderer::drawDebugMesh(
     const MeshBuffer& mesh,
     const glm::mat4& projection,
@@ -315,6 +411,32 @@ void SceneOverlayRenderer::drawDebugMesh(
     }
 }
 
+void SceneOverlayRenderer::drawLightIcon(
+    const glm::vec4& clipCenter,
+    GLuint textureHandle,
+    float opacity,
+    int width,
+    int height
+) const {
+    if (lightIconShader_.id() == 0 || !lightIconQuad_.valid() || textureHandle == 0 || width <= 0 || height <= 0) {
+        return;
+    }
+
+    const glm::vec2 sizeNdc(
+        (kLightIconPixelSize * 2.0f) / static_cast<float>(width),
+        (kLightIconPixelSize * 2.0f) / static_cast<float>(height)
+    );
+
+    lightIconShader_.use();
+    glUniform4fv(lightIconClipCenterLocation_, 1, glm::value_ptr(clipCenter));
+    glUniform2fv(lightIconSizeLocation_, 1, glm::value_ptr(sizeNdc));
+    glUniform1f(lightIconOpacityLocation_, opacity);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, textureHandle);
+    lightIconQuad_.draw();
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
 void SceneOverlayRenderer::renderSelectionOverlay(
     const RenderSceneView& scene,
     const CameraMatrices& camera,
@@ -323,12 +445,16 @@ void SceneOverlayRenderer::renderSelectionOverlay(
     int height
 ) const {
     if (!options.editorEnabled ||
-        scene.selection.kind != RenderSelectionKind::Renderable ||
-        scene.selection.index < 0 ||
-        scene.selection.index >= static_cast<int>(scene.objects.size()) ||
+        scene.selection.kind == RenderSelectionKind::None ||
+        scene.selection.kind == RenderSelectionKind::Light ||
+        !scene.selection.hasWorldBounds ||
         debugColorShader_.id() == 0 ||
         !axisGizmo_.valid() ||
         !selectionBox_.valid()) {
+        return;
+    }
+    if (scene.selection.kind == RenderSelectionKind::Renderable &&
+        (scene.selection.index < 0 || scene.selection.index >= static_cast<int>(scene.objects.size()))) {
         return;
     }
 
@@ -388,7 +514,7 @@ void SceneOverlayRenderer::renderLightDebugOverlay(
         selectedLightIndex = scene.selection.index;
     }
 
-    if ((!options.showLightDebug && selectedLightIndex < 0) || debugColorShader_.id() == 0 || !axisGizmo_.valid()) {
+    if (!options.editorEnabled && !options.showLightDebug) {
         return;
     }
 
@@ -400,66 +526,96 @@ void SceneOverlayRenderer::renderLightDebugOverlay(
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_CULL_FACE);
 
-    debugColorShader_.use();
-    for (int lightIndex : lights.activeLightIndices) {
-        const bool selected = lightIndex == selectedLightIndex;
-        if (!options.showLightDebug && !selected) {
-            continue;
-        }
+    if (options.editorEnabled && lightIconShader_.id() != 0 && lightIconQuad_.valid()) {
+        const glm::mat4 viewProjection = camera.projection * camera.view;
+        auto drawIconPass = [&](bool selectedPass) {
+            for (std::size_t lightIndex = 0; lightIndex < scene.lights.size(); ++lightIndex) {
+                const bool selected = static_cast<int>(lightIndex) == selectedLightIndex;
+                if (selected != selectedPass) {
+                    continue;
+                }
 
-        const ActiveLightDebug& light = lights.debugLights[lightIndex];
-        glm::mat4 axisModel(1.0f);
-        axisModel = glm::translate(axisModel, light.position);
-        if (light.type == LightType::Spot) {
-            axisModel *= makeOrientationFromDirection(light.direction);
-        }
-        const float axisScale = std::clamp(light.radius * kLightGizmoScaleFactor, kLightGizmoScaleMin, kLightGizmoScaleMax);
-        axisModel = glm::scale(axisModel, glm::vec3(axisScale));
-        drawDebugMesh(
-            axisGizmo_,
-            camera.projection,
-            camera.view,
-            axisModel,
-            selected ? glm::vec4(1.0f, 0.92f, 0.40f, 1.0f) : glm::vec4(1.0f),
-            false
-        );
+                const core::FrameLight& light = scene.lights[lightIndex];
+                const glm::vec4 clipCenter = viewProjection * glm::vec4(light.position, 1.0f);
+                if (clipCenter.w <= 0.0f) {
+                    continue;
+                }
 
-        if (light.type == LightType::Point && lightSphere_.valid()) {
-            glm::mat4 sphereModel(1.0f);
-            sphereModel = glm::translate(sphereModel, light.position);
-            sphereModel = glm::scale(sphereModel, glm::vec3(light.radius));
-            drawDebugMesh(
-                lightSphere_,
-                camera.projection,
-                camera.view,
-                sphereModel,
-                glm::vec4(light.color, selected ? 1.0f : kDebugVolumeAlpha),
-                true
-            );
-        } else if (light.type == LightType::Spot && lightCone_.valid()) {
-            glm::mat4 coneModel(1.0f);
-            coneModel = glm::translate(coneModel, light.position);
-            coneModel *= makeOrientationFromDirection(light.direction);
-            const float coneRadius = light.radius * std::tan(glm::radians(light.outerAngle));
-            coneModel = glm::scale(coneModel, glm::vec3(coneRadius, coneRadius, light.radius));
-            drawDebugMesh(
-                lightCone_,
-                camera.projection,
-                camera.view,
-                coneModel,
-                glm::vec4(light.color, selected ? 1.0f : kDebugVolumeAlpha),
-                true
-            );
-        }
+                const float ndcZ = clipCenter.z / clipCenter.w;
+                if (ndcZ < -1.0f || ndcZ > 1.0f) {
+                    continue;
+                }
+
+                const GLuint textureHandle = light.type == LightType::Spot ? spotLightIconTexture_ : pointLightIconTexture_;
+                drawLightIcon(clipCenter, textureHandle, selected ? 1.0f : kLightIconOpacity, width, height);
+            }
+        };
+
+        drawIconPass(false);
+        drawIconPass(true);
     }
 
-    if (options.showLightDebug) {
-        const glm::vec3 dir = glm::normalize(directionalLightDirection);
-        glm::mat4 directionalModel(1.0f);
-        directionalModel = glm::translate(directionalModel, -dir * kDirectionalDebugAnchorDistance);
-        directionalModel *= makeOrientationFromDirection(dir);
-        directionalModel = glm::scale(directionalModel, glm::vec3(1.1f));
-        drawDebugMesh(axisGizmo_, camera.projection, camera.view, directionalModel, glm::vec4(1.0f), false);
+    if ((options.showLightDebug || selectedLightIndex >= 0) && debugColorShader_.id() != 0 && axisGizmo_.valid()) {
+        debugColorShader_.use();
+        for (int lightIndex : lights.activeLightIndices) {
+            const bool selected = lightIndex == selectedLightIndex;
+            if (!options.showLightDebug && !selected) {
+                continue;
+            }
+
+            const ActiveLightDebug& light = lights.debugLights[lightIndex];
+            glm::mat4 axisModel(1.0f);
+            axisModel = glm::translate(axisModel, light.position);
+            if (light.type == LightType::Spot) {
+                axisModel *= makeOrientationFromDirection(light.direction);
+            }
+            const float axisScale = std::clamp(light.radius * kLightGizmoScaleFactor, kLightGizmoScaleMin, kLightGizmoScaleMax);
+            axisModel = glm::scale(axisModel, glm::vec3(axisScale));
+            drawDebugMesh(
+                axisGizmo_,
+                camera.projection,
+                camera.view,
+                axisModel,
+                selected ? glm::vec4(1.0f, 0.92f, 0.40f, 1.0f) : glm::vec4(1.0f),
+                false
+            );
+
+            if (light.type == LightType::Point && lightSphere_.valid()) {
+                glm::mat4 sphereModel(1.0f);
+                sphereModel = glm::translate(sphereModel, light.position);
+                sphereModel = glm::scale(sphereModel, glm::vec3(light.radius));
+                drawDebugMesh(
+                    lightSphere_,
+                    camera.projection,
+                    camera.view,
+                    sphereModel,
+                    glm::vec4(light.color, selected ? 1.0f : kDebugVolumeAlpha),
+                    true
+                );
+            } else if (light.type == LightType::Spot && lightCone_.valid()) {
+                glm::mat4 coneModel(1.0f);
+                coneModel = glm::translate(coneModel, light.position);
+                coneModel *= makeOrientationFromDirection(light.direction);
+                const float coneRadius = light.radius * std::tan(glm::radians(light.outerAngle));
+                coneModel = glm::scale(coneModel, glm::vec3(coneRadius, coneRadius, light.radius));
+                drawDebugMesh(
+                    lightCone_,
+                    camera.projection,
+                    camera.view,
+                    coneModel,
+                    glm::vec4(light.color, selected ? 1.0f : kDebugVolumeAlpha),
+                    true
+                );
+            }
+        }
+        if (options.showLightDebug) {
+            const glm::vec3 dir = glm::normalize(directionalLightDirection);
+            glm::mat4 directionalModel(1.0f);
+            directionalModel = glm::translate(directionalModel, -dir * kDirectionalDebugAnchorDistance);
+            directionalModel *= makeOrientationFromDirection(dir);
+            directionalModel = glm::scale(directionalModel, glm::vec3(1.1f));
+            drawDebugMesh(axisGizmo_, camera.projection, camera.view, directionalModel, glm::vec4(1.0f), false);
+        }
     }
 
     glDisable(GL_BLEND);

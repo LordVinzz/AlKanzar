@@ -79,7 +79,8 @@ std::optional<EntityId> PickingSystem::pick(
     int viewportWidth,
     int viewportHeight,
     int mouseX,
-    int mouseY
+    int mouseY,
+    bool includeLights
 ) const {
     if (viewportWidth <= 0 || viewportHeight <= 0) {
         return std::nullopt;
@@ -120,23 +121,25 @@ std::optional<EntityId> PickingSystem::pick(
         }
     }
 
-    for (const FrameLight& light : frame.lights) {
-        glm::vec3 sphereCenter = light.position;
-        float sphereRadius = light.radius;
-        if (light.type == render::LightType::Spot) {
-            const float coneRadius = light.radius * std::tan(glm::radians(light.outerAngle));
-            sphereCenter = light.position + light.direction * (light.radius * 0.5f);
-            sphereRadius = std::sqrt((light.radius * 0.5f) * (light.radius * 0.5f) + coneRadius * coneRadius);
-        }
+    if (includeLights) {
+        for (const FrameLight& light : frame.lights) {
+            glm::vec3 sphereCenter = light.position;
+            float sphereRadius = light.radius;
+            if (light.type == render::LightType::Spot) {
+                const float coneRadius = light.radius * std::tan(glm::radians(light.outerAngle));
+                sphereCenter = light.position + light.direction * (light.radius * 0.5f);
+                sphereRadius = std::sqrt((light.radius * 0.5f) * (light.radius * 0.5f) + coneRadius * coneRadius);
+            }
 
-        float tHit = 0.0f;
-        if (!intersectRaySphere(ray, sphereCenter, sphereRadius, tHit)) {
-            continue;
-        }
-        if (tHit < bestT) {
-            bestT = tHit;
-            bestEntity = light.entity;
-            hit = true;
+            float tHit = 0.0f;
+            if (!intersectRaySphere(ray, sphereCenter, sphereRadius, tHit)) {
+                continue;
+            }
+            if (tHit < bestT) {
+                bestT = tHit;
+                bestEntity = light.entity;
+                hit = true;
+            }
         }
     }
 

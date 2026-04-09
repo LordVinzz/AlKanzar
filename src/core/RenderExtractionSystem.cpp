@@ -106,6 +106,7 @@ void RenderExtractionSystem::extract(
     outFrame.selection.isLight = world.pointLights.contains(selected) || world.spotLights.contains(selected);
     if (selected.index < world.transformCache_.size()) {
         outFrame.selection.worldBounds = world.transformCache_[selected.index].worldBounds;
+        outFrame.selection.hasWorldBounds = world.transformCache_[selected.index].hasWorldBounds;
     }
 
     const EntityId transformEntity = world.editableTransformEntity(selected);

@@ -66,6 +66,7 @@ struct SpotLightComponent {
 struct TransformCacheEntry {
     glm::mat4 worldMatrix{1.0f};
     render::Bounds3 worldBounds{};
+    bool hasWorldBounds{false};
     bool valid{false};
 };
 
