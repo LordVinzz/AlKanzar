@@ -9,6 +9,7 @@
 
 #include <glm/vec4.hpp>
 
+#include "Profiling.hpp"
 #include "RenderSceneView.hpp"
 
 namespace render {
@@ -67,6 +68,7 @@ public:
     ) const;
 
     void uploadDeferredLights(const FrameState& frame, DeferredBuffers& buffers) const;
+    [[nodiscard]] std::vector<ResourceMemoryRecord> profilingResources(const DeferredBuffers& buffers) const;
 };
 
 }  // namespace render

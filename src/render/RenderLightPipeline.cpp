@@ -180,4 +180,19 @@ void RenderLightPipeline::uploadDeferredLights(const FrameState& frame, Deferred
     glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, buffers.buffer);
 }
 
+std::vector<ResourceMemoryRecord> RenderLightPipeline::profilingResources(const DeferredBuffers& buffers) const {
+    if (buffers.buffer == 0 || buffers.size <= 0) {
+        return {};
+    }
+
+    return {
+        ResourceMemoryRecord{
+            "Deferred Light Buffer",
+            "Light Buffer",
+            0u,
+            static_cast<std::uint64_t>(buffers.size)
+        }
+    };
+}
+
 }  // namespace render

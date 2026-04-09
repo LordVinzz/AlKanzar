@@ -8,9 +8,14 @@
 #include <memory>
 #include <string>
 
+#include "Profiling.hpp"
 #include "RenderLightPipeline.hpp"
 #include "SceneGeometryRenderer.hpp"
 #include "SceneOverlayRenderer.hpp"
+
+namespace core {
+class ProfilerService;
+}
 
 namespace render {
 
@@ -27,6 +32,7 @@ struct RenderPathContext {
     SceneGeometryRenderer& geometryRenderer;
     SceneOverlayRenderer& overlayRenderer;
     ShadowSystem& shadowSystem;
+    core::ProfilerService* profiler{nullptr};
     glm::vec3 directionalLightDirection{0.0f, -1.0f, 0.0f};
     glm::vec3 directionalLightColor{1.0f};
     float directionalLightIntensity{0.0f};
@@ -41,6 +47,7 @@ public:
     virtual void render(const RenderPathContext& context) = 0;
     [[nodiscard]] virtual const char* name() const = 0;
     [[nodiscard]] virtual bool usesDeferredLighting() const = 0;
+    [[nodiscard]] virtual std::vector<ResourceMemoryRecord> profilingResources() const = 0;
 };
 
 class RenderPathBase : public IRenderPath {
@@ -62,6 +69,7 @@ public:
     void resize(int width, int height) override;
     [[nodiscard]] const char* name() const override { return "Simple Forward"; }
     [[nodiscard]] bool usesDeferredLighting() const override { return false; }
+    [[nodiscard]] std::vector<ResourceMemoryRecord> profilingResources() const override;
 
 protected:
     bool beginFrame(const RenderPathContext& context) override;
@@ -87,6 +95,7 @@ public:
     void resize(int width, int height) override;
     [[nodiscard]] const char* name() const override { return "Deferred 4.1"; }
     [[nodiscard]] bool usesDeferredLighting() const override { return true; }
+    [[nodiscard]] std::vector<ResourceMemoryRecord> profilingResources() const override;
 
 protected:
     bool beginFrame(const RenderPathContext& context) override;

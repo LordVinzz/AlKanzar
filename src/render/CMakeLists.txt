@@ -34,6 +34,7 @@ endif()
 add_library(alkanzar_render STATIC
     Geometry.cpp
     Material.cpp
+    Profiling.cpp
     RenderLightPipeline.cpp
     RenderEngine.cpp
     RenderPaths.cpp

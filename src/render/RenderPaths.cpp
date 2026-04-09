@@ -7,6 +7,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/trigonometric.hpp>
 
+#include "core/ProfilerService.hpp"
 #include "RenderSceneView.hpp"
 
 namespace {
@@ -27,49 +28,74 @@ void RenderPathBase::render(const RenderPathContext& context) {
     drawGeometry(context);
     composeFrame(context);
 
-    context.overlayRenderer.renderSelectionOverlay(
-        context.scene,
-        context.camera,
-        context.options,
-        context.width,
-        context.height
-    );
-    context.overlayRenderer.renderLightDebugOverlay(
-        context.scene,
-        context.lights,
-        context.camera,
-        context.options,
-        context.width,
-        context.height,
-        context.directionalLightDirection
-    );
+    if (context.profiler) {
+        ALKANZAR_PROFILE_SCOPE(*context.profiler, "Overlay Pass");
+        ALKANZAR_PROFILE_GPU_SCOPE(*context.profiler, "Overlay Pass");
+        context.overlayRenderer.renderSelectionOverlay(
+            context.scene,
+            context.camera,
+            context.options,
+            context.width,
+            context.height
+        );
+        context.overlayRenderer.renderLightDebugOverlay(
+            context.scene,
+            context.lights,
+            context.camera,
+            context.options,
+            context.width,
+            context.height,
+            context.directionalLightDirection
+        );
+    } else {
+        context.overlayRenderer.renderSelectionOverlay(
+            context.scene,
+            context.camera,
+            context.options,
+            context.width,
+            context.height
+        );
+        context.overlayRenderer.renderLightDebugOverlay(
+            context.scene,
+            context.lights,
+            context.camera,
+            context.options,
+            context.width,
+            context.height,
+            context.directionalLightDirection
+        );
+    }
 }
 
 void RenderPathBase::drawStandardSceneLayers(
     const RenderPathContext& context,
     const SceneGeometryShaderContext& shaderContext
 ) const {
-    context.geometryRenderer.drawLayer(
-        context.scene,
-        RenderLayer::Ground,
-        shaderContext,
-        context.materialBinder,
-        context.resources
-    );
-    context.geometryRenderer.drawLayer(
-        context.scene,
-        RenderLayer::Geometry,
-        shaderContext,
-        context.materialBinder,
-        context.resources
-    );
-    context.geometryRenderer.drawLayer(
-        context.scene,
-        RenderLayer::Actors,
-        shaderContext,
-        context.materialBinder,
-        context.resources
-    );
+    const auto drawLayer = [&](const char* label, RenderLayer layer) {
+        if (context.profiler) {
+            ALKANZAR_PROFILE_SCOPE(*context.profiler, label);
+            context.geometryRenderer.drawLayer(
+                context.scene,
+                layer,
+                shaderContext,
+                context.materialBinder,
+                context.resources
+            );
+            return;
+        }
+
+        context.geometryRenderer.drawLayer(
+            context.scene,
+            layer,
+            shaderContext,
+            context.materialBinder,
+            context.resources
+        );
+    };
+
+    drawLayer("Ground Layer", RenderLayer::Ground);
+    drawLayer("Geometry Layer", RenderLayer::Geometry);
+    drawLayer("Actors Layer", RenderLayer::Actors);
 }
 
 bool SimpleForwardPath::init(const std::string& shaderRoot, MaterialBinder& materialBinder, ShadowSystem&) {
@@ -116,6 +142,18 @@ void SimpleForwardPath::prepareTargets(const RenderPathContext& context) {
 }
 
 void SimpleForwardPath::drawGeometry(const RenderPathContext& context) {
+    if (context.profiler) {
+        ALKANZAR_PROFILE_SCOPE(*context.profiler, "Forward Geometry Pass");
+        ALKANZAR_PROFILE_GPU_SCOPE(*context.profiler, "Forward Geometry Pass");
+        shader_.use();
+        glUniformMatrix4fv(viewLocation_, 1, GL_FALSE, glm::value_ptr(context.camera.view));
+        glUniformMatrix4fv(projLocation_, 1, GL_FALSE, glm::value_ptr(context.camera.projection));
+        const glm::vec3 dirLightView = glm::normalize(glm::mat3(context.camera.view) * glm::normalize(context.directionalLightDirection));
+        glUniform3fv(lightDirLocation_, 1, glm::value_ptr(dirLightView));
+        drawStandardSceneLayers(context, geometryContext_);
+        return;
+    }
+
     shader_.use();
     glUniformMatrix4fv(viewLocation_, 1, GL_FALSE, glm::value_ptr(context.camera.view));
     glUniformMatrix4fv(projLocation_, 1, GL_FALSE, glm::value_ptr(context.camera.projection));
@@ -125,6 +163,10 @@ void SimpleForwardPath::drawGeometry(const RenderPathContext& context) {
 }
 
 void SimpleForwardPath::composeFrame(const RenderPathContext&) {}
+
+std::vector<ResourceMemoryRecord> SimpleForwardPath::profilingResources() const {
+    return {};
+}
 
 DeferredRenderPath::~DeferredRenderPath() {
     destroyResources();
@@ -241,7 +283,12 @@ bool DeferredRenderPath::beginFrame(const RenderPathContext& context) {
         return false;
     }
 
-    context.lightPipeline.uploadDeferredLights(context.lights, lightBuffers_);
+    if (context.profiler) {
+        ALKANZAR_PROFILE_SCOPE(*context.profiler, "Deferred Light Upload");
+        context.lightPipeline.uploadDeferredLights(context.lights, lightBuffers_);
+    } else {
+        context.lightPipeline.uploadDeferredLights(context.lights, lightBuffers_);
+    }
 
     const auto shadowRenderables = collectShadowRenderables(context.scene);
     const glm::vec3 dirLightWorld = glm::normalize(context.directionalLightDirection);
@@ -252,9 +299,27 @@ bool DeferredRenderPath::beginFrame(const RenderPathContext& context) {
         kNearPlane,
         kFarPlane
     );
-    context.shadowSystem.renderDirectionalShadows(shadowRenderables);
-    context.shadowSystem.renderSpotShadows(shadowRenderables);
-    context.shadowSystem.renderPointShadows(shadowRenderables);
+    if (context.profiler) {
+        {
+            ALKANZAR_PROFILE_SCOPE(*context.profiler, "Directional Shadow Pass");
+            ALKANZAR_PROFILE_GPU_SCOPE(*context.profiler, "Directional Shadow Pass");
+            context.shadowSystem.renderDirectionalShadows(shadowRenderables);
+        }
+        {
+            ALKANZAR_PROFILE_SCOPE(*context.profiler, "Spot Shadow Pass");
+            ALKANZAR_PROFILE_GPU_SCOPE(*context.profiler, "Spot Shadow Pass");
+            context.shadowSystem.renderSpotShadows(shadowRenderables);
+        }
+        {
+            ALKANZAR_PROFILE_SCOPE(*context.profiler, "Point Shadow Pass");
+            ALKANZAR_PROFILE_GPU_SCOPE(*context.profiler, "Point Shadow Pass");
+            context.shadowSystem.renderPointShadows(shadowRenderables);
+        }
+    } else {
+        context.shadowSystem.renderDirectionalShadows(shadowRenderables);
+        context.shadowSystem.renderSpotShadows(shadowRenderables);
+        context.shadowSystem.renderPointShadows(shadowRenderables);
+    }
     return true;
 }
 
@@ -279,6 +344,16 @@ void DeferredRenderPath::prepareTargets(const RenderPathContext& context) {
 }
 
 void DeferredRenderPath::drawGeometry(const RenderPathContext& context) {
+    if (context.profiler) {
+        ALKANZAR_PROFILE_SCOPE(*context.profiler, "GBuffer Pass");
+        ALKANZAR_PROFILE_GPU_SCOPE(*context.profiler, "GBuffer Pass");
+        geometryShader_.use();
+        glUniformMatrix4fv(gbufferViewLocation_, 1, GL_FALSE, glm::value_ptr(context.camera.view));
+        glUniformMatrix4fv(gbufferProjLocation_, 1, GL_FALSE, glm::value_ptr(context.camera.projection));
+        drawStandardSceneLayers(context, geometryContext_);
+        return;
+    }
+
     geometryShader_.use();
     glUniformMatrix4fv(gbufferViewLocation_, 1, GL_FALSE, glm::value_ptr(context.camera.view));
     glUniformMatrix4fv(gbufferProjLocation_, 1, GL_FALSE, glm::value_ptr(context.camera.projection));
@@ -286,6 +361,11 @@ void DeferredRenderPath::drawGeometry(const RenderPathContext& context) {
 }
 
 void DeferredRenderPath::composeFrame(const RenderPathContext& context) {
+    if (context.profiler) {
+        ALKANZAR_PROFILE_SCOPE(*context.profiler, "Lighting & Composition");
+        ALKANZAR_PROFILE_GPU_SCOPE(*context.profiler, "Lighting & Composition");
+    }
+
     const auto clearSamplers = [](int maxUnitExclusive) {
         for (int unit = 0; unit < maxUnitExclusive; ++unit) {
             glBindSampler(unit, 0);
@@ -627,6 +707,31 @@ void DeferredRenderPath::ensureResources(int width, int height) {
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+std::vector<ResourceMemoryRecord> DeferredRenderPath::profilingResources() const {
+    if (deferredWidth_ <= 0 || deferredHeight_ <= 0 || gbufferFbo_ == 0) {
+        return {};
+    }
+
+    std::vector<ResourceMemoryRecord> resources{
+        ResourceMemoryRecord{"GBuffer Albedo", "Render Target", 0u, estimateTextureStorageBytes(deferredWidth_, deferredHeight_, 1, TextureStorageFormat::RGBA8)},
+        ResourceMemoryRecord{"GBuffer Normal", "Render Target", 0u, estimateTextureStorageBytes(deferredWidth_, deferredHeight_, 1, TextureStorageFormat::RGBA16F)},
+        ResourceMemoryRecord{"GBuffer Emissive AO", "Render Target", 0u, estimateTextureStorageBytes(deferredWidth_, deferredHeight_, 1, TextureStorageFormat::RGBA16F)},
+        ResourceMemoryRecord{"GBuffer Clearcoat", "Render Target", 0u, estimateTextureStorageBytes(deferredWidth_, deferredHeight_, 1, TextureStorageFormat::RGBA16F)},
+        ResourceMemoryRecord{"GBuffer Depth Color", "Render Target", 0u, estimateTextureStorageBytes(deferredWidth_, deferredHeight_, 1, TextureStorageFormat::R32F)},
+        ResourceMemoryRecord{"GBuffer Depth", "Render Target", 0u, estimateTextureStorageBytes(deferredWidth_, deferredHeight_, 1, TextureStorageFormat::Depth24Stencil8)},
+        ResourceMemoryRecord{"Light Accumulation", "Render Target", 0u, estimateTextureStorageBytes(deferredWidth_, deferredHeight_, 1, TextureStorageFormat::RGBA16F)},
+    };
+    if (lightBuffers_.buffer != 0 && lightBuffers_.size > 0) {
+        resources.push_back(ResourceMemoryRecord{
+            "Deferred Light Buffer",
+            "Light Buffer",
+            0u,
+            static_cast<std::uint64_t>(lightBuffers_.size)
+        });
+    }
+    return resources;
 }
 
 }  // namespace render

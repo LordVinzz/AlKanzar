@@ -25,6 +25,8 @@ void MeshBuffer::destroy() {
         vao_ = 0;
     }
     indexCount_ = 0;
+    vertexBufferBytes_ = 0u;
+    indexBufferBytes_ = 0u;
 }
 
 bool MeshBuffer::upload(const Mesh& mesh) {
@@ -65,12 +67,14 @@ bool MeshBuffer::upload(const Mesh& mesh) {
     glBindVertexArray(vao_);
 
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices.size() * sizeof(float)), vertices.data(), GL_STATIC_DRAW);
+    vertexBufferBytes_ = vertices.size() * sizeof(float);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertexBufferBytes_), vertices.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo_);
+    indexBufferBytes_ = uploadMesh.indices.size() * sizeof(unsigned int);
     glBufferData(
         GL_ELEMENT_ARRAY_BUFFER,
-        static_cast<GLsizeiptr>(uploadMesh.indices.size() * sizeof(unsigned int)),
+        static_cast<GLsizeiptr>(indexBufferBytes_),
         uploadMesh.indices.data(),
         GL_STATIC_DRAW
     );

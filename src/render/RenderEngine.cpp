@@ -10,6 +10,7 @@
 #include <backends/imgui_impl_sdl2.h>
 #include <spdlog/spdlog.h>
 
+#include "core/ProfilerService.hpp"
 #include "RenderPaths.hpp"
 #include "SceneOverlayRenderer.hpp"
 
@@ -104,6 +105,14 @@ void RenderEngine::beginImGuiFrame() {
 
 void RenderEngine::renderImGui() {
     if (!imguiReady_) {
+        return;
+    }
+
+    if (profiler_) {
+        ALKANZAR_PROFILE_SCOPE(*profiler_, "ImGui Draw");
+        ALKANZAR_PROFILE_GPU_SCOPE(*profiler_, "ImGui Draw");
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         return;
     }
 
@@ -271,8 +280,19 @@ void RenderEngine::renderFrame(
         meshLookup.push_back(mesh.get());
     }
 
-    sceneView_ = buildRenderSceneView(frame, meshLookup);
-    lightFrame_ = lightPipeline_.buildFrame(sceneView_, camera.view, shadowSystem_, renderPath_->usesDeferredLighting());
+    if (profiler_) {
+        {
+            ALKANZAR_PROFILE_SCOPE(*profiler_, "Scene View Build");
+            sceneView_ = buildRenderSceneView(frame, meshLookup);
+        }
+        {
+            ALKANZAR_PROFILE_SCOPE(*profiler_, "Light Frame Build");
+            lightFrame_ = lightPipeline_.buildFrame(sceneView_, camera.view, shadowSystem_, renderPath_->usesDeferredLighting());
+        }
+    } else {
+        sceneView_ = buildRenderSceneView(frame, meshLookup);
+        lightFrame_ = lightPipeline_.buildFrame(sceneView_, camera.view, shadowSystem_, renderPath_->usesDeferredLighting());
+    }
 
     const RenderPathContext context{
         width_,
@@ -287,11 +307,57 @@ void RenderEngine::renderFrame(
         geometryRenderer_,
         *overlayRenderer_,
         shadowSystem_,
+        profiler_,
         directionalLightDirection_,
         directionalLightColor_,
         directionalLightIntensity_,
     };
+    if (profiler_) {
+        ALKANZAR_PROFILE_SCOPE(*profiler_, "Render Path");
+        renderPath_->render(context);
+        return;
+    }
+
     renderPath_->render(context);
+}
+
+std::vector<ResourceMemoryRecord> RenderEngine::profilingResources() const {
+    std::vector<ResourceMemoryRecord> resources{};
+
+    for (std::size_t index = 0; index < sceneMeshes_.size(); ++index) {
+        const std::unique_ptr<MeshBuffer>& mesh = sceneMeshes_[index];
+        if (!mesh || mesh->gpuBytes() == 0u) {
+            continue;
+        }
+        resources.push_back(ResourceMemoryRecord{
+            "Scene Mesh " + std::to_string(index),
+            "Mesh Buffer",
+            0u,
+            mesh->gpuBytes()
+        });
+    }
+
+    for (const std::shared_ptr<Texture>& texture : resourceRegistry_.profilingTextures()) {
+        if (!texture || !texture->valid()) {
+            continue;
+        }
+        resources.push_back(ResourceMemoryRecord{
+            texture->name,
+            "Texture",
+            estimateTextureCpuBytes(*texture),
+            estimateTextureGpuBytes(*texture)
+        });
+    }
+
+    const std::vector<ResourceMemoryRecord> shadowResources = shadowSystem_.profilingResources();
+    resources.insert(resources.end(), shadowResources.begin(), shadowResources.end());
+
+    if (renderPath_) {
+        const std::vector<ResourceMemoryRecord> pathResources = renderPath_->profilingResources();
+        resources.insert(resources.end(), pathResources.begin(), pathResources.end());
+    }
+
+    return resources;
 }
 
 }  // namespace render

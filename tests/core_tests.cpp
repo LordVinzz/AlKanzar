@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cmath>
 #include <cstdlib>
 #include <memory>
 #include <variant>
@@ -12,14 +13,20 @@
 #include "core/LightSystem.hpp"
 #include "core/MaterialLibrary.hpp"
 #include "core/PickingSystem.hpp"
+#include "core/ProfilerService.hpp"
 #include "core/RenderExtractionSystem.hpp"
 #include "core/SelectionModel.hpp"
 #include "core/TransformSystem.hpp"
 #include "core/World.hpp"
+#include "render/Profiling.hpp"
 #include "render/RenderLightPipeline.hpp"
 #include "render/RenderSceneView.hpp"
 
 namespace {
+
+bool nearlyEqual(double lhs, double rhs, double epsilon = 0.001) {
+    return std::abs(lhs - rhs) <= epsilon;
+}
 
 void testEntityPoolReuse() {
     core::EntityPool pool;
@@ -272,6 +279,126 @@ void testPickingSystemCanIgnoreLights() {
     assert(withoutLights->index == 1u);
 }
 
+void testProfilerScopeTreeAggregatesNestedScopes() {
+    const std::uint64_t mainThreadId = 77u;
+    const std::vector<core::ProfilerRecordedScope> scopes{
+        core::ProfilerRecordedScope{"Frame", core::ProfilerRecordedScope::kRoot, 0u, 100u, mainThreadId},
+        core::ProfilerRecordedScope{"Update", 0u, 10u, 70u, mainThreadId},
+        core::ProfilerRecordedScope{"Transform", 1u, 20u, 30u, mainThreadId},
+        core::ProfilerRecordedScope{"Transform", 1u, 40u, 50u, mainThreadId},
+        core::ProfilerRecordedScope{"Render", 0u, 75u, 95u, mainThreadId},
+    };
+
+    const std::vector<core::ProfilerScopeNode> tree = core::buildProfilerScopeTree(scopes, mainThreadId);
+    assert(tree.size() == 1u);
+    assert(tree[0].name == "Frame");
+    assert(tree[0].callCount == 1u);
+    assert(nearlyEqual(tree[0].totalMs, 0.0001));
+    assert(nearlyEqual(tree[0].selfMs, 0.00002));
+    assert(tree[0].children.size() == 2u);
+
+    const core::ProfilerScopeNode& update = tree[0].children[0];
+    assert(update.name == "Update");
+    assert(update.callCount == 1u);
+    assert(nearlyEqual(update.totalMs, 0.00006));
+    assert(nearlyEqual(update.selfMs, 0.00004));
+    assert(update.children.size() == 1u);
+
+    const core::ProfilerScopeNode& transform = update.children[0];
+    assert(transform.name == "Transform");
+    assert(transform.callCount == 2u);
+    assert(nearlyEqual(transform.totalMs, 0.00002));
+    assert(nearlyEqual(transform.selfMs, 0.00002));
+    assert(transform.thread == "Main");
+}
+
+void testProfilerServiceStartStopAndFrameRingBuffer() {
+    core::ProfilerConfig config{};
+    config.maxFrames = 2u;
+    config.maxCpuScopesPerFrame = 8u;
+    core::ProfilerService profiler(config);
+
+    profiler.startCapture();
+    for (int frame = 0; frame < 3; ++frame) {
+        profiler.beginFrame();
+        {
+            auto scope = profiler.scopedCpu("Frame");
+            (void)scope;
+        }
+        profiler.endFrame({});
+    }
+    profiler.waitForWorkerIdle();
+
+    auto snapshots = profiler.snapshots();
+    assert(snapshots.size() == 2u);
+    assert(snapshots.front()->frameNumber == 2u);
+    assert(snapshots.back()->frameNumber == 3u);
+
+    profiler.stopCapture();
+    profiler.beginFrame();
+    profiler.endFrame({});
+    profiler.waitForWorkerIdle();
+
+    snapshots = profiler.snapshots();
+    assert(snapshots.size() == 2u);
+    assert(snapshots.back()->frameNumber == 3u);
+    assert(!profiler.stats().capturing);
+}
+
+void testProfilerServiceDropsExcessCpuScopes() {
+    core::ProfilerConfig config{};
+    config.maxFrames = 4u;
+    config.maxCpuScopesPerFrame = 1u;
+    core::ProfilerService profiler(config);
+
+    profiler.startCapture();
+    profiler.beginFrame();
+    {
+        auto rootScope = profiler.scopedCpu("Root");
+        auto droppedScope = profiler.scopedCpu("Dropped");
+        (void)rootScope;
+        (void)droppedScope;
+    }
+    profiler.endFrame({});
+    profiler.waitForWorkerIdle();
+
+    const auto snapshots = profiler.snapshots();
+    assert(snapshots.size() == 1u);
+    assert(snapshots[0]->cpuScopes.size() == 1u);
+    assert(snapshots[0]->cpuScopes[0].name == "Root");
+    assert(profiler.stats().droppedCpuScopes == 1u);
+}
+
+void testProfilingMemoryEstimators() {
+    render::Texture texture{};
+    texture.width = 4;
+    texture.height = 4;
+    texture.format = render::Format::RGBA8;
+    texture.bytes.resize(4u * 4u * 4u);
+
+    const render::Mesh mesh{
+        std::vector<glm::vec3>(2, glm::vec3(0.0f)),
+        std::vector<glm::vec3>(2, glm::vec3(0.0f, 1.0f, 0.0f)),
+        std::vector<glm::vec4>(2, glm::vec4(1.0f, 0.0f, 0.0f, 1.0f)),
+        std::vector<std::vector<glm::vec2>>(2, std::vector<glm::vec2>(2, glm::vec2(0.0f))),
+        std::vector<glm::vec4>(2, glm::vec4(1.0f)),
+        std::vector<unsigned int>{0u, 1u, 0u}
+    };
+
+    const std::uint64_t textureCpuBytes = render::estimateTextureCpuBytes(texture);
+    const std::uint64_t textureGpuBytes = render::estimateTextureGpuBytes(texture);
+    const std::uint64_t shadowMapBytes = render::estimateTextureStorageBytes(16, 16, 4, render::TextureStorageFormat::Depth24);
+    const std::uint64_t renderTargetBytes = render::estimateTextureStorageBytes(8, 4, 1, render::TextureStorageFormat::Depth24Stencil8);
+    const render::MeshBufferMemoryEstimate meshBytes = render::estimateMeshBufferBytes(mesh);
+
+    assert(textureCpuBytes == 64u);
+    assert(textureGpuBytes == 84u);
+    assert(shadowMapBytes == 4096u);
+    assert(renderTargetBytes == 128u);
+    assert(meshBytes.vertexBytes == static_cast<std::uint64_t>(2u * 18u * sizeof(float)));
+    assert(meshBytes.indexBytes == static_cast<std::uint64_t>(3u * sizeof(unsigned int)));
+}
+
 }  // namespace
 
 int main() {
@@ -287,5 +414,9 @@ int main() {
     testRenderSceneViewBuildResolvesNodeSelection();
     testActiveLightSelectionDeduplicatesAcrossVolumes();
     testPickingSystemCanIgnoreLights();
+    testProfilerScopeTreeAggregatesNestedScopes();
+    testProfilerServiceStartStopAndFrameRingBuffer();
+    testProfilerServiceDropsExcessCpuScopes();
+    testProfilingMemoryEstimators();
     return EXIT_SUCCESS;
 }

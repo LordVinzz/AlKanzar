@@ -14,6 +14,7 @@
 #include <glm/vec3.hpp>
 
 #include "MeshBuffer.hpp"
+#include "Profiling.hpp"
 #include "ShaderProgram.hpp"
 
 namespace render {
@@ -194,6 +195,7 @@ public:
      * Returns the PCF radius for point shadows.
      */
     int pointPcfRadius() const { return pointPcfRadius_; }
+    [[nodiscard]] std::vector<ResourceMemoryRecord> profilingResources() const;
 
 private:
     /**

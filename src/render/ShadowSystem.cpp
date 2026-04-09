@@ -467,4 +467,48 @@ void ShadowSystem::renderPointShadows(const std::vector<ShadowRenderable>& rende
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+std::vector<ResourceMemoryRecord> ShadowSystem::profilingResources() const {
+    std::vector<ResourceMemoryRecord> resources{};
+    if (dirShadowMap_ != 0) {
+        resources.push_back(ResourceMemoryRecord{
+            "Directional Shadow Map",
+            "Shadow Map",
+            0u,
+            estimateTextureStorageBytes(
+                dirShadowResolution_,
+                dirShadowResolution_,
+                dirCascadeCount_,
+                TextureStorageFormat::Depth24
+            )
+        });
+    }
+    if (spotShadowMap_ != 0) {
+        resources.push_back(ResourceMemoryRecord{
+            "Spot Shadow Map Array",
+            "Shadow Map",
+            0u,
+            estimateTextureStorageBytes(
+                spotShadowResolution_,
+                spotShadowResolution_,
+                kMaxSpotShadows,
+                TextureStorageFormat::Depth24
+            )
+        });
+    }
+    if (pointShadowMap_ != 0) {
+        resources.push_back(ResourceMemoryRecord{
+            "Point Shadow Cube Array",
+            "Shadow Map",
+            0u,
+            estimateTextureStorageBytes(
+                pointShadowResolution_,
+                pointShadowResolution_,
+                kMaxPointShadows * 6,
+                TextureStorageFormat::Depth24
+            )
+        });
+    }
+    return resources;
+}
+
 }  // namespace render

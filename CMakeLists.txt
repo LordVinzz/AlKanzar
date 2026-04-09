@@ -23,6 +23,7 @@ add_library(alkanzar_core STATIC
     src/core/Camera.cpp
     src/core/LightSystem.cpp
     src/core/PickingSystem.cpp
+    src/core/ProfilerService.cpp
     src/core/RenderExtractionSystem.cpp
     src/core/SceneFactory.cpp
     src/core/SceneRegistry.cpp

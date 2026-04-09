@@ -16,10 +16,15 @@ void Application::run() {
 
     Uint32 previousTicks = SDL_GetTicks();
     while (services_.running) {
-        SDL_Event event;
-        while (SDL_PollEvent(&event) != 0) {
-            services_.renderer.processEvent(event);
-            translateSdlEvent(event);
+        services_.profiler.beginFrame();
+
+        {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Event Pump");
+            SDL_Event event;
+            while (SDL_PollEvent(&event) != 0) {
+                services_.renderer.processEvent(event);
+                translateSdlEvent(event);
+            }
         }
 
         services_.events.dispatch();
@@ -35,17 +40,27 @@ void Application::run() {
 
         services_.renderer.beginImGuiFrame();
         if (currentState_ != nullptr) {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "State Update");
             currentState_->update(services_);
         }
 
-        services_.transformSystem.update(services_.world);
-        services_.lightSystem.update(services_.world, services_.time);
-        services_.renderExtractionSystem.extract(
-            services_.world,
-            services_.materials,
-            services_.selection,
-            services_.frame
-        );
+        {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Transform Update");
+            services_.transformSystem.update(services_.world);
+        }
+        {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Light Update");
+            services_.lightSystem.update(services_.world, services_.time);
+        }
+        {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Render Extraction");
+            services_.renderExtractionSystem.extract(
+                services_.world,
+                services_.materials,
+                services_.selection,
+                services_.frame
+            );
+        }
 
         if (currentState_ != nullptr) {
             currentState_->renderUi(services_);
@@ -62,13 +77,23 @@ void Application::run() {
             services_.showLightDebug,
             currentMode_ == AppMode::Editor && services_.editorSession.sceneHierarchyVisible,
         };
-        services_.renderer.renderFrame(
-            services_.frame,
-            camera,
-            renderOptions
-        );
-        services_.renderer.renderImGui();
-        services_.renderer.present();
+        {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Render Frame");
+            services_.renderer.renderFrame(
+                services_.frame,
+                camera,
+                renderOptions
+            );
+        }
+        {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "ImGui Render");
+            services_.renderer.renderImGui();
+        }
+        {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Present");
+            services_.renderer.present();
+        }
+        services_.profiler.endFrame(services_.renderer.profilingResources());
 
         if (services_.requestedMode.has_value()) {
             transitionTo(*services_.requestedMode);

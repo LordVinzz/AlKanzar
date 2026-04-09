@@ -26,6 +26,7 @@ public:
     [[nodiscard]] const TextureRef& defaultTextureForSlot(MaterialTextureSlot slot) const;
     [[nodiscard]] const TextureRef& defaultTextureForUnit(int unit) const;
     [[nodiscard]] std::vector<std::shared_ptr<Texture>> textureCatalog(TextureSemantic preferredSemantic) const;
+    [[nodiscard]] const std::vector<std::shared_ptr<Texture>>& profilingTextures() const { return textures_; }
     [[nodiscard]] void* texturePreviewId(const std::shared_ptr<Texture>& texture);
 
     bool ensureTextureUploaded(Texture& texture) const;

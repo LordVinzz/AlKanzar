@@ -5,6 +5,8 @@
 
 #include <SDL_opengl.h>
 
+#include <cstddef>
+
 #include "Geometry.hpp"
 namespace render {
 
@@ -49,6 +51,9 @@ public:
      * @return true if VAO/VBO/EBO are created and index count is non-zero.
      */
     bool valid() const { return vao_ != 0 && vbo_ != 0 && ebo_ != 0 && indexCount_ > 0; }
+    [[nodiscard]] std::size_t vertexBufferBytes() const { return vertexBufferBytes_; }
+    [[nodiscard]] std::size_t indexBufferBytes() const { return indexBufferBytes_; }
+    [[nodiscard]] std::size_t gpuBytes() const { return vertexBufferBytes_ + indexBufferBytes_; }
 
 private:
     /**
@@ -60,6 +65,8 @@ private:
     GLuint vbo_{0};
     GLuint ebo_{0};
     GLsizei indexCount_{0};
+    std::size_t vertexBufferBytes_{0u};
+    std::size_t indexBufferBytes_{0u};
 };
 
 }  // namespace render

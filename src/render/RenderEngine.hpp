@@ -16,6 +16,7 @@
 #include "Geometry.hpp"
 #include "Material.hpp"
 #include "MeshBuffer.hpp"
+#include "Profiling.hpp"
 #include "RenderLightPipeline.hpp"
 #include "RenderResourceRegistry.hpp"
 #include "RenderSceneView.hpp"
@@ -27,6 +28,14 @@ namespace render {
 
 class IRenderPath;
 class SceneOverlayRenderer;
+
+}  // namespace render
+
+namespace core {
+class ProfilerService;
+}
+
+namespace render {
 
 class RenderEngine {
 public:
@@ -44,6 +53,7 @@ public:
     void present() const;
     [[nodiscard]] bool wantsMouse() const;
     [[nodiscard]] bool wantsKeyboard() const;
+    void setProfiler(core::ProfilerService* profiler) { profiler_ = profiler; }
     void renderFrame(
         const core::FrameSceneData& frame,
         const CameraMatrices& camera,
@@ -55,6 +65,7 @@ public:
     [[nodiscard]] const std::shared_ptr<Sampler>& defaultSampler() const { return resourceRegistry_.defaultSampler(); }
     [[nodiscard]] std::vector<std::shared_ptr<Texture>> textureCatalog(TextureSemantic preferredSemantic) const;
     [[nodiscard]] void* texturePreviewId(const std::shared_ptr<Texture>& texture);
+    [[nodiscard]] std::vector<ResourceMemoryRecord> profilingResources() const;
     [[nodiscard]] int width() const { return width_; }
     [[nodiscard]] int height() const { return height_; }
 
@@ -80,6 +91,7 @@ private:
     ShadowSystem shadowSystem_{};
     std::unique_ptr<SceneOverlayRenderer> overlayRenderer_{};
     std::unique_ptr<IRenderPath> renderPath_{};
+    core::ProfilerService* profiler_{nullptr};
 
     glm::vec3 directionalLightDirection_{0.0f, -1.0f, 0.0f};
     glm::vec3 directionalLightColor_{0.0f};

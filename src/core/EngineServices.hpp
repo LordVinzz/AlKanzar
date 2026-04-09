@@ -12,6 +12,7 @@
 #include "LightSystem.hpp"
 #include "MaterialLibrary.hpp"
 #include "PickingSystem.hpp"
+#include "ProfilerService.hpp"
 #include "RenderExtractionSystem.hpp"
 #include "SceneFactory.hpp"
 #include "SceneRegistry.hpp"
@@ -32,9 +33,12 @@ struct InputSession {
 struct EngineServices {
     explicit EngineServices(int width, int height)
         : renderer(width, height),
-          events(512u) {}
+          events(512u) {
+        renderer.setProfiler(&profiler);
+    }
 
     render::RenderEngine renderer;
+    ProfilerService profiler;
     EventBus<AppEvent> events;
     CommandHistory commands;
     SelectionModel selection;

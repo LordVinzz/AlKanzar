@@ -17,6 +17,9 @@ struct EditorSession {
     bool textureBrowserFocusRequested{false};
     bool sceneHierarchyVisible{false};
     bool sceneHierarchyFocusRequested{false};
+    bool profilerWindowVisible{true};
+    bool profilerFollowLatest{true};
+    int profilerSelectedFrame{0};
     std::array<char, 128> textureBrowserSearch{};
 };
 
