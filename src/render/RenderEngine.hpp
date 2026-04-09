@@ -8,18 +8,24 @@
 
 #include <cstdint>
 #include <functional>
-#include <initializer_list>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include <glm/mat3x3.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
+#include "Geometry.hpp"
+#include "Material.hpp"
 #include "MeshBuffer.hpp"
 #include "LightExecutionVolume.hpp"
 #include "ShadowSystem.hpp"
 #include "ShaderProgram.hpp"
+#include "StaticGltfModel.hpp"
 
 namespace render {
 
@@ -31,41 +37,31 @@ enum class RenderLayer {
 
 class RenderEngine {
 public:
-    /**
-     * Creates a render engine with the requested window size and title.
-     * @param width Initial window width in pixels.
-     * @param height Initial window height in pixels.
-     * @param title Window title string.
-     */
     RenderEngine(int width, int height, std::string title = "AlKanzar - Render Preview");
-    /**
-     * Releases GL resources and destroys the SDL window/context.
-     */
     ~RenderEngine();
 
-    /**
-     * Non-copyable to avoid duplicating SDL/GL resources.
-     */
     RenderEngine(const RenderEngine&) = delete;
-    /**
-     * Non-copyable assignment to avoid duplicating SDL/GL resources.
-     */
     RenderEngine& operator=(const RenderEngine&) = delete;
 
-    /**
-     * Initializes the SDL window, GL context, and scene resources.
-     * @return true when initialization succeeds or was already done.
-     */
     bool init();
-    /**
-     * Runs the main event/render loop until quit.
-     */
     void run();
 
 private:
     enum class RendererPath {
         SimpleForward,
         Deferred41,
+    };
+
+    enum class MaterialTextureSlot {
+        BaseColor = 0,
+        MetallicRoughness,
+        Normal,
+        Ao,
+        Emissive,
+        Alpha,
+        Clearcoat,
+        DetailNormal,
+        Height,
     };
 
     enum class DebugView : int {
@@ -83,6 +79,62 @@ private:
     enum class LightType : uint32_t {
         Point = 0,
         Spot = 1,
+    };
+
+public:
+    struct Bounds3 {
+        glm::vec3 min{0.0f};
+        glm::vec3 max{0.0f};
+    };
+
+private:
+    struct TransformState {
+        glm::vec3 position{0.0f};
+        glm::vec3 rotationDeg{0.0f};
+        glm::vec3 scale{1.0f};
+    };
+
+    enum class SceneObjectKind {
+        Ground,
+        Wall,
+        Model,
+    };
+
+    struct SceneObject {
+        int id{0};
+        std::string name;
+        std::string materialLabel;
+        SceneObjectKind kind{SceneObjectKind::Model};
+        RenderLayer renderLayer{RenderLayer::Geometry};
+        MeshBuffer* mesh{nullptr};
+        std::shared_ptr<Material> material;
+        Bounds3 localBounds{};
+        std::shared_ptr<TransformState> transform;
+        bool visible{true};
+    };
+
+    enum class SelectedEntityType {
+        SceneObject,
+        Light,
+    };
+
+    enum class InspectorTab {
+        Selection = 0,
+        TextureBrowser,
+    };
+
+    struct SelectedEntity {
+        SelectedEntityType type{SelectedEntityType::SceneObject};
+        int index{-1};
+    };
+
+    struct EditorState {
+        bool enabled{false};
+        std::optional<SelectedEntity> selection{};
+        InspectorTab activeInspectorTab{InspectorTab::Selection};
+        MaterialTextureSlot textureBrowserSlot{MaterialTextureSlot::BaseColor};
+        bool textureBrowserFocusRequested{false};
+        char textureBrowserSearch[128]{};
     };
 
     struct LightInstance {
@@ -132,132 +184,133 @@ private:
         LightType type{LightType::Point};
     };
 
-    /**
-     * Handles input/window events and updates camera controls and debug view.
-     * @param event SDL event to process.
-     * @param running Set to false to exit the main loop.
-     */
-    void handleEvent(const SDL_Event& event, bool& running);
-    /**
-     * Updates viewport, projection, and view matrices from current camera state.
-     */
-    void updateProjection();
-    /**
-     * Advances the orbit camera animation when model lock is enabled.
-     */
-    void updateOrbitCamera();
-    /**
-     * Chooses the rendering path based on GL version support.
-     */
-    void detectLightingCapabilities();
-    /**
-     * Renders a single frame using the active renderer path.
-     */
-    void renderScene();
-    /**
-     * Builds shaders, meshes, and uploads scene geometry.
-     */
-    void buildScene();
-    /**
-     * Loads and uploads the static character mesh.
-     * @return true when the character is ready to render.
-     */
-    bool buildCharacterMesh();
-    /**
-     * Loads, fits, and uploads the static house mesh.
-     * @return true when the house is ready to render.
-     */
-    bool buildHouseMesh();
-    /**
-     * Initializes the light list used by deferred rendering.
-     */
-    void buildLights();
-    /**
-     * Animates lights, updates GPU buffers, and counts light types.
-     */
-    void updateLights();
-    /**
-     * Allocates or resizes deferred G-buffer and light targets.
-     */
-    void ensureDeferredResources();
-    /**
-     * Releases deferred rendering GPU resources.
-     */
-    void destroyDeferredResources();
-    /**
-     * Builds sphere/cone meshes for light volumes.
-     * @return true when both meshes upload successfully.
-     */
-    bool buildVolumeMeshes();
-    /**
-     * Renders the scene using the deferred 4.1 path.
-     */
-    void renderDeferredScene();
-    /**
-     * Renders the scene using the simple forward path.
-     */
-    void renderSimpleScene();
-    /**
-     * Builds meshes used by the light debug overlay.
-     * @return true when the overlay meshes upload successfully.
-     */
-    bool buildDebugMeshes();
-    /**
-     * Draws world-space light gizmos and bounds when enabled.
-     */
-    void renderLightDebugOverlay();
-    /**
-     * Draws one debug mesh with a model transform and color tint.
-     * @param mesh Mesh to render.
-     * @param model World transform.
-     * @param color RGBA tint applied in the debug shader.
-     * @param wireframe Whether to render the mesh in wireframe mode.
-     */
-    void drawDebugMesh(const MeshBuffer& mesh, const glm::mat4& model, const glm::vec4& color, bool wireframe) const;
+    struct MaterialUniformLocations {
+        GLint baseColorFactor{-1};
+        GLint metallicFactor{-1};
+        GLint roughnessFactor{-1};
+        GLint normalScale{-1};
+        GLint aoStrength{-1};
+        GLint emissiveFactor{-1};
+        GLint emissiveStrength{-1};
+        GLint alphaFactor{-1};
+        GLint alphaMode{-1};
+        GLint alphaCutoff{-1};
+        GLint clearcoatFactor{-1};
+        GLint clearcoatRoughness{-1};
+        GLint detailNormalScale{-1};
+        GLint heightScale{-1};
+        GLint baseColorUvSet{-1};
+        GLint metallicRoughnessUvSet{-1};
+        GLint normalUvSet{-1};
+        GLint aoUvSet{-1};
+        GLint emissiveUvSet{-1};
+        GLint alphaUvSet{-1};
+        GLint clearcoatUvSet{-1};
+        GLint detailNormalUvSet{-1};
+        GLint heightUvSet{-1};
+        GLint baseColorUvTransform{-1};
+        GLint metallicRoughnessUvTransform{-1};
+        GLint normalUvTransform{-1};
+        GLint aoUvTransform{-1};
+        GLint emissiveUvTransform{-1};
+        GLint alphaUvTransform{-1};
+        GLint clearcoatUvTransform{-1};
+        GLint detailNormalUvTransform{-1};
+        GLint heightUvTransform{-1};
+    };
 
-    /**
-     * Draws meshes for a layer with appropriate depth mask behavior.
-     * @param layer Render layer to determine depth writes.
-     * @param meshes Mesh buffers to draw.
-     */
-    void drawLayer(RenderLayer layer, std::initializer_list<const MeshBuffer*> meshes) const;
-    /**
-     * Draws the imported character mesh.
-     */
-    void drawCharacter() const;
-    /**
-     * Draws the imported house mesh.
-     */
-    void drawHouse() const;
-    /**
-     * Assigns a static light to its owning execution volume.
-     * @param lightIndex Index into lights_.
-     */
+    bool initImGui();
+    void shutdownImGui();
+    void beginImGuiFrame();
+    void renderEditorUi();
+    void renderImGui();
+
+    void handleEvent(const SDL_Event& event, bool& running);
+    void updateProjection();
+    void updateOrbitCamera();
+    void detectLightingCapabilities();
+    void renderScene();
+    void buildScene();
+    void buildLights();
+    void updateLights();
+    void ensureDeferredResources();
+    void destroyDeferredResources();
+    bool buildVolumeMeshes();
+    bool buildDebugMeshes();
+    void renderDeferredScene();
+    void renderSimpleScene();
+    void renderLightDebugOverlay(bool includeSelectedLight) const;
+    void renderSelectionOverlay() const;
+    void drawDebugMesh(const MeshBuffer& mesh, const glm::mat4& model, const glm::vec4& color, bool wireframe) const;
+    void drawSceneObjectSimple(const SceneObject& object) const;
+    void drawSceneObjectDeferred(const SceneObject& object) const;
+    void drawSceneLayerSimple(RenderLayer layer) const;
+    void drawSceneLayerDeferred(RenderLayer layer) const;
+    std::vector<ShadowSystem::ShadowRenderable> collectShadowRenderables() const;
     void assignStaticLightToVolume(int lightIndex);
-    /**
-     * Removes a static light from all execution volumes.
-     * @param lightIndex Index into lights_.
-     */
     void removeStaticLightFromVolumes(int lightIndex);
-    /**
-     * Rebuilds movable-light ownership for all volumes using current runtime transforms.
-     * @param timeSeconds Current scene time in seconds.
-     */
     void rebuildMovableAssignments(float timeSeconds);
-    /**
-     * Handles isMovable changes coming from LightInstance callbacks.
-     * @param lightIndex Index into lights_.
-     * @param isMovable New movable state.
-     */
     void handleLightMovableChanged(int lightIndex, bool isMovable);
-    /**
-     * Computes the current world-space transform of a light from authored data.
-     * @param light Source light.
-     * @param timeSeconds Current scene time in seconds.
-     * @param position Output light position.
-     * @param direction Output spotlight direction, if any.
-     */
     void evaluateLightTransform(const LightInstance& light, float timeSeconds, glm::vec3& position, glm::vec3& direction) const;
+    glm::mat4 composeTransform(const TransformState& transform) const;
+    glm::mat3 normalMatrixFromModel(const glm::mat4& model) const;
+    Bounds3 transformBounds(const Bounds3& bounds, const glm::mat4& model) const;
+    Bounds3 sceneObjectWorldBounds(const SceneObject& object) const;
+    bool pickSceneEntity(int mouseX, int mouseY, SelectedEntity& outSelection) const;
+    void handleViewportClick(int mouseX, int mouseY);
+    const char* rendererPathName() const;
+    std::string selectionSummary() const;
+    float currentTimeSeconds() const;
+    bool buildTextureLibrary();
+    void destroyTextureLibrary();
+    MeshBuffer* createSceneMesh(const Mesh& mesh);
+    std::shared_ptr<Texture> registerTexture(const std::shared_ptr<Texture>& texture);
+    std::shared_ptr<Sampler> registerSampler(const std::shared_ptr<Sampler>& sampler);
+    bool ensureTextureUploaded(Texture& texture) const;
+    bool ensureSamplerUploaded(Sampler& sampler) const;
+    void bindTextureRef(int unit, const TextureRef& ref) const;
+    const TextureRef& defaultTextureForSlot(MaterialTextureSlot slot) const;
+    const TextureRef& defaultTextureForUnit(int unit) const;
+    void prebindMaterialDefaults() const;
+    std::vector<std::shared_ptr<Texture>> runtimeTextureCatalog(TextureSemantic preferredSemantic) const;
+    void ensureInlineTexture(TextureRef& ref, const std::string& name, TextureSemantic semantic, const glm::vec4& value);
+    TextureSemantic textureSemanticForSlot(MaterialTextureSlot slot) const;
+    glm::vec4 defaultInlineValueForSlot(MaterialTextureSlot slot) const;
+    const char* materialTextureSlotName(MaterialTextureSlot slot) const;
+    TextureRef* textureRefForSlot(Material& material, MaterialTextureSlot slot) const;
+    void openTextureBrowser(MaterialTextureSlot slot);
+    void renderTextureBrowserTab(Material& material);
+    bool drawTextureSlotEditor(
+        const char* label,
+        const std::string& materialName,
+        MaterialTextureSlot slot,
+        TextureRef& ref,
+        const TextureRef& resolved
+    );
+    ShaderInputs resolveMaterialInputs(const Material& material) const;
+    void bindMaterialUniforms(const ShaderInputs& inputs, const MaterialUniformLocations& locations) const;
+    void configureMaterialRasterState(const ShaderInputs& inputs) const;
+    std::shared_ptr<Material> createProceduralMaterial(
+        const std::string& name,
+        const std::shared_ptr<Texture>& baseColor,
+        const std::shared_ptr<Texture>& normal,
+        const std::shared_ptr<Texture>& metallicRoughness,
+        const std::shared_ptr<Texture>& ao,
+        const std::shared_ptr<Texture>& height,
+        const glm::vec3& tint,
+        const glm::vec2& uvScale,
+        float clearcoatFactor,
+        float clearcoatRoughness,
+        float detailNormalScale
+    );
+    void appendModelObjects(
+        const std::string& modelName,
+        SceneObjectKind kind,
+        RenderLayer layer,
+        const StaticModelData& model,
+        const std::shared_ptr<TransformState>& transformState,
+        int& nextId
+    );
 
     SDL_Window* window_{nullptr};
     SDL_GLContext glContext_{nullptr};
@@ -274,6 +327,7 @@ private:
     int lastMouseX_{0};
     int lastMouseY_{0};
     std::string title_;
+    bool imguiReady_{false};
 
     ShaderProgram simpleShader_;
     ShaderProgram deferredGeometryShader_;
@@ -281,20 +335,21 @@ private:
     ShaderProgram deferredVolumeShader_;
     ShaderProgram deferredCompositeShader_;
     ShaderProgram debugColorShader_;
-    MeshBuffer ground_;
-    MeshBuffer wallA_;
-    MeshBuffer wallB_;
-    MeshBuffer character_;
-    MeshBuffer house_;
     MeshBuffer lightSphere_;
     MeshBuffer lightCone_;
     MeshBuffer axisGizmo_;
-    GLint simpleMvpLocation_{-1};
+    MeshBuffer selectionBox_;
+    GLint simpleModelLocation_{-1};
+    GLint simpleViewLocation_{-1};
+    GLint simpleProjLocation_{-1};
+    GLint simpleNormalMatrixLocation_{-1};
     GLint simpleLightDirLocation_{-1};
-    GLint gbufferMvpLocation_{-1};
+    MaterialUniformLocations simpleMaterialLocations_{};
+    GLint gbufferModelLocation_{-1};
     GLint gbufferViewLocation_{-1};
-    GLint gbufferMetallicLocation_{-1};
-    GLint gbufferRoughnessLocation_{-1};
+    GLint gbufferProjLocation_{-1};
+    GLint gbufferNormalMatrixLocation_{-1};
+    MaterialUniformLocations gbufferMaterialLocations_{};
     GLint deferredInvProjLocation_{-1};
     GLint deferredDirLightDirLocation_{-1};
     GLint deferredDirLightColorLocation_{-1};
@@ -342,6 +397,8 @@ private:
     GLuint gbufferFbo_{0};
     GLuint gbufferAlbedo_{0};
     GLuint gbufferNormal_{0};
+    GLuint gbufferEmissiveAo_{0};
+    GLuint gbufferClearcoat_{0};
     GLuint gbufferDepthColor_{0};
     GLuint gbufferDepth_{0};
     GLuint lightFbo_{0};
@@ -366,11 +423,27 @@ private:
     ShadowSystem shadowSystem_{};
     DirectionalLightDebug directionalLight_{};
 
+    std::vector<std::shared_ptr<Texture>> textures_;
+    std::vector<std::shared_ptr<Sampler>> samplers_;
+    std::vector<std::unique_ptr<MeshBuffer>> sceneMeshes_;
+    std::shared_ptr<Sampler> defaultSampler_{};
+    TextureRef defaultBaseColorTexture_{};
+    TextureRef defaultNormalTexture_{};
+    TextureRef defaultMetallicRoughnessTexture_{};
+    TextureRef defaultAoTexture_{};
+    TextureRef defaultEmissiveTexture_{};
+    TextureRef defaultAlphaTexture_{};
+    TextureRef defaultClearcoatTexture_{};
+    TextureRef defaultDetailNormalTexture_{};
+    TextureRef defaultHeightTexture_{};
+
     std::vector<LightInstance> lights_;
     std::vector<GpuLight> gpuLights_;
     std::vector<ActiveLightDebug> lightDebugInstances_;
     std::vector<int> activeLightIndices_;
     std::vector<LightExecutionVolume> lightVolumes_;
+    std::vector<SceneObject> sceneObjects_;
+    EditorState editorState_{};
     bool movableAssignmentsDirty_{false};
 
     glm::mat4 projection_{1.0f};

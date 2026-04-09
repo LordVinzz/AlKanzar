@@ -1,33 +1,25 @@
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "Geometry.hpp"
+#include "Material.hpp"
+
 namespace render {
 
-/**
- * Flattened static mesh data ready for MeshBuffer upload.
- */
-struct StaticMeshData {
-    std::vector<float> vertices;
-    std::vector<unsigned int> indices;
+struct StaticMeshSection {
+    std::string name;
+    Mesh mesh;
+    std::shared_ptr<Material> material;
 };
 
-/**
- * Loads a GLB mesh, applies default-pose skinning when present, and recenters it
- * on the scene origin while keeping the lowest point on the ground plane.
- * @param path Path to the GLB asset.
- * @param outMesh Receives interleaved position/normal/color vertices and indices.
- * @return true when the model data is loaded successfully.
- */
-bool loadStaticGltfModel(const std::string& path, StaticMeshData& outMesh);
+struct StaticModelData {
+    std::vector<StaticMeshSection> sections;
+};
 
-/**
- * Backward-compatible wrapper for the original character-loading entry point.
- * @param path Path to the GLB asset.
- * @param outMesh Receives interleaved position/normal/color vertices and indices.
- * @return true when the model data is loaded successfully.
- */
-bool loadStaticCharacterModel(const std::string& path, StaticMeshData& outMesh);
+bool loadStaticGltfModel(const std::string& path, StaticModelData& outModel);
+bool loadStaticCharacterModel(const std::string& path, StaticModelData& outModel);
 
 }  // namespace render

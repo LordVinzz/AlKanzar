@@ -5,6 +5,8 @@ out vec4 FragColor;
 
 uniform sampler2D uGAlbedoMetal;
 uniform sampler2D uGNormalRough;
+uniform sampler2D uGEmissiveAo;
+uniform sampler2D uGClearcoat;
 uniform sampler2D uDepth;
 uniform sampler2DArray uShadowMap;
 uniform mat4 uShadowMatrices[MAX_CASCADES];
@@ -52,11 +54,16 @@ void main() {
 
     vec4 albedoMetal = texture(uGAlbedoMetal, vUv);
     vec4 normalRough = texture(uGNormalRough, vUv);
+    vec4 emissiveAo = texture(uGEmissiveAo, vUv);
+    vec2 clearcoatSample = texture(uGClearcoat, vUv).rg;
 
     vec3 albedo = albedoMetal.rgb;
     float metallic = albedoMetal.a;
     vec3 normal = normalize(normalRough.xyz);
     float roughness = normalRough.a;
+    float ao = emissiveAo.a;
+    float clearcoat = clearcoatSample.x;
+    float clearcoatRoughness = clearcoatSample.y;
 
     vec3 viewPos = reconstructViewPos(vUv, depth);
     vec3 V = normalize(-viewPos);
@@ -64,12 +71,14 @@ void main() {
     vec3 H = normalize(L + V);
 
     float ndotl = max(dot(normal, L), 0.0);
-    float specPower = mix(64.0, 4.0, roughness);
+    float specPower = mix(96.0, 6.0, roughness);
     float spec = pow(max(dot(normal, H), 0.0), specPower);
 
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
     vec3 diffuse = (1.0 - metallic) * albedo / 3.14159265;
     vec3 specular = F0 * spec;
+    float clearcoatSpecPower = mix(144.0, 12.0, clearcoatRoughness);
+    vec3 clearcoatSpecular = vec3(0.04 * clearcoat * pow(max(dot(normal, H), 0.0), clearcoatSpecPower));
 
     float viewDepth = -viewPos.z;
     int cascade = 0;
@@ -85,8 +94,9 @@ void main() {
     float bias = max(uShadowBiasMin, uShadowBiasSlope * (1.0 - ndotl));
     float shadow = sampleShadowMap(shadowCoord, cascade, bias);
 
-    vec3 color = uAmbient * albedo;
-    color += (diffuse + specular) * uDirLightColor * uDirLightIntensity * ndotl * shadow;
+    float visibility = mix(1.0, ao, 0.35);
+    vec3 color = uAmbient * albedo * ao;
+    color += (diffuse + specular + clearcoatSpecular) * uDirLightColor * uDirLightIntensity * ndotl * shadow * visibility;
 
     FragColor = vec4(color, 1.0);
 }

@@ -57,7 +57,8 @@ bool ShadowSystem::init(const std::string& shaderRoot) {
         spdlog::error("ShadowSystem: failed to build shadow depth shader");
         return false;
     }
-    shadowMvpLocation_ = shadowDepthShader_.uniformLocation("uLightMVP");
+    shadowModelLocation_ = shadowDepthShader_.uniformLocation("uModel");
+    shadowViewProjLocation_ = shadowDepthShader_.uniformLocation("uLightViewProj");
     shadowModeLocation_ = shadowDepthShader_.uniformLocation("uShadowMode");
     shadowLightPositionLocation_ = shadowDepthShader_.uniformLocation("uLightPositionWorld");
     shadowFarPlaneLocation_ = shadowDepthShader_.uniformLocation("uLightFarPlane");
@@ -120,6 +121,8 @@ void ShadowSystem::ensureDirectionalResources() {
     );
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_MODE, GL_NONE);
@@ -156,6 +159,8 @@ void ShadowSystem::ensureSpotResources() {
     );
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_MODE, GL_NONE);
@@ -192,6 +197,8 @@ void ShadowSystem::ensurePointResources() {
     );
     glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_MAX_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
@@ -344,7 +351,7 @@ int ShadowSystem::registerPointShadow(const PointShadowDesc& desc) {
     return idx;
 }
 
-void ShadowSystem::renderDirectionalShadows(std::initializer_list<const MeshBuffer*> meshes) const {
+void ShadowSystem::renderDirectionalShadows(const std::vector<ShadowRenderable>& renderables) const {
     if (dirShadowMap_ == 0 || dirShadowFbo_ == 0 || dirCascadeCount_ == 0) {
         return;
     }
@@ -365,9 +372,13 @@ void ShadowSystem::renderDirectionalShadows(std::initializer_list<const MeshBuff
     for (int cascade = 0; cascade < dirCascadeCount_; ++cascade) {
         glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, dirShadowMap_, 0, cascade);
         glClear(GL_DEPTH_BUFFER_BIT);
-        glUniformMatrix4fv(shadowMvpLocation_, 1, GL_FALSE, glm::value_ptr(dirShadowViewProj_[cascade]));
-        for (const MeshBuffer* mesh : meshes) {
-            mesh->draw();
+        glUniformMatrix4fv(shadowViewProjLocation_, 1, GL_FALSE, glm::value_ptr(dirShadowViewProj_[cascade]));
+        for (const ShadowRenderable& renderable : renderables) {
+            if (!renderable.mesh || !renderable.mesh->valid()) {
+                continue;
+            }
+            glUniformMatrix4fv(shadowModelLocation_, 1, GL_FALSE, glm::value_ptr(renderable.modelMatrix));
+            renderable.mesh->draw();
         }
     }
 
@@ -377,7 +388,7 @@ void ShadowSystem::renderDirectionalShadows(std::initializer_list<const MeshBuff
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-void ShadowSystem::renderSpotShadows(std::initializer_list<const MeshBuffer*> meshes) const {
+void ShadowSystem::renderSpotShadows(const std::vector<ShadowRenderable>& renderables) const {
     if (spotShadowMap_ == 0 || spotShadowFbo_ == 0 || spotShadowCount_ == 0) {
         return;
     }
@@ -398,9 +409,13 @@ void ShadowSystem::renderSpotShadows(std::initializer_list<const MeshBuffer*> me
     for (int i = 0; i < spotShadowCount_; ++i) {
         glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, spotShadowMap_, 0, i);
         glClear(GL_DEPTH_BUFFER_BIT);
-        glUniformMatrix4fv(shadowMvpLocation_, 1, GL_FALSE, glm::value_ptr(spotShadowViewProj_[i]));
-        for (const MeshBuffer* mesh : meshes) {
-            mesh->draw();
+        glUniformMatrix4fv(shadowViewProjLocation_, 1, GL_FALSE, glm::value_ptr(spotShadowViewProj_[i]));
+        for (const ShadowRenderable& renderable : renderables) {
+            if (!renderable.mesh || !renderable.mesh->valid()) {
+                continue;
+            }
+            glUniformMatrix4fv(shadowModelLocation_, 1, GL_FALSE, glm::value_ptr(renderable.modelMatrix));
+            renderable.mesh->draw();
         }
     }
 
@@ -410,7 +425,7 @@ void ShadowSystem::renderSpotShadows(std::initializer_list<const MeshBuffer*> me
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-void ShadowSystem::renderPointShadows(std::initializer_list<const MeshBuffer*> meshes) const {
+void ShadowSystem::renderPointShadows(const std::vector<ShadowRenderable>& renderables) const {
     if (pointShadowMap_ == 0 || pointShadowFbo_ == 0 || pointShadowCount_ == 0) {
         return;
     }
@@ -435,9 +450,13 @@ void ShadowSystem::renderPointShadows(std::initializer_list<const MeshBuffer*> m
             const int layer = i * 6 + face;
             glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, pointShadowMap_, 0, layer);
             glClear(GL_DEPTH_BUFFER_BIT);
-            glUniformMatrix4fv(shadowMvpLocation_, 1, GL_FALSE, glm::value_ptr(pointShadowViewProj_[i][face]));
-            for (const MeshBuffer* mesh : meshes) {
-                mesh->draw();
+            glUniformMatrix4fv(shadowViewProjLocation_, 1, GL_FALSE, glm::value_ptr(pointShadowViewProj_[i][face]));
+            for (const ShadowRenderable& renderable : renderables) {
+                if (!renderable.mesh || !renderable.mesh->valid()) {
+                    continue;
+                }
+                glUniformMatrix4fv(shadowModelLocation_, 1, GL_FALSE, glm::value_ptr(renderable.modelMatrix));
+                renderable.mesh->draw();
             }
         }
     }

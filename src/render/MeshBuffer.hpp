@@ -5,8 +5,7 @@
 
 #include <SDL_opengl.h>
 
-#include <vector>
-
+#include "Geometry.hpp"
 namespace render {
 
 class MeshBuffer {
@@ -31,12 +30,11 @@ public:
 
     /**
      * Uploads vertex and index data and configures vertex attributes.
-     * Expects 9 floats per vertex: position (3), normal (3), color (3).
-     * @param vertices Interleaved vertex data.
-     * @param indices Triangle indices.
+     * Expects positions, normals, tangents, colors, and up to two UV sets.
+     * @param mesh Mesh data to upload.
      * @return true on success, false if input is empty or upload fails.
      */
-    bool upload(const std::vector<float>& vertices, const std::vector<unsigned int>& indices);
+    bool upload(const Mesh& mesh);
     /**
      * Draws the indexed mesh if the buffer is valid.
      */

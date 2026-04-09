@@ -6,6 +6,8 @@ out vec4 FragColor;
 uniform sampler2D uLightBuffer;
 uniform sampler2D uGAlbedoMetal;
 uniform sampler2D uGNormalRough;
+uniform sampler2D uGEmissiveAo;
+uniform sampler2D uGClearcoat;
 uniform sampler2D uDepth;
 uniform sampler2DArray uShadowMap;
 uniform mat4 uShadowMatrices[MAX_CASCADES];
@@ -49,21 +51,28 @@ float sampleShadowMap(vec3 shadowCoord, int layer, float bias) {
 
 void main() {
     vec3 color;
+    vec4 albedoMetal = texture(uGAlbedoMetal, vUv);
+    vec4 normalRough = texture(uGNormalRough, vUv);
+    vec4 emissiveAo = texture(uGEmissiveAo, vUv);
+
     if (uDebugMode == 0) {
-        vec3 hdr = texture(uLightBuffer, vUv).rgb;
+        vec3 hdr = texture(uLightBuffer, vUv).rgb + emissiveAo.rgb;
         color = tonemap(hdr);
     } else if (uDebugMode == 1) {
-        color = texture(uGAlbedoMetal, vUv).rgb;
+        color = albedoMetal.rgb;
     } else if (uDebugMode == 2) {
-        vec3 normal = normalize(texture(uGNormalRough, vUv).xyz);
+        vec3 normal = normalize(normalRough.xyz);
         color = normal * 0.5 + 0.5;
     } else if (uDebugMode == 3) {
-        float rough = texture(uGNormalRough, vUv).a;
-        float metal = texture(uGAlbedoMetal, vUv).a;
-        color = vec3(rough, metal, 0.0);
+        float rough = normalRough.a;
+        float metal = albedoMetal.a;
+        float ao = emissiveAo.a;
+        color = vec3(rough, metal, ao);
     } else if (uDebugMode == 4) {
         float depth = texture(uDepth, vUv).r;
         color = vec3(depth);
+    } else if (uDebugMode == 5) {
+        color = texture(uLightBuffer, vUv).rgb;
     } else if (uDebugMode == 6) {
         int cascade = clamp(uShadowDebugCascade, 0, uCascadeCount - 1);
         float depth = texture(uShadowMap, vec3(vUv, cascade)).r;
@@ -73,7 +82,6 @@ void main() {
         if (depth >= 0.99999) {
             color = vec3(0.0);
         } else {
-            vec4 normalRough = texture(uGNormalRough, vUv);
             vec3 normal = normalize(normalRough.xyz);
             vec3 viewPos = reconstructViewPos(vUv, depth);
             float viewDepth = -viewPos.z;

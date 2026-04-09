@@ -6,8 +6,8 @@
 #include <SDL_opengl.h>
 
 #include <array>
-#include <initializer_list>
 #include <string>
+#include <vector>
 
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
@@ -23,6 +23,11 @@ namespace render {
  */
 class ShadowSystem {
 public:
+    struct ShadowRenderable {
+        const MeshBuffer* mesh{nullptr};
+        glm::mat4 modelMatrix{1.0f};
+    };
+
     /**
      * Maximum number of cascades supported for the directional light.
      */
@@ -107,17 +112,17 @@ public:
      * Renders directional cascades into the shadow map array.
      * @param meshes Meshes to draw as shadow casters.
      */
-    void renderDirectionalShadows(std::initializer_list<const MeshBuffer*> meshes) const;
+    void renderDirectionalShadows(const std::vector<ShadowRenderable>& renderables) const;
     /**
      * Renders spot light shadows into the shadow map array.
      * @param meshes Meshes to draw as shadow casters.
      */
-    void renderSpotShadows(std::initializer_list<const MeshBuffer*> meshes) const;
+    void renderSpotShadows(const std::vector<ShadowRenderable>& renderables) const;
     /**
      * Renders point light shadows into the cubemap array.
      * @param meshes Meshes to draw as shadow casters.
      */
-    void renderPointShadows(std::initializer_list<const MeshBuffer*> meshes) const;
+    void renderPointShadows(const std::vector<ShadowRenderable>& renderables) const;
 
     /**
      * Returns the active directional cascade count.
@@ -209,7 +214,8 @@ private:
     void destroyResources();
 
     ShaderProgram shadowDepthShader_;
-    GLint shadowMvpLocation_{-1};
+    GLint shadowModelLocation_{-1};
+    GLint shadowViewProjLocation_{-1};
     GLint shadowModeLocation_{-1};
     GLint shadowLightPositionLocation_{-1};
     GLint shadowFarPlaneLocation_{-1};

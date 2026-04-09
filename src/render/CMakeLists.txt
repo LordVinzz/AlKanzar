@@ -1,4 +1,39 @@
+include(FetchContent)
+
+FetchContent_Declare(
+    imgui
+    URL https://github.com/ocornut/imgui/archive/refs/tags/v1.92.7.tar.gz
+)
+
+FetchContent_GetProperties(imgui)
+if(NOT imgui_POPULATED)
+    FetchContent_Populate(imgui)
+
+    add_library(imgui STATIC
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    )
+
+    target_include_directories(imgui
+        PUBLIC
+            ${imgui_SOURCE_DIR}
+            ${imgui_SOURCE_DIR}/backends
+    )
+
+    target_link_libraries(imgui
+        PUBLIC
+            SDL2::SDL2
+            OpenGL::GL
+    )
+endif()
+
 add_library(alkanzar_render STATIC
+    Geometry.cpp
+    Material.cpp
     RenderEngine.cpp
     ShadowSystem.cpp
     ShaderProgram.cpp
@@ -39,6 +74,12 @@ set(MODEL_FILES
     ${MODEL_SOURCE_DIR}/FantasyHouse.glb
 )
 
+set(TEXTURE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/textures)
+set(TEXTURE_OUTPUT_DIR ${CMAKE_BINARY_DIR}/textures)
+file(GLOB TEXTURE_FILES
+    ${TEXTURE_SOURCE_DIR}/*
+)
+
 add_custom_target(copy_models ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory ${MODEL_OUTPUT_DIR}
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MODEL_FILES} ${MODEL_OUTPUT_DIR}
@@ -46,7 +87,14 @@ add_custom_target(copy_models ALL
     COMMENT "Copying models to build/models"
 )
 
-add_dependencies(alkanzar_render copy_shaders copy_models)
+add_custom_target(copy_textures ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${TEXTURE_OUTPUT_DIR}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TEXTURE_FILES} ${TEXTURE_OUTPUT_DIR}
+    DEPENDS ${TEXTURE_FILES}
+    COMMENT "Copying textures to build/textures"
+)
+
+add_dependencies(alkanzar_render copy_shaders copy_models copy_textures)
 
 target_include_directories(alkanzar_render
     PUBLIC
@@ -61,5 +109,6 @@ target_link_libraries(alkanzar_render
         OpenGL::GL
         glm::glm
     PRIVATE
+        imgui
         spdlog::spdlog
 )

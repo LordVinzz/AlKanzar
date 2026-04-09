@@ -4,6 +4,8 @@ out vec4 FragColor;
 
 uniform sampler2D uGAlbedoMetal;
 uniform sampler2D uGNormalRough;
+uniform sampler2D uGEmissiveAo;
+uniform sampler2D uGClearcoat;
 uniform sampler2D uDepth;
 uniform samplerBuffer uLightBuffer;
 uniform mat4 uInvProj;
@@ -81,11 +83,16 @@ void main() {
 
     vec4 albedoMetal = texture(uGAlbedoMetal, uv);
     vec4 normalRough = texture(uGNormalRough, uv);
+    vec4 emissiveAo = texture(uGEmissiveAo, uv);
+    vec2 clearcoatSample = texture(uGClearcoat, uv).rg;
 
     vec3 albedo = albedoMetal.rgb;
     float metallic = albedoMetal.a;
     vec3 normal = normalize(normalRough.xyz);
     float roughness = normalRough.a;
+    float ao = emissiveAo.a;
+    float clearcoat = clearcoatSample.x;
+    float clearcoatRoughness = clearcoatSample.y;
 
     vec3 viewPos = reconstructViewPos(uv, depth);
     vec3 worldPos = vec3(uInvView * vec4(viewPos, 1.0));
@@ -136,12 +143,14 @@ void main() {
 
     vec3 V = normalize(-viewPos);
     vec3 H = normalize(L + V);
-    float specPower = mix(64.0, 4.0, roughness);
+    float specPower = mix(96.0, 6.0, roughness);
     float spec = pow(max(dot(normal, H), 0.0), specPower);
 
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
     vec3 diffuse = (1.0 - metallic) * albedo / 3.14159265;
     vec3 specular = F0 * spec;
+    float clearcoatSpecPower = mix(144.0, 12.0, clearcoatRoughness);
+    vec3 clearcoatSpecular = vec3(0.04 * clearcoat * pow(max(dot(normal, H), 0.0), clearcoatSpecPower));
 
     vec3 lightColor = colorIntensity.rgb * colorIntensity.w;
     float shadow = 1.0;
@@ -162,8 +171,6 @@ void main() {
             uSpotShadowPcfRadius
         );
     } else if (shadowType == 2 && shadowIndex >= 0 && shadowIndex < uPointShadowCount) {
-        // Point shadows store normalized radial depth, so use a world-space receiver offset
-        // to keep small-radius lights from self-shadowing in visible bands.
         vec3 lightWorld = vec3(uInvView * vec4(lightPos, 1.0));
         vec3 normalWorld = normalize(mat3(uInvView) * normal);
         vec3 toLightWorld = worldPos - lightWorld;
@@ -187,7 +194,7 @@ void main() {
         );
     }
 
-    vec3 color = (diffuse + specular) * lightColor * ndotl * attenuation * shadow;
-
+    float visibility = mix(1.0, ao, 0.35);
+    vec3 color = (diffuse + specular + clearcoatSpecular) * lightColor * ndotl * attenuation * shadow * visibility;
     FragColor = vec4(color, 1.0);
 }

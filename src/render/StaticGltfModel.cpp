@@ -3,7 +3,9 @@
 #include <array>
 #include <cstddef>
 #include <limits>
+#include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -16,7 +18,6 @@
 
 namespace {
 
-constexpr std::size_t kVertexStride = 9;
 constexpr std::size_t kJointInfluenceCount = 4;
 
 const char* cgltfResultName(cgltf_result result) {
@@ -50,16 +51,79 @@ glm::mat4 toGlmMat4(const cgltf_float* values) {
     return glm::make_mat4(values);
 }
 
-glm::vec3 materialColor(const cgltf_material* material) {
-    if (material == nullptr || !material->has_pbr_metallic_roughness) {
-        return glm::vec3(1.0f);
+render::AlphaMode alphaModeFromCgltf(cgltf_alpha_mode mode) {
+    switch (mode) {
+        case cgltf_alpha_mode_mask:
+            return render::AlphaMode::Mask;
+        case cgltf_alpha_mode_blend:
+            return render::AlphaMode::Blend;
+        case cgltf_alpha_mode_opaque:
+        case cgltf_alpha_mode_max_enum:
+        default:
+            return render::AlphaMode::Opaque;
+    }
+}
+
+std::string materialName(const cgltf_material* material, std::size_t fallbackIndex) {
+    if (material != nullptr && material->name != nullptr && material->name[0] != '\0') {
+        return material->name;
+    }
+    return "Material " + std::to_string(fallbackIndex);
+}
+
+std::shared_ptr<render::Material> buildMaterial(
+    const cgltf_material* material,
+    std::size_t fallbackIndex
+) {
+    auto outMaterial = std::make_shared<render::Material>();
+    outMaterial->name = materialName(material, fallbackIndex);
+
+    if (material == nullptr) {
+        return outMaterial;
     }
 
-    return glm::vec3(
-        material->pbr_metallic_roughness.base_color_factor[0],
-        material->pbr_metallic_roughness.base_color_factor[1],
-        material->pbr_metallic_roughness.base_color_factor[2]
+    if (material->has_pbr_metallic_roughness) {
+        outMaterial->baseColorFactor = glm::vec3(
+            material->pbr_metallic_roughness.base_color_factor[0],
+            material->pbr_metallic_roughness.base_color_factor[1],
+            material->pbr_metallic_roughness.base_color_factor[2]
+        );
+        outMaterial->alphaFactor = material->pbr_metallic_roughness.base_color_factor[3];
+        outMaterial->metallicFactor = material->pbr_metallic_roughness.metallic_factor;
+        outMaterial->roughnessFactor = material->pbr_metallic_roughness.roughness_factor;
+    }
+
+    outMaterial->normalScale = material->normal_texture.scale;
+    outMaterial->aoStrength = material->occlusion_texture.scale;
+    outMaterial->emissiveFactor = glm::vec3(
+        material->emissive_factor[0],
+        material->emissive_factor[1],
+        material->emissive_factor[2]
     );
+    outMaterial->alphaMode = alphaModeFromCgltf(material->alpha_mode);
+    outMaterial->alphaCutoff = material->alpha_cutoff;
+    outMaterial->doubleSided = material->double_sided != 0;
+
+    if (material->has_clearcoat) {
+        outMaterial->clearcoat.factor = material->clearcoat.clearcoat_factor;
+        outMaterial->clearcoat.roughness = material->clearcoat.clearcoat_roughness_factor;
+    }
+
+    return outMaterial;
+}
+
+bool readVec2(const cgltf_accessor* accessor, cgltf_size index, glm::vec2& outValue) {
+    if (accessor == nullptr || accessor->type != cgltf_type_vec2) {
+        return false;
+    }
+
+    cgltf_float values[2]{};
+    if (!cgltf_accessor_read_float(accessor, index, values, 2)) {
+        return false;
+    }
+
+    outValue = glm::vec2(values[0], values[1]);
+    return true;
 }
 
 bool readVec3(const cgltf_accessor* accessor, cgltf_size index, glm::vec3& outValue) {
@@ -74,6 +138,32 @@ bool readVec3(const cgltf_accessor* accessor, cgltf_size index, glm::vec3& outVa
 
     outValue = glm::vec3(values[0], values[1], values[2]);
     return true;
+}
+
+bool readColor(const cgltf_accessor* accessor, cgltf_size index, glm::vec4& outValue) {
+    if (accessor == nullptr) {
+        return false;
+    }
+
+    if (accessor->type == cgltf_type_vec3) {
+        cgltf_float values[3]{};
+        if (!cgltf_accessor_read_float(accessor, index, values, 3)) {
+            return false;
+        }
+        outValue = glm::vec4(values[0], values[1], values[2], 1.0f);
+        return true;
+    }
+
+    if (accessor->type == cgltf_type_vec4) {
+        cgltf_float values[4]{};
+        if (!cgltf_accessor_read_float(accessor, index, values, 4)) {
+            return false;
+        }
+        outValue = glm::vec4(values[0], values[1], values[2], values[3]);
+        return true;
+    }
+
+    return false;
 }
 
 bool readVec4Float(const cgltf_accessor* accessor, cgltf_size index, glm::vec4& outValue) {
@@ -159,7 +249,9 @@ bool appendPrimitive(
     const glm::mat3& nodeNormalMatrix,
     const std::vector<glm::mat4>* jointMatrices,
     const std::vector<glm::mat3>* jointNormalMatrices,
-    render::StaticMeshData& outMesh
+    std::unordered_map<const cgltf_material*, std::shared_ptr<render::Material>>& materialCache,
+    std::size_t materialIndex,
+    render::StaticModelData& outModel
 ) {
     if (primitive.type != cgltf_primitive_type_triangles) {
         spdlog::error("StaticGltfModel: only triangle primitives are supported");
@@ -177,6 +269,10 @@ bool appendPrimitive(
         return false;
     }
 
+    const cgltf_accessor* uv0Accessor = cgltf_find_accessor(&primitive, cgltf_attribute_type_texcoord, 0);
+    const cgltf_accessor* uv1Accessor = cgltf_find_accessor(&primitive, cgltf_attribute_type_texcoord, 1);
+    const cgltf_accessor* colorAccessor = cgltf_find_accessor(&primitive, cgltf_attribute_type_color, 0);
+
     const bool isSkinned = jointMatrices != nullptr && jointNormalMatrices != nullptr;
     const cgltf_accessor* jointsAccessor = cgltf_find_accessor(&primitive, cgltf_attribute_type_joints, 0);
     const cgltf_accessor* weightsAccessor = cgltf_find_accessor(&primitive, cgltf_attribute_type_weights, 0);
@@ -191,13 +287,15 @@ bool appendPrimitive(
         }
     }
 
-    const glm::vec3 color = materialColor(primitive.material);
-    const cgltf_size vertexCount = positionAccessor->count;
-    const unsigned int baseVertex = static_cast<unsigned int>(outMesh.vertices.size() / kVertexStride);
+    render::Mesh mesh{};
+    mesh.positions.reserve(positionAccessor->count);
+    mesh.normals.reserve(positionAccessor->count);
+    mesh.colors.reserve(positionAccessor->count);
+    mesh.uvSets.resize(2);
+    mesh.uvSets[0].reserve(positionAccessor->count);
+    mesh.uvSets[1].reserve(positionAccessor->count);
 
-    outMesh.vertices.reserve(outMesh.vertices.size() + static_cast<std::size_t>(vertexCount) * kVertexStride);
-
-    for (cgltf_size vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex) {
+    for (cgltf_size vertexIndex = 0; vertexIndex < positionAccessor->count; ++vertexIndex) {
         glm::vec3 position(0.0f);
         glm::vec3 normal(0.0f);
         if (!readVec3(positionAccessor, vertexIndex, position) || !readVec3(normalAccessor, vertexIndex, normal)) {
@@ -249,67 +347,93 @@ bool appendPrimitive(
 
         worldNormal = glm::normalize(worldNormal);
 
-        outMesh.vertices.insert(
-            outMesh.vertices.end(),
-            {
-                worldPosition.x, worldPosition.y, worldPosition.z,
-                worldNormal.x, worldNormal.y, worldNormal.z,
-                color.r, color.g, color.b
-            }
-        );
+        glm::vec2 uv0(0.0f);
+        glm::vec2 uv1(0.0f);
+        glm::vec4 color(1.0f);
+        if (uv0Accessor != nullptr) {
+            readVec2(uv0Accessor, vertexIndex, uv0);
+        }
+        if (uv1Accessor != nullptr) {
+            readVec2(uv1Accessor, vertexIndex, uv1);
+        }
+        if (colorAccessor != nullptr) {
+            readColor(colorAccessor, vertexIndex, color);
+        }
+
+        mesh.positions.push_back(worldPosition);
+        mesh.normals.push_back(worldNormal);
+        mesh.uvSets[0].push_back(uv0);
+        mesh.uvSets[1].push_back(uv1);
+        mesh.colors.push_back(color);
     }
 
     if (primitive.indices != nullptr) {
-        outMesh.indices.reserve(outMesh.indices.size() + static_cast<std::size_t>(primitive.indices->count));
+        mesh.indices.reserve(static_cast<std::size_t>(primitive.indices->count));
         for (cgltf_size index = 0; index < primitive.indices->count; ++index) {
             const cgltf_size primitiveIndex = cgltf_accessor_read_index(primitive.indices, index);
-            if (primitiveIndex >= vertexCount) {
+            if (primitiveIndex >= positionAccessor->count) {
                 spdlog::error("StaticGltfModel: index {} is out of range", primitiveIndex);
                 return false;
             }
-            outMesh.indices.push_back(baseVertex + static_cast<unsigned int>(primitiveIndex));
+            mesh.indices.push_back(static_cast<unsigned int>(primitiveIndex));
         }
     } else {
-        if ((vertexCount % 3u) != 0u) {
+        if ((positionAccessor->count % 3u) != 0u) {
             spdlog::error("StaticGltfModel: non-indexed triangle primitive has invalid vertex count");
             return false;
         }
 
-        outMesh.indices.reserve(outMesh.indices.size() + static_cast<std::size_t>(vertexCount));
-        for (cgltf_size index = 0; index < vertexCount; ++index) {
-            outMesh.indices.push_back(baseVertex + static_cast<unsigned int>(index));
+        mesh.indices.reserve(static_cast<std::size_t>(positionAccessor->count));
+        for (cgltf_size index = 0; index < positionAccessor->count; ++index) {
+            mesh.indices.push_back(static_cast<unsigned int>(index));
         }
     }
 
+    render::ensureMeshAttributeSizes(mesh, 2);
+    render::computeTangents(mesh);
+
+    std::shared_ptr<render::Material> material;
+    auto cached = materialCache.find(primitive.material);
+    if (cached != materialCache.end()) {
+        material = cached->second;
+    } else {
+        material = buildMaterial(primitive.material, materialIndex);
+        materialCache.emplace(primitive.material, material);
+    }
+
+    render::StaticMeshSection section{};
+    section.name = material->name;
+    section.mesh = std::move(mesh);
+    section.material = std::move(material);
+    outModel.sections.push_back(std::move(section));
     return true;
 }
 
-bool centerAndGroundMesh(render::StaticMeshData& mesh) {
-    if (mesh.vertices.empty() || mesh.indices.empty()) {
-        spdlog::error("StaticGltfModel: generated mesh data is empty");
-        return false;
-    }
-
+bool centerAndGroundModel(render::StaticModelData& model) {
+    bool hasVertex = false;
     glm::vec3 minBounds(std::numeric_limits<float>::max());
     glm::vec3 maxBounds(std::numeric_limits<float>::lowest());
 
-    for (std::size_t offset = 0; offset < mesh.vertices.size(); offset += kVertexStride) {
-        const glm::vec3 position(
-            mesh.vertices[offset + 0],
-            mesh.vertices[offset + 1],
-            mesh.vertices[offset + 2]
-        );
-        minBounds = glm::min(minBounds, position);
-        maxBounds = glm::max(maxBounds, position);
+    for (const render::StaticMeshSection& section : model.sections) {
+        for (const glm::vec3& position : section.mesh.positions) {
+            minBounds = glm::min(minBounds, position);
+            maxBounds = glm::max(maxBounds, position);
+            hasVertex = true;
+        }
+    }
+
+    if (!hasVertex) {
+        spdlog::error("StaticGltfModel: generated model data is empty");
+        return false;
     }
 
     const glm::vec3 center = (minBounds + maxBounds) * 0.5f;
     const glm::vec3 translation(-center.x, -minBounds.y, -center.z);
 
-    for (std::size_t offset = 0; offset < mesh.vertices.size(); offset += kVertexStride) {
-        mesh.vertices[offset + 0] += translation.x;
-        mesh.vertices[offset + 1] += translation.y;
-        mesh.vertices[offset + 2] += translation.z;
+    for (render::StaticMeshSection& section : model.sections) {
+        for (glm::vec3& position : section.mesh.positions) {
+            position += translation;
+        }
     }
 
     spdlog::info(
@@ -325,9 +449,8 @@ bool centerAndGroundMesh(render::StaticMeshData& mesh) {
 
 namespace render {
 
-bool loadStaticGltfModel(const std::string& path, StaticMeshData& outMesh) {
-    outMesh.vertices.clear();
-    outMesh.indices.clear();
+bool loadStaticGltfModel(const std::string& path, StaticModelData& outModel) {
+    outModel.sections.clear();
 
     cgltf_options options{};
     cgltf_data* data = nullptr;
@@ -382,6 +505,8 @@ bool loadStaticGltfModel(const std::string& path, StaticMeshData& outMesh) {
         return false;
     }
 
+    std::unordered_map<const cgltf_material*, std::shared_ptr<Material>> materialCache;
+    std::size_t materialIndex = 0;
     for (const cgltf_node* node : meshNodes) {
         cgltf_float nodeMatrixValues[16]{};
         cgltf_node_transform_world(node, nodeMatrixValues);
@@ -409,7 +534,9 @@ bool loadStaticGltfModel(const std::string& path, StaticMeshData& outMesh) {
                     nodeNormalMatrix,
                     jointMatrixPtr,
                     jointNormalMatrixPtr,
-                    outMesh
+                    materialCache,
+                    materialIndex++,
+                    outModel
                 )) {
                 cleanup();
                 return false;
@@ -417,13 +544,13 @@ bool loadStaticGltfModel(const std::string& path, StaticMeshData& outMesh) {
         }
     }
 
-    const bool ready = centerAndGroundMesh(outMesh);
+    const bool ready = centerAndGroundModel(outModel);
     cleanup();
     return ready;
 }
 
-bool loadStaticCharacterModel(const std::string& path, StaticMeshData& outMesh) {
-    return loadStaticGltfModel(path, outMesh);
+bool loadStaticCharacterModel(const std::string& path, StaticModelData& outModel) {
+    return loadStaticGltfModel(path, outModel);
 }
 
 }  // namespace render
