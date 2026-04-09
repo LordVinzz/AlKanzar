@@ -4,8 +4,12 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <ctime>
+#include <filesystem>
+#include <iomanip>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -108,6 +112,25 @@ void notifyLightChanged(EngineServices& services, EntityId entity) {
 void notifyMaterialChanged(EngineServices& services, MaterialHandle materialHandle) {
     services.materials.notifyChanged(materialHandle);
     services.events.publish(MaterialChangedEvent{materialHandle});
+}
+
+std::filesystem::path defaultProfilerExportPath(const ProfilerTraceCapture& capture) {
+    const auto now = std::chrono::system_clock::now();
+    const auto timestamp = std::chrono::system_clock::to_time_t(now);
+    std::tm localTime{};
+#if defined(_WIN32)
+    localtime_s(&localTime, &timestamp);
+#else
+    localtime_r(&timestamp, &localTime);
+#endif
+
+    std::ostringstream filename;
+    filename << "alkanzar-profile-s" << capture.sessionId;
+    if (!capture.frames.empty()) {
+        filename << "-f" << capture.frames.back().frameNumber;
+    }
+    filename << "-" << std::put_time(&localTime, "%Y%m%d-%H%M%S") << ".pftrace";
+    return std::filesystem::path("captures") / filename.str();
 }
 
 struct SceneHierarchyData {
@@ -490,9 +513,15 @@ void drawProfilerMemoryGroup(const char* label, const std::vector<const Resource
 }
 
 void drawProfilerWindow(EngineServices& services) {
+    if (!services.editorSession.profilerWindowVisible) {
+        return;
+    }
+
     ImGui::SetNextWindowSize(ImVec2(860.0f, 720.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Profiler")) {
+    bool open = services.editorSession.profilerWindowVisible;
+    if (!ImGui::Begin("Profiler", &open)) {
         ImGui::End();
+        services.editorSession.profilerWindowVisible = open;
         return;
     }
 
@@ -502,6 +531,8 @@ void drawProfilerWindow(EngineServices& services) {
     if (ImGui::Button("Start Profiling")) {
         services.profiler.startCapture();
         services.editorSession.profilerFollowLatest = true;
+        services.editorSession.profilerExportStatus.clear();
+        services.editorSession.profilerExportStatusIsError = false;
     }
     ImGui::EndDisabled();
 
@@ -513,6 +544,32 @@ void drawProfilerWindow(EngineServices& services) {
     ImGui::EndDisabled();
 
     ImGui::SameLine();
+    ImGui::BeginDisabled(stats.bufferedFrames == 0u);
+    if (ImGui::Button("Export Perfetto Trace")) {
+        const ProfilerTraceCapture capture = services.profiler.rawCapture();
+        const std::filesystem::path exportPath = defaultProfilerExportPath(capture);
+        std::string exportError{};
+        if (services.profiler.exportPerfettoTrace(exportPath.string(), &exportError)) {
+            services.editorSession.profilerExportStatus =
+                "Exported Perfetto trace to " + std::filesystem::absolute(exportPath).string();
+            services.editorSession.profilerExportStatusIsError = false;
+        } else {
+            services.editorSession.profilerExportStatus = exportError.empty()
+                ? "Perfetto export failed."
+                : exportError;
+            services.editorSession.profilerExportStatusIsError = true;
+        }
+    }
+    ImGui::EndDisabled();
+
+    if (!services.editorSession.profilerExportStatus.empty()) {
+        if (services.editorSession.profilerExportStatusIsError) {
+            ImGui::TextColored(ImVec4(0.85f, 0.35f, 0.35f, 1.0f), "%s", services.editorSession.profilerExportStatus.c_str());
+        } else {
+            ImGui::TextColored(ImVec4(0.35f, 0.75f, 0.40f, 1.0f), "%s", services.editorSession.profilerExportStatus.c_str());
+        }
+    }
+
     ImGui::Text(
         "Status: %s | Buffered: %zu | Pending GPU Frames: %zu",
         profilerStatusLabel(stats),
@@ -648,6 +705,7 @@ void drawProfilerWindow(EngineServices& services) {
     drawProfilerMemoryGroup("GPU", gpuEntries);
 
     ImGui::End();
+    services.editorSession.profilerWindowVisible = open;
 }
 
 void drawTextureBrowser(EngineServices& services, render::Material& material, MaterialHandle materialHandle) {
@@ -814,7 +872,10 @@ void drawTextureSlotEditor(
     }
 
     if (ref->bindingMode == render::TextureBindingMode::ProjectTexture) {
-        if (ImGui::Button("Browse Texture Library")) {
+        const bool isTextureBrowserTarget = services.editorSession.textureBrowserSlot == slot;
+        const char* textureTargetLabel =
+            isTextureBrowserTarget ? "Pick texture in Texture Browser" : "Set texture as target";
+        if (ImGui::Button(textureTargetLabel)) {
             services.editorSession.textureBrowserSlot = slot;
             services.editorSession.activeInspectorTab = InspectorTab::TextureBrowser;
             services.editorSession.textureBrowserFocusRequested = true;
@@ -961,7 +1022,9 @@ void GameplayState::renderUi(EngineServices&) {}
 
 void EditorState::onEnter(EngineServices&) {}
 
-void EditorState::onExit(EngineServices&) {}
+void EditorState::onExit(EngineServices& services) {
+    services.editorSession.profilerWindowVisible = false;
+}
 
 void EditorState::update(EngineServices& services) {
     updateOrbitCamera(services.camera, services.time);

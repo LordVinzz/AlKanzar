@@ -200,6 +200,38 @@ ProfilerFrameSnapshot ProfilerService::buildSnapshot(const RawFrameData& rawFram
     return snapshot;
 }
 
+ProfilerTraceFrame ProfilerService::buildTraceFrame(const RawFrameData& rawFrame) {
+    ProfilerTraceFrame traceFrame{};
+    traceFrame.sessionId = rawFrame.sessionId;
+    traceFrame.frameNumber = rawFrame.frameNumber;
+    traceFrame.startNs = rawFrame.startNs;
+    traceFrame.endNs = rawFrame.endNs;
+    traceFrame.profilerUiMs = rawFrame.profilerUiMs;
+    traceFrame.cpuScopes = rawFrame.cpuScopes;
+    traceFrame.gpuPasses.reserve(rawFrame.gpuPasses.size());
+    traceFrame.resources.reserve(rawFrame.resources.size());
+
+    for (const RawGpuPass& pass : rawFrame.gpuPasses) {
+        traceFrame.gpuPasses.push_back(GpuPassSample{
+            pass.name,
+            pass.durationMs,
+            pass.available,
+            pass.pending
+        });
+    }
+
+    for (const render::ResourceMemoryRecord& record : rawFrame.resources) {
+        traceFrame.resources.push_back(ResourceMemoryEntry{
+            record.name,
+            record.category,
+            record.cpuBytes,
+            record.gpuBytes
+        });
+    }
+
+    return traceFrame;
+}
+
 ProfilerService::CpuScopeHandle::CpuScopeHandle(ProfilerService* profiler, std::uint32_t index)
     : profiler_(profiler),
       index_(index) {}
@@ -441,6 +473,21 @@ std::vector<std::shared_ptr<const ProfilerFrameSnapshot>> ProfilerService::snaps
     return std::vector<std::shared_ptr<const ProfilerFrameSnapshot>>(snapshots_.begin(), snapshots_.end());
 }
 
+ProfilerTraceCapture ProfilerService::rawCapture() const {
+    std::lock_guard lock(snapshotMutex_);
+
+    ProfilerTraceCapture capture{};
+    capture.mainThreadId = mainThreadId_;
+    capture.frames.assign(rawFrames_.begin(), rawFrames_.end());
+    capture.sessionId = capture.frames.empty() ? activeSessionId_.load() : capture.frames.back().sessionId;
+    return capture;
+}
+
+bool ProfilerService::exportPerfettoTrace(const std::string& path, std::string* error) {
+    waitForWorkerIdle();
+    return exportProfilerTraceCaptureToPerfetto(rawCapture(), path, error);
+}
+
 void ProfilerService::waitForWorkerIdle() {
     std::unique_lock lock(requestMutex_);
     idleCv_.wait(lock, [this]() {
@@ -531,6 +578,7 @@ void ProfilerService::applyStartCapture() {
     {
         std::lock_guard lock(snapshotMutex_);
         snapshots_.clear();
+        rawFrames_.clear();
     }
     {
         std::lock_guard lock(requestMutex_);
@@ -624,6 +672,7 @@ void ProfilerService::workerLoop() {
 
         if (request.frame.sessionId == activeSessionId_.load()) {
             auto snapshot = std::make_shared<ProfilerFrameSnapshot>(buildSnapshot(request.frame, mainThreadId_));
+            ProfilerTraceFrame traceFrame = buildTraceFrame(request.frame);
             std::lock_guard lock(snapshotMutex_);
             auto existing = std::find_if(snapshots_.begin(), snapshots_.end(), [&](const auto& candidate) {
                 return candidate->sessionId == snapshot->sessionId && candidate->frameNumber == snapshot->frameNumber;
@@ -634,6 +683,18 @@ void ProfilerService::workerLoop() {
                 snapshots_.push_back(snapshot);
                 while (snapshots_.size() > config_.maxFrames) {
                     snapshots_.pop_front();
+                }
+            }
+
+            auto rawExisting = std::find_if(rawFrames_.begin(), rawFrames_.end(), [&](const ProfilerTraceFrame& candidate) {
+                return candidate.sessionId == traceFrame.sessionId && candidate.frameNumber == traceFrame.frameNumber;
+            });
+            if (rawExisting != rawFrames_.end()) {
+                *rawExisting = std::move(traceFrame);
+            } else {
+                rawFrames_.push_back(std::move(traceFrame));
+                while (rawFrames_.size() > config_.maxFrames) {
+                    rawFrames_.pop_front();
                 }
             }
         }

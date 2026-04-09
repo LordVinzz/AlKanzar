@@ -22,6 +22,7 @@ add_library(alkanzar_core STATIC
     src/core/Application.cpp
     src/core/Camera.cpp
     src/core/LightSystem.cpp
+    src/core/PerfettoTraceExporter.cpp
     src/core/PickingSystem.cpp
     src/core/ProfilerService.cpp
     src/core/RenderExtractionSystem.cpp

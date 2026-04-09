@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <string>
 
 #include "render/Material.hpp"
 
@@ -20,6 +21,8 @@ struct EditorSession {
     bool profilerWindowVisible{true};
     bool profilerFollowLatest{true};
     int profilerSelectedFrame{0};
+    std::string profilerExportStatus{};
+    bool profilerExportStatusIsError{false};
     std::array<char, 128> textureBrowserSearch{};
 };
 

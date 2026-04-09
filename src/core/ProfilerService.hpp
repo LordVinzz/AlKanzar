@@ -68,6 +68,23 @@ struct ProfilerFrameSnapshot {
     std::vector<ResourceMemoryEntry> resources{};
 };
 
+struct ProfilerTraceFrame {
+    std::uint64_t sessionId{0};
+    std::uint64_t frameNumber{0};
+    std::uint64_t startNs{0};
+    std::uint64_t endNs{0};
+    double profilerUiMs{0.0};
+    std::vector<ProfilerRecordedScope> cpuScopes{};
+    std::vector<GpuPassSample> gpuPasses{};
+    std::vector<ResourceMemoryEntry> resources{};
+};
+
+struct ProfilerTraceCapture {
+    std::uint64_t sessionId{0};
+    std::uint64_t mainThreadId{0};
+    std::vector<ProfilerTraceFrame> frames{};
+};
+
 struct ProfilerStats {
     bool capturing{false};
     bool startPending{false};
@@ -83,6 +100,12 @@ struct ProfilerStats {
 [[nodiscard]] std::vector<ProfilerScopeNode> buildProfilerScopeTree(
     const std::vector<ProfilerRecordedScope>& scopes,
     std::uint64_t mainThreadId
+);
+
+[[nodiscard]] bool exportProfilerTraceCaptureToPerfetto(
+    const ProfilerTraceCapture& capture,
+    const std::string& path,
+    std::string* error = nullptr
 );
 
 class ProfilerService {
@@ -140,8 +163,10 @@ public:
 
     [[nodiscard]] ProfilerStats stats() const;
     [[nodiscard]] std::vector<std::shared_ptr<const ProfilerFrameSnapshot>> snapshots() const;
+    [[nodiscard]] ProfilerTraceCapture rawCapture() const;
     [[nodiscard]] std::uint64_t mainThreadId() const { return mainThreadId_; }
 
+    [[nodiscard]] bool exportPerfettoTrace(const std::string& path, std::string* error = nullptr);
     void waitForWorkerIdle();
 
 private:
@@ -198,6 +223,7 @@ private:
     void enqueueBuildRequest(BuildRequest request);
     void workerLoop();
     static ProfilerFrameSnapshot buildSnapshot(const RawFrameData& rawFrame, std::uint64_t mainThreadId);
+    static ProfilerTraceFrame buildTraceFrame(const RawFrameData& rawFrame);
 
     ProfilerConfig config_{};
     std::uint64_t mainThreadId_{0};
@@ -221,6 +247,7 @@ private:
 
     mutable std::mutex snapshotMutex_{};
     std::deque<std::shared_ptr<const ProfilerFrameSnapshot>> snapshots_{};
+    std::deque<ProfilerTraceFrame> rawFrames_{};
 
     std::mutex requestMutex_{};
     std::condition_variable requestCv_{};

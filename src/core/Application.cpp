@@ -145,6 +145,9 @@ void Application::bindEventHandlers() {
         if (currentMode_ == AppMode::Editor) {
             services_.editorSession.sceneHierarchyVisible = false;
             services_.editorSession.sceneHierarchyFocusRequested = false;
+            services_.editorSession.profilerWindowVisible = false;
+        } else {
+            services_.editorSession.profilerWindowVisible = true;
         }
         services_.requestedMode = currentMode_ == AppMode::Editor ? AppMode::Gameplay : AppMode::Editor;
     });
@@ -224,8 +227,10 @@ void Application::translateSdlEvent(const SDL_Event& event) {
                 if (currentMode_ != AppMode::Editor) {
                     services_.requestedMode = AppMode::Editor;
                     services_.editorSession.sceneHierarchyVisible = true;
+                    services_.editorSession.profilerWindowVisible = true;
                 } else {
                     services_.editorSession.sceneHierarchyVisible = !services_.editorSession.sceneHierarchyVisible;
+                    services_.editorSession.profilerWindowVisible = services_.editorSession.sceneHierarchyVisible;
                 }
                 services_.editorSession.sceneHierarchyFocusRequested = services_.editorSession.sceneHierarchyVisible;
                 break;
