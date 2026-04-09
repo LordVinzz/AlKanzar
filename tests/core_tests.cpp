@@ -1,13 +1,18 @@
+#include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <variant>
 
 #include <glm/ext/matrix_clip_space.hpp>
@@ -22,6 +27,7 @@
 #include "core/ProfilerService.hpp"
 #include "core/RenderExtractionSystem.hpp"
 #include "core/SelectionModel.hpp"
+#include "core/TaskScheduler.hpp"
 #include "core/TransformSystem.hpp"
 #include "core/World.hpp"
 #include "render/Profiling.hpp"
@@ -32,6 +38,22 @@ namespace {
 
 bool nearlyEqual(double lhs, double rhs, double epsilon = 0.001) {
     return std::abs(lhs - rhs) <= epsilon;
+}
+
+core::TaskScheduler makeScheduler(std::size_t workerCount = 2u) {
+    return core::TaskScheduler(core::TaskSchedulerConfig{workerCount});
+}
+
+bool containsNonMainThreadScope(const std::vector<core::ProfilerScopeNode>& scopes) {
+    for (const core::ProfilerScopeNode& scope : scopes) {
+        if (scope.thread != "Main") {
+            return true;
+        }
+        if (containsNonMainThreadScope(scope.children)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool readVarint(std::string_view data, std::size_t& offset, std::uint64_t& value) {
@@ -192,8 +214,104 @@ void testCommandHistoryUndoRedoAndMerge() {
     assert(value == 3);
 }
 
+void testTaskSchedulerParallelForCoversFullRange() {
+    core::TaskScheduler scheduler = makeScheduler();
+    std::vector<int> visits(257, 0);
+
+    core::TaskGroup group;
+    scheduler.parallelFor(group, visits.size(), 13u, "Coverage", [&](std::size_t begin, std::size_t end) {
+        for (std::size_t index = begin; index < end; ++index) {
+            ++visits[index];
+        }
+    });
+    scheduler.wait(group);
+
+    for (int count : visits) {
+        assert(count == 1);
+    }
+}
+
+void testTaskSchedulerWaitCompletesScheduledGroup() {
+    core::TaskScheduler scheduler = makeScheduler();
+    std::vector<int> values(64, -1);
+
+    core::TaskGroup group;
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        scheduler.schedule(group, "Fill", [&, index]() {
+            values[index] = static_cast<int>(index * 3u);
+        });
+    }
+    scheduler.wait(group);
+
+    assert(group.empty());
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        assert(values[index] == static_cast<int>(index * 3u));
+    }
+}
+
+void testTaskSchedulerAsyncHandleDeliversResult() {
+    core::TaskScheduler scheduler = makeScheduler();
+    auto handle = scheduler.submitAsync("Async Result", []() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        return 99;
+    });
+
+    while (!handle.ready()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    const std::optional<int> value = handle.take();
+    assert(value.has_value());
+    assert(*value == 99);
+}
+
+void testTaskSchedulerWaitRethrowsTaskFailures() {
+    core::TaskScheduler scheduler = makeScheduler();
+    core::TaskGroup group;
+    scheduler.schedule(group, "Explode", []() {
+        throw std::runtime_error("boom");
+    });
+
+    bool threw = false;
+    try {
+        scheduler.wait(group);
+    } catch (const std::runtime_error& error) {
+        threw = true;
+        assert(std::string_view(error.what()).find("Explode") != std::string_view::npos);
+        assert(std::string_view(error.what()).find("boom") != std::string_view::npos);
+    }
+
+    assert(threw);
+}
+
+void testTaskSchedulerRepeatedPhaseWaitsComplete() {
+    core::TaskScheduler scheduler = makeScheduler(4u);
+    std::atomic<int> completed{0};
+
+    constexpr std::size_t kIterations = 2048u;
+    for (std::size_t iteration = 0u; iteration < kIterations; ++iteration) {
+        core::TaskGroup firstPhase;
+        scheduler.schedule(firstPhase, "Phase A", [&completed]() {
+            completed.fetch_add(1, std::memory_order_relaxed);
+        });
+        scheduler.schedule(firstPhase, "Phase B", [&completed]() {
+            completed.fetch_add(1, std::memory_order_relaxed);
+        });
+        scheduler.wait(firstPhase);
+
+        core::TaskGroup secondPhase;
+        scheduler.schedule(secondPhase, "Phase C", [&completed]() {
+            completed.fetch_add(1, std::memory_order_relaxed);
+        });
+        scheduler.wait(secondPhase);
+    }
+
+    assert(completed.load(std::memory_order_relaxed) == static_cast<int>(kIterations * 3u));
+}
+
 void testTransformHierarchyAndBounds() {
     core::World world;
+    core::TaskScheduler scheduler = makeScheduler();
     const core::EntityId parent = world.createEntity();
     const core::EntityId childA = world.createEntity();
     const core::EntityId childB = world.createEntity();
@@ -211,7 +329,7 @@ void testTransformHierarchyAndBounds() {
     world.markTransformsDirty(childB);
 
     core::TransformSystem system;
-    system.update(world);
+    system.update(world, scheduler);
 
     assert(world.transformCache_[childA.index].valid);
     assert(world.transformCache_[childA.index].worldBounds.min.x == 1.0f);
@@ -224,8 +342,42 @@ void testTransformHierarchyAndBounds() {
     assert(world.transformCache_[parent.index].worldBounds.max.x == 7.0f);
 }
 
+void testTransformSystemProcessesMultipleRoots() {
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler();
+
+    const core::EntityId rootA = world.createEntity();
+    const core::EntityId childA = world.createEntity();
+    const core::EntityId rootB = world.createEntity();
+    const core::EntityId childB = world.createEntity();
+
+    world.transforms.emplace(rootA, core::TransformComponent{glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.transforms.emplace(rootB, core::TransformComponent{glm::vec3(0.0f, 2.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.parents.emplace(childA, core::ParentComponent{rootA});
+    world.parents.emplace(childB, core::ParentComponent{rootB});
+    world.transforms.emplace(childA, core::TransformComponent{glm::vec3(3.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.transforms.emplace(childB, core::TransformComponent{glm::vec3(0.0f, 4.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.bounds.emplace(childA, core::BoundsComponent{render::Bounds3{glm::vec3(-1.0f), glm::vec3(1.0f)}});
+    world.bounds.emplace(childB, core::BoundsComponent{render::Bounds3{glm::vec3(-1.0f), glm::vec3(1.0f)}});
+    world.renderables.emplace(childA, core::RenderableComponent{render::MeshHandle{0}, {}, render::RenderLayer::Geometry});
+    world.renderables.emplace(childB, core::RenderableComponent{render::MeshHandle{1}, {}, render::RenderLayer::Geometry});
+    world.markTransformsDirty(rootA);
+    world.markTransformsDirty(childA);
+    world.markTransformsDirty(rootB);
+    world.markTransformsDirty(childB);
+
+    core::TransformSystem system;
+    system.update(world, scheduler);
+
+    assert(world.transformCache_[childA.index].worldBounds.min.x == 3.0f);
+    assert(world.transformCache_[childA.index].worldBounds.max.x == 5.0f);
+    assert(world.transformCache_[childB.index].worldBounds.min.y == 5.0f);
+    assert(world.transformCache_[childB.index].worldBounds.max.y == 7.0f);
+}
+
 void testLightVolumeAssignment() {
     core::World world;
+    core::TaskScheduler scheduler = makeScheduler();
     world.lightVolumes.emplace_back(glm::vec3(-10.0f), glm::vec3(10.0f));
     const core::EntityId point = world.createEntity();
     const core::EntityId spot = world.createEntity();
@@ -236,14 +388,36 @@ void testLightVolumeAssignment() {
     world.spotLights.emplace(spot, core::SpotLightComponent{5.0f, glm::vec3(1.0f), 1.0f, glm::vec3(0.0f), 15.0f, 25.0f, 0.0f, true, false, 0.0f, 0.0f});
 
     core::LightSystem system;
-    system.update(world, core::TimeContext{1.0f, 0.016f});
+    system.update(world, core::TimeContext{1.0f, 0.016f}, scheduler);
 
     assert(world.lightVolumes[0].staticLightEntities().size() == 1u);
     assert(world.lightVolumes[0].movableLightEntities().size() == 1u);
 }
 
+void testLightVolumeAssignmentIsStableAcrossLightTypes() {
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler();
+    world.lightVolumes.emplace_back(glm::vec3(-10.0f), glm::vec3(10.0f));
+
+    const core::EntityId spot = world.createEntity();
+    const core::EntityId point = world.createEntity();
+    world.transforms.emplace(spot, core::TransformComponent{glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.transforms.emplace(point, core::TransformComponent{glm::vec3(1.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.spotLights.emplace(spot, core::SpotLightComponent{5.0f, glm::vec3(1.0f), 1.0f, glm::vec3(0.0f), 15.0f, 25.0f, 0.0f, false, false, 0.0f, 0.0f});
+    world.pointLights.emplace(point, core::PointLightComponent{4.0f, glm::vec3(1.0f), 1.0f, 0.0f, false, false, 0.0f, 0.0f});
+
+    core::LightSystem system;
+    system.update(world, core::TimeContext{1.0f, 0.016f}, scheduler);
+
+    const std::vector<core::EntityId>& staticLights = world.lightVolumes[0].staticLightEntities();
+    assert(staticLights.size() == 2u);
+    assert(staticLights[0] == spot);
+    assert(staticLights[1] == point);
+}
+
 void testMaterialHandleSharingExtraction() {
     core::World world;
+    core::TaskScheduler scheduler = makeScheduler();
     core::MaterialLibrary materials;
     core::SelectionModel selection;
     core::RenderExtractionSystem extraction;
@@ -264,16 +438,62 @@ void testMaterialHandleSharingExtraction() {
     world.markTransformsDirty(b);
 
     core::TransformSystem transformSystem;
-    transformSystem.update(world);
+    transformSystem.update(world, scheduler);
 
     core::FrameSceneData frame;
-    extraction.extract(world, materials, selection, frame);
+    extraction.extract(world, materials, selection, frame, scheduler, true);
 
     assert(frame.renderables.size() == 2u);
     assert(frame.renderables[0].material == frame.renderables[1].material);
 }
 
+void testRenderExtractionPreservesOutputOrdering() {
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler();
+    core::MaterialLibrary materials;
+    core::SelectionModel selection;
+    core::RenderExtractionSystem extraction;
+    core::TransformSystem transformSystem;
+    core::LightSystem lightSystem;
+
+    auto material = std::make_shared<render::Material>();
+    const core::MaterialHandle handle = materials.add(material);
+
+    const core::EntityId renderableA = world.createEntity();
+    const core::EntityId point = world.createEntity();
+    const core::EntityId renderableB = world.createEntity();
+    const core::EntityId spot = world.createEntity();
+
+    world.lightVolumes.emplace_back(glm::vec3(-10.0f), glm::vec3(10.0f));
+    world.transforms.emplace(renderableA, core::TransformComponent{});
+    world.transforms.emplace(renderableB, core::TransformComponent{glm::vec3(2.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.transforms.emplace(point, core::TransformComponent{});
+    world.transforms.emplace(spot, core::TransformComponent{glm::vec3(1.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.bounds.emplace(renderableA, core::BoundsComponent{render::Bounds3{glm::vec3(0.0f), glm::vec3(1.0f)}});
+    world.bounds.emplace(renderableB, core::BoundsComponent{render::Bounds3{glm::vec3(0.0f), glm::vec3(1.0f)}});
+    world.renderables.emplace(renderableA, core::RenderableComponent{render::MeshHandle{0}, handle, render::RenderLayer::Geometry});
+    world.renderables.emplace(renderableB, core::RenderableComponent{render::MeshHandle{1}, handle, render::RenderLayer::Actors});
+    world.pointLights.emplace(point, core::PointLightComponent{4.0f, glm::vec3(1.0f), 1.0f, 0.0f, false, false, 0.0f, 0.0f});
+    world.spotLights.emplace(spot, core::SpotLightComponent{5.0f, glm::vec3(1.0f), 1.0f, glm::vec3(0.0f), 15.0f, 25.0f, 0.0f, false, false, 0.0f, 0.0f});
+    world.markTransformsDirty(renderableA);
+    world.markTransformsDirty(renderableB);
+
+    transformSystem.update(world, scheduler);
+    lightSystem.update(world, core::TimeContext{1.0f, 0.016f}, scheduler);
+
+    core::FrameSceneData frame;
+    extraction.extract(world, materials, selection, frame, scheduler);
+
+    assert(frame.renderables.size() == 2u);
+    assert(frame.renderables[0].entity == renderableA);
+    assert(frame.renderables[1].entity == renderableB);
+    assert(frame.lights.size() == 2u);
+    assert(frame.lights[0].entity == point);
+    assert(frame.lights[1].entity == spot);
+}
+
 void testRenderSceneViewBuildResolvesRenderableSelection() {
+    core::TaskScheduler scheduler = makeScheduler();
     core::FrameSceneData frame;
     frame.renderables.push_back(core::FrameRenderable{
         core::EntityId{1, 1},
@@ -290,7 +510,11 @@ void testRenderSceneViewBuildResolvesRenderableSelection() {
     frame.selection.worldBounds = render::Bounds3{glm::vec3(2.0f), glm::vec3(3.0f)};
     frame.selection.transformMatrix = glm::mat4(2.0f);
 
-    const render::RenderSceneView scene = render::buildRenderSceneView(frame, std::vector<const render::MeshBuffer*>{nullptr});
+    const render::RenderSceneView scene = render::buildRenderSceneView(
+        frame,
+        std::vector<const render::MeshBuffer*>{nullptr},
+        scheduler
+    );
     assert(scene.objects.size() == 1u);
     assert(scene.selection.kind == render::RenderSelectionKind::Renderable);
     assert(scene.selection.index == 0);
@@ -298,29 +522,126 @@ void testRenderSceneViewBuildResolvesRenderableSelection() {
 }
 
 void testRenderSceneViewBuildResolvesLightSelection() {
+    core::TaskScheduler scheduler = makeScheduler();
     core::FrameSceneData frame;
     frame.lights.push_back(core::FrameLight{core::EntityId{4, 1}, render::LightType::Point});
     frame.selection.entity = core::EntityId{4, 1};
 
-    const render::RenderSceneView scene = render::buildRenderSceneView(frame, {});
+    const render::RenderSceneView scene = render::buildRenderSceneView(frame, {}, scheduler);
     assert(scene.selection.kind == render::RenderSelectionKind::Light);
     assert(scene.selection.index == 0);
 }
 
 void testRenderSceneViewBuildResolvesNodeSelection() {
+    core::TaskScheduler scheduler = makeScheduler();
     core::FrameSceneData frame;
     frame.selection.entity = core::EntityId{9, 1};
     frame.selection.worldBounds = render::Bounds3{glm::vec3(1.0f), glm::vec3(4.0f)};
     frame.selection.hasWorldBounds = true;
     frame.selection.transformMatrix = glm::mat4(3.0f);
 
-    const render::RenderSceneView scene = render::buildRenderSceneView(frame, {});
+    const render::RenderSceneView scene = render::buildRenderSceneView(frame, {}, scheduler);
     assert(scene.selection.kind == render::RenderSelectionKind::Node);
     assert(scene.selection.index == -1);
     assert(scene.selection.hasWorldBounds);
     assert(scene.selection.worldBounds.min.x == 1.0f);
     assert(scene.selection.worldBounds.max.x == 4.0f);
     assert(scene.selection.transformMatrix[0][0] == 3.0f);
+}
+
+void runFramePreparationIterations(std::size_t workerCount) {
+    core::TaskScheduler scheduler = makeScheduler(workerCount);
+    core::World world;
+    core::MaterialLibrary materials;
+    core::SelectionModel selection;
+    core::TransformSystem transformSystem;
+    core::LightSystem lightSystem;
+    core::RenderExtractionSystem extraction;
+    core::FrameSceneData frame;
+
+    auto material = std::make_shared<render::Material>();
+    material->name = "Frame Prep";
+    const core::MaterialHandle materialHandle = materials.add(material);
+
+    const core::EntityId root = world.createEntity();
+    const core::EntityId renderableA = world.createEntity();
+    const core::EntityId renderableB = world.createEntity();
+    const core::EntityId point = world.createEntity();
+    const core::EntityId spot = world.createEntity();
+
+    world.transforms.emplace(root, core::TransformComponent{glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.parents.emplace(renderableA, core::ParentComponent{root});
+    world.transforms.emplace(renderableA, core::TransformComponent{glm::vec3(0.5f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.transforms.emplace(renderableB, core::TransformComponent{glm::vec3(2.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.transforms.emplace(point, core::TransformComponent{glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.transforms.emplace(spot, core::TransformComponent{glm::vec3(1.0f, 2.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.bounds.emplace(renderableA, core::BoundsComponent{render::Bounds3{glm::vec3(-0.5f), glm::vec3(0.5f)}});
+    world.bounds.emplace(renderableB, core::BoundsComponent{render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)}});
+    world.renderables.emplace(renderableA, core::RenderableComponent{render::MeshHandle{0}, materialHandle, render::RenderLayer::Geometry});
+    world.renderables.emplace(renderableB, core::RenderableComponent{render::MeshHandle{1}, materialHandle, render::RenderLayer::Actors});
+    world.pointLights.emplace(point, core::PointLightComponent{4.0f, glm::vec3(1.0f), 1.0f, 0.0f, false, false, 0.0f, 0.0f});
+    world.spotLights.emplace(
+        spot,
+        core::SpotLightComponent{
+            6.0f,
+            glm::vec3(1.0f),
+            1.0f,
+            glm::vec3(0.0f, 0.0f, 0.0f),
+            15.0f,
+            25.0f,
+            0.0f,
+            true,
+            false,
+            0.0f,
+            0.0f
+        }
+    );
+    world.lightVolumes.emplace_back(glm::vec3(-10.0f), glm::vec3(10.0f));
+
+    const std::vector<const render::MeshBuffer*> meshLookup{nullptr, nullptr};
+    glm::vec3 previousRootPosition = world.transforms.get(root).position;
+
+    for (int iteration = 0; iteration < 4; ++iteration) {
+        world.transforms.get(root).position.x += 0.25f;
+        world.transforms.get(renderableB).position.y += 0.5f;
+        world.markTransformsDirty(root);
+        world.markTransformsDirty(renderableB);
+        world.markLightsDirty(point);
+        world.markLightsDirty(spot);
+
+        const core::TimeContext timeContext{static_cast<float>(iteration) * 0.25f, 1.0f / 60.0f};
+        transformSystem.update(world, scheduler);
+        lightSystem.update(world, timeContext, scheduler);
+        extraction.extract(world, materials, selection, frame, scheduler);
+        const render::RenderSceneView scene = render::buildRenderSceneView(frame, meshLookup, scheduler);
+
+        assert(frame.renderables.size() == 2u);
+        assert(frame.renderables[0].entity == renderableA);
+        assert(frame.renderables[1].entity == renderableB);
+        assert(frame.lights.size() == 2u);
+        assert(frame.lights[0].entity == point);
+        assert(frame.lights[1].entity == spot);
+        assert(frame.lightVolumes.size() == 1u);
+        assert(scene.objects.size() == 2u);
+        assert(scene.objects[0].sourceIndex == 0);
+        assert(scene.objects[1].sourceIndex == 1);
+        assert(scene.lights.size() == 2u);
+        assert(scene.lightVolumes.size() == 1u);
+        assert(world.transformCache_[renderableA.index].valid);
+        assert(world.transformCache_[renderableB.index].valid);
+        assert(world.lightVolumes[0].staticLightEntities().size() == 1u);
+        assert(world.lightVolumes[0].movableLightEntities().size() == 1u);
+        assert(world.transforms.get(root).position.x > previousRootPosition.x);
+        previousRootPosition = world.transforms.get(root).position;
+    }
+}
+
+void testFramePreparationRemainsStableWithSingleWorker() {
+    runFramePreparationIterations(1u);
+}
+
+void testFramePreparationRemainsStableWithMultipleWorkers() {
+    runFramePreparationIterations(4u);
 }
 
 void testActiveLightSelectionDeduplicatesAcrossVolumes() {
@@ -468,6 +789,38 @@ void testProfilerServiceDropsExcessCpuScopes() {
     assert(snapshots[0]->cpuScopes.size() == 1u);
     assert(snapshots[0]->cpuScopes[0].name == "Root");
     assert(profiler.stats().droppedCpuScopes == 1u);
+}
+
+void testProfilerServiceCapturesWorkerThreadScopes() {
+    core::ProfilerConfig config{};
+    config.maxFrames = 4u;
+    config.maxCpuScopesPerFrame = 64u;
+    core::ProfilerService profiler(config);
+    core::TaskScheduler scheduler = makeScheduler();
+    scheduler.setProfiler(&profiler);
+
+    profiler.startCapture();
+    profiler.beginFrame();
+
+    core::TaskGroup group;
+    std::atomic<int> finished{0};
+    for (int task = 0; task < 8; ++task) {
+        scheduler.schedule(group, "Worker Task", [&finished]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            finished.fetch_add(1, std::memory_order_acq_rel);
+        });
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    scheduler.wait(group);
+    assert(finished.load(std::memory_order_acquire) == 8);
+
+    profiler.endFrame({});
+    profiler.waitForWorkerIdle();
+
+    const auto snapshots = profiler.snapshots();
+    assert(snapshots.size() == 1u);
+    assert(containsNonMainThreadScope(snapshots[0]->cpuScopes));
 }
 
 void testProfilerServiceRetainsRawFramesForExport() {
@@ -669,17 +1022,28 @@ int main() {
     testComponentStoreDenseRemove();
     testEventBusOrderingAndUnsubscribe();
     testCommandHistoryUndoRedoAndMerge();
+    testTaskSchedulerParallelForCoversFullRange();
+    testTaskSchedulerWaitCompletesScheduledGroup();
+    testTaskSchedulerAsyncHandleDeliversResult();
+    testTaskSchedulerWaitRethrowsTaskFailures();
+    testTaskSchedulerRepeatedPhaseWaitsComplete();
     testTransformHierarchyAndBounds();
+    testTransformSystemProcessesMultipleRoots();
     testLightVolumeAssignment();
+    testLightVolumeAssignmentIsStableAcrossLightTypes();
     testMaterialHandleSharingExtraction();
+    testRenderExtractionPreservesOutputOrdering();
     testRenderSceneViewBuildResolvesRenderableSelection();
     testRenderSceneViewBuildResolvesLightSelection();
     testRenderSceneViewBuildResolvesNodeSelection();
+    testFramePreparationRemainsStableWithSingleWorker();
+    testFramePreparationRemainsStableWithMultipleWorkers();
     testActiveLightSelectionDeduplicatesAcrossVolumes();
     testPickingSystemCanIgnoreLights();
     testProfilerScopeTreeAggregatesNestedScopes();
     testProfilerServiceStartStopAndFrameRingBuffer();
     testProfilerServiceDropsExcessCpuScopes();
+    testProfilerServiceCapturesWorkerThreadScopes();
     testProfilerServiceRetainsRawFramesForExport();
     testPerfettoTraceExporterWritesTrackEventsAndCounters();
     testPerfettoTraceExporterFailsForInvalidOutputPath();

@@ -10,6 +10,10 @@
 #include "MeshBuffer.hpp"
 #include "ShadowSystem.hpp"
 
+namespace core {
+class TaskScheduler;
+}
+
 namespace render {
 
 struct RenderSceneObjectView {
@@ -45,8 +49,25 @@ struct RenderSceneView {
     RenderSelectionView selection{};
 };
 
+/**
+ * Resolves the editor selection into render-scene indices for the current frame.
+ */
 RenderSelectionView resolveRenderSelection(const core::FrameSceneData& frame);
-RenderSceneView buildRenderSceneView(const core::FrameSceneData& frame, const std::vector<const MeshBuffer*>& meshLookup);
+
+/**
+ * Builds the renderer-facing scene view from extracted frame data.
+ * Parallel mode is still frame-bound and waits for object build tasks to finish immediately.
+ */
+RenderSceneView buildRenderSceneView(
+    const core::FrameSceneData& frame,
+    const std::vector<const MeshBuffer*>& meshLookup,
+    core::TaskScheduler& scheduler,
+    bool useParallel = true
+);
+
+/**
+ * Collects the visible renderables used by the shadow passes.
+ */
 std::vector<ShadowSystem::ShadowRenderable> collectShadowRenderables(const RenderSceneView& scene);
 
 }  // namespace render

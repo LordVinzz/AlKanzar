@@ -33,6 +33,11 @@ double nsToMs(std::uint64_t durationNs) {
     return static_cast<double>(durationNs) / 1'000'000.0;
 }
 
+std::uint64_t nextProfilerInstanceId() {
+    static std::atomic<std::uint64_t> nextId{1u};
+    return nextId.fetch_add(1u, std::memory_order_acq_rel);
+}
+
 std::uint64_t currentThreadIdValue() {
     return static_cast<std::uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
 }
@@ -46,6 +51,14 @@ std::string threadLabel(std::uint64_t threadId, std::uint64_t mainThreadId) {
     stream << "T" << threadId;
     return stream.str();
 }
+
+struct ThreadCpuTlsEntry {
+    void* state{nullptr};
+    std::uint64_t frameSerial{0};
+    std::uint64_t instanceId{0};
+};
+
+thread_local std::unordered_map<const ProfilerService*, ThreadCpuTlsEntry> g_threadCpuTls{};
 
 struct AggregatedScopeNode {
     std::string name{};
@@ -232,8 +245,9 @@ ProfilerTraceFrame ProfilerService::buildTraceFrame(const RawFrameData& rawFrame
     return traceFrame;
 }
 
-ProfilerService::CpuScopeHandle::CpuScopeHandle(ProfilerService* profiler, std::uint32_t index)
+ProfilerService::CpuScopeHandle::CpuScopeHandle(ProfilerService* profiler, void* state, std::uint32_t index)
     : profiler_(profiler),
+      state_(state),
       index_(index) {}
 
 ProfilerService::CpuScopeHandle::~CpuScopeHandle() {
@@ -242,8 +256,10 @@ ProfilerService::CpuScopeHandle::~CpuScopeHandle() {
 
 ProfilerService::CpuScopeHandle::CpuScopeHandle(CpuScopeHandle&& other) noexcept
     : profiler_(other.profiler_),
+      state_(other.state_),
       index_(other.index_) {
     other.profiler_ = nullptr;
+    other.state_ = nullptr;
     other.index_ = ProfilerRecordedScope::kRoot;
 }
 
@@ -253,17 +269,20 @@ ProfilerService::CpuScopeHandle& ProfilerService::CpuScopeHandle::operator=(CpuS
     }
     reset();
     profiler_ = other.profiler_;
+    state_ = other.state_;
     index_ = other.index_;
     other.profiler_ = nullptr;
+    other.state_ = nullptr;
     other.index_ = ProfilerRecordedScope::kRoot;
     return *this;
 }
 
 void ProfilerService::CpuScopeHandle::reset() noexcept {
     if (profiler_ != nullptr && index_ != ProfilerRecordedScope::kRoot) {
-        profiler_->popCpuScope(index_);
+        profiler_->popCpuScope(state_, index_);
     }
     profiler_ = nullptr;
+    state_ = nullptr;
     index_ = ProfilerRecordedScope::kRoot;
 }
 
@@ -304,7 +323,8 @@ void ProfilerService::GpuScopeHandle::reset() noexcept {
 
 ProfilerService::ProfilerService(ProfilerConfig config)
     : config_(config),
-      mainThreadId_(currentThreadIdValue()) {
+      mainThreadId_(currentThreadIdValue()),
+      instanceId_(nextProfilerInstanceId()) {
     worker_ = std::thread([this]() { workerLoop(); });
 }
 
@@ -351,25 +371,23 @@ void ProfilerService::beginFrame() {
         stopRequested_ = false;
     }
 
-    currentFrameActive_ = capturing_;
+    currentFrameActive_.store(capturing_, std::memory_order_release);
     currentProfilerUiMs_ = 0.0;
     gpuScopeOpen_ = false;
-    currentCpuScopes_.clear();
-    currentCpuStack_.clear();
     currentGpuPasses_.clear();
+    reservedCpuScopes_.store(0u, std::memory_order_release);
 
-    if (!currentFrameActive_) {
+    if (!currentFrameActive_.load(std::memory_order_acquire)) {
         return;
     }
 
+    cpuFrameSerial_.fetch_add(1u, std::memory_order_acq_rel);
     currentFrameStartNs_ = nowNs();
-    currentCpuScopes_.reserve(config_.maxCpuScopesPerFrame);
-    currentCpuStack_.reserve(config_.maxCpuScopesPerFrame);
     currentGpuPasses_.reserve(config_.maxGpuScopesPerFrame);
 }
 
 void ProfilerService::endFrame(const std::vector<render::ResourceMemoryRecord>& resources) {
-    if (!currentFrameActive_) {
+    if (!currentFrameActive_.load(std::memory_order_acquire)) {
         return;
     }
 
@@ -385,17 +403,47 @@ void ProfilerService::endFrame(const std::vector<render::ResourceMemoryRecord>& 
     rawFrame.endNs = nowNs();
     rawFrame.profilerUiMs = currentProfilerUiMs_;
     rawFrame.resources = resources;
-    rawFrame.cpuScopes.reserve(currentCpuScopes_.size());
     rawFrame.gpuPasses.reserve(currentGpuPasses_.size());
+    const std::uint64_t frameSerial = cpuFrameSerial_.load(std::memory_order_acquire);
 
-    for (const RawCpuScope& scope : currentCpuScopes_) {
-        rawFrame.cpuScopes.push_back(ProfilerRecordedScope{
-            scope.name,
-            scope.parentIndex,
-            scope.startNs,
-            scope.endNs,
-            scope.threadId
-        });
+    std::vector<const ThreadCpuState*> threadStates{};
+    {
+        std::lock_guard lock(cpuStateMutex_);
+        threadStates.reserve(currentCpuThreadStates_.size());
+        for (const std::unique_ptr<ThreadCpuState>& state : currentCpuThreadStates_) {
+            if (state && state->frameSerial == frameSerial && !state->scopes.empty()) {
+                threadStates.push_back(state.get());
+            }
+        }
+    }
+
+    std::sort(threadStates.begin(), threadStates.end(), [this](const ThreadCpuState* lhs, const ThreadCpuState* rhs) {
+        const bool lhsMain = lhs->threadId == mainThreadId_;
+        const bool rhsMain = rhs->threadId == mainThreadId_;
+        if (lhsMain != rhsMain) {
+            return lhsMain;
+        }
+        return lhs->threadId < rhs->threadId;
+    });
+
+    std::size_t totalCpuScopes = 0u;
+    for (const ThreadCpuState* state : threadStates) {
+        totalCpuScopes += state->scopes.size();
+    }
+    rawFrame.cpuScopes.reserve(totalCpuScopes);
+
+    for (const ThreadCpuState* state : threadStates) {
+        const std::uint32_t scopeOffset = static_cast<std::uint32_t>(rawFrame.cpuScopes.size());
+        for (const RawCpuScope& scope : state->scopes) {
+            rawFrame.cpuScopes.push_back(ProfilerRecordedScope{
+                scope.name,
+                scope.parentIndex == ProfilerRecordedScope::kRoot ? ProfilerRecordedScope::kRoot
+                                                                  : scopeOffset + scope.parentIndex,
+                scope.startNs,
+                scope.endNs,
+                scope.threadId
+            });
+        }
     }
 
     for (RawGpuPassState& pass : currentGpuPasses_) {
@@ -427,7 +475,7 @@ void ProfilerService::endFrame(const std::vector<render::ResourceMemoryRecord>& 
         }
     }
 
-    currentFrameActive_ = false;
+    currentFrameActive_.store(false, std::memory_order_release);
     if (stopRequested_) {
         capturing_ = false;
         stopRequested_ = false;
@@ -435,15 +483,15 @@ void ProfilerService::endFrame(const std::vector<render::ResourceMemoryRecord>& 
 }
 
 void ProfilerService::recordProfilerUiTime(double durationMs) {
-    if (!currentFrameActive_) {
+    if (!currentFrameActive_.load(std::memory_order_acquire)) {
         return;
     }
     currentProfilerUiMs_ += std::max(durationMs, 0.0);
 }
 
 ProfilerService::CpuScopeHandle ProfilerService::scopedCpu(const char* name) {
-    const std::uint32_t index = pushCpuScope(name);
-    return CpuScopeHandle(index == ProfilerRecordedScope::kRoot ? nullptr : this, index);
+    const CpuScopeToken token = pushCpuScope(name);
+    return CpuScopeHandle(token.index == ProfilerRecordedScope::kRoot ? nullptr : this, token.state, token.index);
 }
 
 ProfilerService::GpuScopeHandle ProfilerService::scopedGpu(const char* name) {
@@ -457,7 +505,7 @@ ProfilerStats ProfilerService::stats() const {
     snapshot.startPending = startRequested_;
     snapshot.stopPending = stopRequested_;
     snapshot.pendingGpuFrames = pendingGpuFrames_.size();
-    snapshot.droppedCpuScopes = droppedCpuScopes_;
+    snapshot.droppedCpuScopes = droppedCpuScopes_.load(std::memory_order_acquire);
     snapshot.droppedGpuScopes = droppedGpuScopes_;
     snapshot.droppedFrames = droppedFrames_;
     snapshot.currentFrameNumber = currentFrameNumber_;
@@ -495,40 +543,71 @@ void ProfilerService::waitForWorkerIdle() {
     });
 }
 
-std::uint32_t ProfilerService::pushCpuScope(const char* name) {
-    if (!currentFrameActive_ || name == nullptr) {
-        return ProfilerRecordedScope::kRoot;
-    }
-    if (currentCpuScopes_.size() >= config_.maxCpuScopesPerFrame) {
-        ++droppedCpuScopes_;
-        return ProfilerRecordedScope::kRoot;
+ProfilerService::CpuScopeToken ProfilerService::pushCpuScope(const char* name) {
+    if (!currentFrameActive_.load(std::memory_order_acquire) || name == nullptr) {
+        return {};
     }
 
-    const std::uint32_t index = static_cast<std::uint32_t>(currentCpuScopes_.size());
-    currentCpuScopes_.push_back(RawCpuScope{
+    const std::size_t reservation = reservedCpuScopes_.fetch_add(1u, std::memory_order_acq_rel);
+    if (reservation >= config_.maxCpuScopesPerFrame) {
+        droppedCpuScopes_.fetch_add(1u, std::memory_order_acq_rel);
+        return {};
+    }
+
+    ThreadCpuTlsEntry& tls = g_threadCpuTls[this];
+    if (tls.instanceId != instanceId_) {
+        tls = ThreadCpuTlsEntry{};
+        tls.instanceId = instanceId_;
+    }
+    const std::uint64_t frameSerial = cpuFrameSerial_.load(std::memory_order_acquire);
+    ThreadCpuState* state = static_cast<ThreadCpuState*>(tls.state);
+    if (state == nullptr) {
+        std::lock_guard lock(cpuStateMutex_);
+        currentCpuThreadStates_.push_back(std::make_unique<ThreadCpuState>());
+        state = currentCpuThreadStates_.back().get();
+        state->threadId = currentThreadIdValue();
+        tls.state = state;
+    }
+
+    if (tls.frameSerial != frameSerial) {
+        state->frameSerial = frameSerial;
+        state->scopes.clear();
+        state->stack.clear();
+        state->scopes.reserve(config_.maxCpuScopesPerFrame);
+        state->stack.reserve(config_.maxCpuScopesPerFrame);
+        tls.frameSerial = frameSerial;
+    }
+
+    const std::uint32_t index = static_cast<std::uint32_t>(state->scopes.size());
+    state->scopes.push_back(RawCpuScope{
         name,
-        currentCpuStack_.empty() ? ProfilerRecordedScope::kRoot : currentCpuStack_.back(),
+        state->stack.empty() ? ProfilerRecordedScope::kRoot : state->stack.back(),
         nowNs(),
         0u,
-        currentThreadIdValue()
+        state->threadId
     });
-    currentCpuStack_.push_back(index);
-    return index;
+    state->stack.push_back(index);
+    return CpuScopeToken{state, index};
 }
 
-void ProfilerService::popCpuScope(std::uint32_t index) {
-    if (!currentFrameActive_ || index == ProfilerRecordedScope::kRoot || index >= currentCpuScopes_.size()) {
+void ProfilerService::popCpuScope(void* statePtr, std::uint32_t index) {
+    if (statePtr == nullptr || index == ProfilerRecordedScope::kRoot) {
         return;
     }
 
-    currentCpuScopes_[index].endNs = nowNs();
-    if (!currentCpuStack_.empty() && currentCpuStack_.back() == index) {
-        currentCpuStack_.pop_back();
+    auto* state = static_cast<ThreadCpuState*>(statePtr);
+    if (index >= state->scopes.size()) {
+        return;
+    }
+
+    state->scopes[index].endNs = nowNs();
+    if (!state->stack.empty() && state->stack.back() == index) {
+        state->stack.pop_back();
     }
 }
 
 std::uint32_t ProfilerService::beginGpuScope(const char* name) {
-    if (!currentFrameActive_ || name == nullptr) {
+    if (!currentFrameActive_.load(std::memory_order_acquire) || name == nullptr) {
         return ProfilerRecordedScope::kRoot;
     }
     if (gpuScopeOpen_ || currentGpuPasses_.size() >= config_.maxGpuScopesPerFrame) {
@@ -557,7 +636,10 @@ std::uint32_t ProfilerService::beginGpuScope(const char* name) {
 }
 
 void ProfilerService::endGpuScope(std::uint32_t index) {
-    if (!currentFrameActive_ || index == ProfilerRecordedScope::kRoot || index >= currentGpuPasses_.size() || !gpuScopeOpen_) {
+    if (!currentFrameActive_.load(std::memory_order_acquire) ||
+        index == ProfilerRecordedScope::kRoot ||
+        index >= currentGpuPasses_.size() ||
+        !gpuScopeOpen_) {
         return;
     }
 
@@ -570,7 +652,8 @@ void ProfilerService::applyStartCapture() {
     capturing_ = true;
     startRequested_ = false;
     stopRequested_ = false;
-    droppedCpuScopes_ = 0;
+    droppedCpuScopes_.store(0u, std::memory_order_release);
+    reservedCpuScopes_.store(0u, std::memory_order_release);
     droppedGpuScopes_ = 0;
     droppedFrames_ = 0;
     clearPendingGpuFrames();

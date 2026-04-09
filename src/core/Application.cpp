@@ -1,12 +1,112 @@
 #include "Application.hpp"
 
 #include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <string_view>
 
 #include "Camera.hpp"
+#include <spdlog/spdlog.h>
 
 namespace core {
 
 namespace {
+
+struct FrameStageDiagnosticsConfig {
+    bool enableParallelTransformUpdate{false};
+    bool forceSequentialTransformUpdate{false};
+    bool enableParallelLightUpdate{false};
+    bool forceSequentialLightUpdate{false};
+    bool forceSequentialRenderExtraction{false};
+    bool enableParallelRenderExtraction{false};
+    bool enableParallelSceneView{false};
+    bool forceSequentialSceneView{false};
+    bool disableProfilerFrame{false};
+    bool disableSchedulerProfiling{false};
+    bool logFrameStages{false};
+    std::uint64_t logFrameStageLimit{8u};
+
+    [[nodiscard]] bool hasRuntimeOverrides() const {
+        return enableParallelTransformUpdate ||
+            forceSequentialTransformUpdate ||
+            enableParallelLightUpdate ||
+            forceSequentialLightUpdate ||
+            forceSequentialRenderExtraction ||
+            enableParallelRenderExtraction ||
+            enableParallelSceneView ||
+            forceSequentialSceneView ||
+            disableProfilerFrame ||
+            disableSchedulerProfiling;
+    }
+
+    [[nodiscard]] bool shouldLogFrameStage(std::uint64_t frameIndex) const {
+        return logFrameStages && frameIndex < logFrameStageLimit;
+    }
+};
+
+bool readBoolEnv(const char* name) {
+    const char* value = std::getenv(name);
+    if (value == nullptr) {
+        return false;
+    }
+
+    const std::string_view token(value);
+    return !token.empty() &&
+        token != "0" &&
+        token != "false" &&
+        token != "FALSE" &&
+        token != "off" &&
+        token != "OFF" &&
+        token != "no" &&
+        token != "NO";
+}
+
+std::uint64_t readUintEnv(const char* name, std::uint64_t fallback) {
+    const char* value = std::getenv(name);
+    if (value == nullptr || *value == '\0') {
+        return fallback;
+    }
+
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(value, &end, 10);
+    if (end == value || (end != nullptr && *end != '\0')) {
+        return fallback;
+    }
+
+    return static_cast<std::uint64_t>(parsed);
+}
+
+FrameStageDiagnosticsConfig loadFrameStageDiagnosticsConfig() {
+    FrameStageDiagnosticsConfig config{};
+    config.enableParallelTransformUpdate = readBoolEnv("ALKANZAR_ENABLE_PARALLEL_TRANSFORM_UPDATE");
+    config.forceSequentialTransformUpdate = readBoolEnv("ALKANZAR_FORCE_SEQUENTIAL_TRANSFORM_UPDATE");
+    config.enableParallelLightUpdate = readBoolEnv("ALKANZAR_ENABLE_PARALLEL_LIGHT_UPDATE");
+    config.forceSequentialLightUpdate = readBoolEnv("ALKANZAR_FORCE_SEQUENTIAL_LIGHT_UPDATE");
+    config.forceSequentialRenderExtraction = readBoolEnv("ALKANZAR_FORCE_SEQUENTIAL_RENDER_EXTRACTION");
+    config.enableParallelRenderExtraction = readBoolEnv("ALKANZAR_ENABLE_PARALLEL_RENDER_EXTRACTION");
+    config.enableParallelSceneView = readBoolEnv("ALKANZAR_ENABLE_PARALLEL_SCENE_VIEW");
+    config.forceSequentialSceneView = readBoolEnv("ALKANZAR_FORCE_SEQUENTIAL_SCENE_VIEW");
+    config.disableProfilerFrame = readBoolEnv("ALKANZAR_DISABLE_PROFILER_FRAME");
+    config.disableSchedulerProfiling = readBoolEnv("ALKANZAR_DISABLE_SCHEDULER_PROFILING");
+    config.logFrameStages = readBoolEnv("ALKANZAR_LOG_FRAME_STAGES");
+    config.logFrameStageLimit = readUintEnv("ALKANZAR_LOG_FRAME_STAGE_LIMIT", 8u);
+    return config;
+}
+
+void logFrameStageBoundary(
+    std::string_view boundary,
+    std::string_view stage,
+    std::uint64_t frameIndex,
+    std::string_view mode
+) {
+    spdlog::info(
+        "Application: frame {} {} {} [{}]",
+        frameIndex,
+        boundary,
+        stage,
+        mode
+    );
+}
 
 bool anyEditorToolWindowVisible(const EditorSession& session) {
     return session.sceneHierarchyVisible || session.inspectorWindowVisible || session.profilerWindowVisible;
@@ -45,17 +145,50 @@ Application::Application(int width, int height)
 
 void Application::run() {
     transitionTo(AppMode::Bootstrap);
+    const FrameStageDiagnosticsConfig diagnostics = loadFrameStageDiagnosticsConfig();
+    const bool useParallelTransformUpdate =
+        diagnostics.enableParallelTransformUpdate && !diagnostics.forceSequentialTransformUpdate;
+    const bool useParallelLightUpdate =
+        diagnostics.enableParallelLightUpdate && !diagnostics.forceSequentialLightUpdate;
+    const bool useParallelRenderExtraction =
+        diagnostics.enableParallelRenderExtraction && !diagnostics.forceSequentialRenderExtraction;
+    const bool useParallelSceneView =
+        diagnostics.enableParallelSceneView && !diagnostics.forceSequentialSceneView;
+    if (diagnostics.disableSchedulerProfiling) {
+        services_.scheduler.setProfiler(nullptr);
+    }
+    spdlog::info(
+        "Application: frame diagnostics "
+        "(transform={}, light={}, extraction={}, scene_view={}, profiler_frame={}, scheduler_profiling={}, frame_logs={}, log_limit={})",
+        useParallelTransformUpdate ? "parallel" : "sequential",
+        useParallelLightUpdate ? "parallel" : "sequential",
+        useParallelRenderExtraction ? "parallel" : "sequential",
+        useParallelSceneView ? "parallel" : "sequential",
+        diagnostics.disableProfilerFrame ? "disabled" : "enabled",
+        diagnostics.disableSchedulerProfiling ? "disabled" : "enabled",
+        diagnostics.logFrameStages,
+        diagnostics.logFrameStageLimit
+    );
 
     Uint32 previousTicks = SDL_GetTicks();
+    std::uint64_t frameIndex = 0u;
     while (services_.running) {
-        services_.profiler.beginFrame();
+        if (!diagnostics.disableProfilerFrame) {
+            services_.profiler.beginFrame();
+        }
 
         {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Event Pump");
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary("begin", "Event Pump", frameIndex, "main");
+            }
             SDL_Event event;
             while (SDL_PollEvent(&event) != 0) {
                 services_.renderer.processEvent(event);
                 translateSdlEvent(event);
+            }
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary("end", "Event Pump", frameIndex, "main");
             }
         }
 
@@ -70,32 +203,105 @@ void Application::run() {
         services_.time.totalSeconds = static_cast<float>(currentTicks) * 0.001f;
         previousTicks = currentTicks;
 
+        if (diagnostics.shouldLogFrameStage(frameIndex)) {
+            logFrameStageBoundary("begin", "Begin ImGui Frame", frameIndex, "main");
+        }
         services_.renderer.beginImGuiFrame();
+        if (diagnostics.shouldLogFrameStage(frameIndex)) {
+            logFrameStageBoundary("end", "Begin ImGui Frame", frameIndex, "main");
+        }
         if (currentState_ != nullptr) {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "State Update");
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary("begin", "State Update", frameIndex, "main");
+            }
             currentState_->update(services_);
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary("end", "State Update", frameIndex, "main");
+            }
         }
 
         {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Transform Update");
-            services_.transformSystem.update(services_.world);
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary(
+                    "begin",
+                    "Transform Update",
+                    frameIndex,
+                    useParallelTransformUpdate ? "parallel" : "sequential"
+                );
+            }
+            services_.transformSystem.update(services_.world, services_.scheduler, useParallelTransformUpdate);
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary(
+                    "end",
+                    "Transform Update",
+                    frameIndex,
+                    useParallelTransformUpdate ? "parallel" : "sequential"
+                );
+            }
         }
         {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Light Update");
-            services_.lightSystem.update(services_.world, services_.time);
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary(
+                    "begin",
+                    "Light Update",
+                    frameIndex,
+                    useParallelLightUpdate ? "parallel" : "sequential"
+                );
+            }
+            services_.lightSystem.update(
+                services_.world,
+                services_.time,
+                services_.scheduler,
+                useParallelLightUpdate
+            );
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary(
+                    "end",
+                    "Light Update",
+                    frameIndex,
+                    useParallelLightUpdate ? "parallel" : "sequential"
+                );
+            }
         }
         {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Render Extraction");
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary(
+                    "begin",
+                    "Render Extraction",
+                    frameIndex,
+                    useParallelRenderExtraction ? "parallel" : "sequential"
+                );
+            }
             services_.renderExtractionSystem.extract(
                 services_.world,
                 services_.materials,
                 services_.selection,
-                services_.frame
+                services_.frame,
+                services_.scheduler,
+                useParallelRenderExtraction
             );
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary(
+                    "end",
+                    "Render Extraction",
+                    frameIndex,
+                    useParallelRenderExtraction ? "parallel" : "sequential"
+                );
+            }
         }
 
         if (currentState_ != nullptr) {
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary("begin", "State UI", frameIndex, "main");
+            }
             currentState_->renderUi(services_);
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary("end", "State UI", frameIndex, "main");
+            }
         }
 
         const render::CameraMatrices camera = computeCameraMatrices(
@@ -111,26 +317,75 @@ void Application::run() {
         };
         {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Render Frame");
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary(
+                    "begin",
+                    "Render Frame",
+                    frameIndex,
+                    useParallelSceneView ? "parallel" : "sequential"
+                );
+            }
             services_.renderer.renderFrame(
                 services_.frame,
                 camera,
-                renderOptions
+                renderOptions,
+                services_.scheduler,
+                useParallelSceneView
             );
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary(
+                    "end",
+                    "Render Frame",
+                    frameIndex,
+                    useParallelSceneView ? "parallel" : "sequential"
+                );
+            }
         }
         {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "ImGui Render");
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary("begin", "ImGui Render", frameIndex, "main");
+            }
             services_.renderer.renderImGui();
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary("end", "ImGui Render", frameIndex, "main");
+            }
         }
         {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Present");
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary("begin", "Present", frameIndex, "main");
+            }
             services_.renderer.present();
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary("end", "Present", frameIndex, "main");
+            }
         }
-        services_.profiler.endFrame(services_.renderer.profilingResources());
+        if (diagnostics.shouldLogFrameStage(frameIndex)) {
+            logFrameStageBoundary("begin", "Collect Profiling Resources", frameIndex, diagnostics.disableProfilerFrame ? "disabled" : "enabled");
+        }
+        const std::vector<render::ResourceMemoryRecord> profilingResources =
+            diagnostics.disableProfilerFrame ? std::vector<render::ResourceMemoryRecord>{}
+                                             : services_.renderer.profilingResources();
+        if (diagnostics.shouldLogFrameStage(frameIndex)) {
+            logFrameStageBoundary("end", "Collect Profiling Resources", frameIndex, diagnostics.disableProfilerFrame ? "disabled" : "enabled");
+        }
+        if (diagnostics.shouldLogFrameStage(frameIndex)) {
+            logFrameStageBoundary("begin", "Profiler End Frame", frameIndex, diagnostics.disableProfilerFrame ? "disabled" : "enabled");
+        }
+        if (!diagnostics.disableProfilerFrame) {
+            services_.profiler.endFrame(profilingResources);
+        }
+        if (diagnostics.shouldLogFrameStage(frameIndex)) {
+            logFrameStageBoundary("end", "Profiler End Frame", frameIndex, diagnostics.disableProfilerFrame ? "disabled" : "enabled");
+        }
 
         if (services_.requestedMode.has_value()) {
             transitionTo(*services_.requestedMode);
             services_.requestedMode.reset();
         }
+
+        ++frameIndex;
     }
 }
 

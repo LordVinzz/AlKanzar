@@ -1,6 +1,19 @@
 #include "RenderSceneView.hpp"
 
+#include <algorithm>
+
+#include "core/TaskScheduler.hpp"
+
 namespace render {
+
+namespace {
+
+std::size_t taskGrain(std::size_t count, std::size_t workerCount) {
+    const std::size_t lanes = std::max<std::size_t>(1u, workerCount + 1u) * 2u;
+    return std::max<std::size_t>(32u, (count + lanes - 1u) / lanes);
+}
+
+}  // namespace
 
 RenderSelectionView resolveRenderSelection(const core::FrameSceneData& frame) {
     RenderSelectionView selection{};
@@ -32,31 +45,70 @@ RenderSelectionView resolveRenderSelection(const core::FrameSceneData& frame) {
     return selection;
 }
 
-RenderSceneView buildRenderSceneView(const core::FrameSceneData& frame, const std::vector<const MeshBuffer*>& meshLookup) {
+RenderSceneView buildRenderSceneView(
+    const core::FrameSceneData& frame,
+    const std::vector<const MeshBuffer*>& meshLookup,
+    core::TaskScheduler& scheduler,
+    bool useParallel
+) {
     RenderSceneView scene{};
-    scene.objects.reserve(frame.renderables.size());
     scene.lights = frame.lights;
     scene.lightVolumes = frame.lightVolumes;
     scene.selection = resolveRenderSelection(frame);
 
-    for (std::size_t index = 0; index < frame.renderables.size(); ++index) {
-        const core::FrameRenderable& renderable = frame.renderables[index];
+    if (!useParallel) {
+        scene.objects.reserve(frame.renderables.size());
+        for (std::size_t index = 0; index < frame.renderables.size(); ++index) {
+            const core::FrameRenderable& renderable = frame.renderables[index];
 
-        const MeshBuffer* mesh = nullptr;
-        if (renderable.mesh.valid() && renderable.mesh.value < meshLookup.size()) {
-            mesh = meshLookup[renderable.mesh.value];
+            const MeshBuffer* mesh = nullptr;
+            if (renderable.mesh.valid() && renderable.mesh.value < meshLookup.size()) {
+                mesh = meshLookup[renderable.mesh.value];
+            }
+
+            RenderSceneObjectView object{};
+            object.sourceIndex = static_cast<int>(index);
+            object.mesh = mesh;
+            object.material = renderable.material;
+            object.layer = renderable.layer;
+            object.localBounds = renderable.localBounds;
+            object.worldBounds = renderable.worldBounds;
+            object.modelMatrix = renderable.modelMatrix;
+            object.visible = renderable.visible;
+            scene.objects.push_back(std::move(object));
         }
+    } else {
+        scene.objects.resize(frame.renderables.size());
 
-        RenderSceneObjectView object{};
-        object.sourceIndex = static_cast<int>(index);
-        object.mesh = mesh;
-        object.material = renderable.material;
-        object.layer = renderable.layer;
-        object.localBounds = renderable.localBounds;
-        object.worldBounds = renderable.worldBounds;
-        object.modelMatrix = renderable.modelMatrix;
-        object.visible = renderable.visible;
-        scene.objects.push_back(std::move(object));
+        core::TaskGroup buildGroup;
+        scheduler.parallelFor(
+            buildGroup,
+            frame.renderables.size(),
+            taskGrain(frame.renderables.size(), scheduler.workerCount()),
+            "Scene Object Build",
+            [&](std::size_t begin, std::size_t end) {
+                for (std::size_t index = begin; index < end; ++index) {
+                    const core::FrameRenderable& renderable = frame.renderables[index];
+
+                    const MeshBuffer* mesh = nullptr;
+                    if (renderable.mesh.valid() && renderable.mesh.value < meshLookup.size()) {
+                        mesh = meshLookup[renderable.mesh.value];
+                    }
+
+                    RenderSceneObjectView object{};
+                    object.sourceIndex = static_cast<int>(index);
+                    object.mesh = mesh;
+                    object.material = renderable.material;
+                    object.layer = renderable.layer;
+                    object.localBounds = renderable.localBounds;
+                    object.worldBounds = renderable.worldBounds;
+                    object.modelMatrix = renderable.modelMatrix;
+                    object.visible = renderable.visible;
+                    scene.objects[index] = std::move(object);
+                }
+            }
+        );
+        scheduler.wait(buildGroup);
     }
 
     return scene;

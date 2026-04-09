@@ -113,7 +113,7 @@ public:
     class CpuScopeHandle {
     public:
         CpuScopeHandle() = default;
-        CpuScopeHandle(ProfilerService* profiler, std::uint32_t index);
+        CpuScopeHandle(ProfilerService* profiler, void* state, std::uint32_t index);
         ~CpuScopeHandle();
 
         CpuScopeHandle(const CpuScopeHandle&) = delete;
@@ -125,6 +125,7 @@ public:
         void reset() noexcept;
 
         ProfilerService* profiler_{nullptr};
+        void* state_{nullptr};
         std::uint32_t index_{ProfilerRecordedScope::kRoot};
     };
 
@@ -171,7 +172,7 @@ public:
 
 private:
     struct RawCpuScope {
-        const char* name{nullptr};
+        std::string name{};
         std::uint32_t parentIndex{ProfilerRecordedScope::kRoot};
         std::uint64_t startNs{0};
         std::uint64_t endNs{0};
@@ -211,8 +212,20 @@ private:
         RawFrameData frame{};
     };
 
-    std::uint32_t pushCpuScope(const char* name);
-    void popCpuScope(std::uint32_t index);
+    struct ThreadCpuState {
+        std::uint64_t threadId{0};
+        std::uint64_t frameSerial{0};
+        std::vector<RawCpuScope> scopes{};
+        std::vector<std::uint32_t> stack{};
+    };
+
+    struct CpuScopeToken {
+        void* state{nullptr};
+        std::uint32_t index{ProfilerRecordedScope::kRoot};
+    };
+
+    CpuScopeToken pushCpuScope(const char* name);
+    void popCpuScope(void* state, std::uint32_t index);
     std::uint32_t beginGpuScope(const char* name);
     void endGpuScope(std::uint32_t index);
 
@@ -227,23 +240,26 @@ private:
 
     ProfilerConfig config_{};
     std::uint64_t mainThreadId_{0};
+    std::uint64_t instanceId_{0};
     std::uint64_t currentFrameNumber_{0};
     std::atomic<std::uint64_t> activeSessionId_{0};
+    std::atomic<std::uint64_t> cpuFrameSerial_{0};
+    std::atomic<std::size_t> reservedCpuScopes_{0};
     bool capturing_{false};
     bool startRequested_{false};
     bool stopRequested_{false};
-    bool currentFrameActive_{false};
+    std::atomic<bool> currentFrameActive_{false};
     bool gpuScopeOpen_{false};
     std::uint64_t currentFrameStartNs_{0};
     double currentProfilerUiMs_{0.0};
-    std::uint64_t droppedCpuScopes_{0};
+    std::atomic<std::uint64_t> droppedCpuScopes_{0};
     std::uint64_t droppedGpuScopes_{0};
     std::uint64_t droppedFrames_{0};
-    std::vector<RawCpuScope> currentCpuScopes_{};
-    std::vector<std::uint32_t> currentCpuStack_{};
     std::vector<RawGpuPassState> currentGpuPasses_{};
     std::deque<RawGpuFrame> pendingGpuFrames_{};
     std::vector<unsigned int> freeGpuQueries_{};
+    std::mutex cpuStateMutex_{};
+    std::vector<std::unique_ptr<ThreadCpuState>> currentCpuThreadStates_{};
 
     mutable std::mutex snapshotMutex_{};
     std::deque<std::shared_ptr<const ProfilerFrameSnapshot>> snapshots_{};

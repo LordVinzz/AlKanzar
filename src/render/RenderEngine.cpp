@@ -268,7 +268,9 @@ void* RenderEngine::texturePreviewId(const std::shared_ptr<Texture>& texture) {
 void RenderEngine::renderFrame(
     const core::FrameSceneData& frame,
     const CameraMatrices& camera,
-    const RenderFrameOptions& options
+    const RenderFrameOptions& options,
+    core::TaskScheduler& scheduler,
+    bool useParallelSceneView
 ) {
     if (!renderPath_ || !overlayRenderer_) {
         return;
@@ -283,14 +285,14 @@ void RenderEngine::renderFrame(
     if (profiler_) {
         {
             ALKANZAR_PROFILE_SCOPE(*profiler_, "Scene View Build");
-            sceneView_ = buildRenderSceneView(frame, meshLookup);
+            sceneView_ = buildRenderSceneView(frame, meshLookup, scheduler, useParallelSceneView);
         }
         {
             ALKANZAR_PROFILE_SCOPE(*profiler_, "Light Frame Build");
             lightFrame_ = lightPipeline_.buildFrame(sceneView_, camera.view, shadowSystem_, renderPath_->usesDeferredLighting());
         }
     } else {
-        sceneView_ = buildRenderSceneView(frame, meshLookup);
+        sceneView_ = buildRenderSceneView(frame, meshLookup, scheduler, useParallelSceneView);
         lightFrame_ = lightPipeline_.buildFrame(sceneView_, camera.view, shadowSystem_, renderPath_->usesDeferredLighting());
     }
 

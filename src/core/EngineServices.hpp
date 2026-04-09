@@ -17,6 +17,7 @@
 #include "SceneFactory.hpp"
 #include "SceneRegistry.hpp"
 #include "SelectionModel.hpp"
+#include "TaskScheduler.hpp"
 #include "TimeContext.hpp"
 #include "TransformSystem.hpp"
 #include "World.hpp"
@@ -33,12 +34,15 @@ struct InputSession {
 struct EngineServices {
     explicit EngineServices(int width, int height)
         : renderer(width, height),
+          scheduler(),
           events(512u) {
         renderer.setProfiler(&profiler);
+        scheduler.setProfiler(&profiler);
     }
 
     render::RenderEngine renderer;
     ProfilerService profiler;
+    TaskScheduler scheduler;
     EventBus<AppEvent> events;
     CommandHistory commands;
     SelectionModel selection;

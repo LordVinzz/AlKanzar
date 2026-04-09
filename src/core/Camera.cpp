@@ -10,7 +10,7 @@ namespace {
 constexpr float kIsoAngleX = 35.264f;
 constexpr float kIsoAngleY = 45.0f;
 constexpr float kBaseOrthoSize = 10.0f;
-constexpr float kNearPlane = 0.0f;
+constexpr float kNearPlane = 0.1f;
 constexpr float kFarPlane = 100.0f;
 constexpr float kOrbitSpeedDegPerSecond = 40.0f;
 

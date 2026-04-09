@@ -12,6 +12,7 @@ include(CTest)
 
 find_package(SDL2 REQUIRED)
 find_package(OpenGL REQUIRED)
+find_package(Threads REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(glm CONFIG REQUIRED)
 
@@ -28,6 +29,7 @@ add_library(alkanzar_core STATIC
     src/core/RenderExtractionSystem.cpp
     src/core/SceneFactory.cpp
     src/core/SceneRegistry.cpp
+    src/core/TaskScheduler.cpp
     src/core/TransformMath.cpp
     src/core/TransformSystem.cpp
 )
@@ -41,6 +43,7 @@ target_link_libraries(alkanzar_core
     PUBLIC
         alkanzar_render
         spdlog::spdlog
+        Threads::Threads
 )
 
 add_executable(AlKanzar

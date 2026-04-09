@@ -33,6 +33,7 @@ class SceneOverlayRenderer;
 
 namespace core {
 class ProfilerService;
+class TaskScheduler;
 }
 
 namespace render {
@@ -57,7 +58,9 @@ public:
     void renderFrame(
         const core::FrameSceneData& frame,
         const CameraMatrices& camera,
-        const RenderFrameOptions& options
+        const RenderFrameOptions& options,
+        core::TaskScheduler& scheduler,
+        bool useParallelSceneView = true
     );
     [[nodiscard]] MeshHandle uploadMesh(const Mesh& mesh);
     std::shared_ptr<Texture> registerTexture(const std::shared_ptr<Texture>& texture);

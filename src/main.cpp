@@ -10,6 +10,27 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/basic_file_sink.h>
 
+namespace {
+
+bool readBoolEnv(const char* name) {
+    const char* value = std::getenv(name);
+    if (value == nullptr) {
+        return false;
+    }
+
+    const std::string_view token(value);
+    return !token.empty() &&
+        token != "0" &&
+        token != "false" &&
+        token != "FALSE" &&
+        token != "off" &&
+        token != "OFF" &&
+        token != "no" &&
+        token != "NO";
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
     // Thread pool async
     spdlog::init_thread_pool(8192, 1);
@@ -41,7 +62,7 @@ int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::trace);
 
     // Flush auto
-    spdlog::flush_on(spdlog::level::err);
+    spdlog::flush_on(readBoolEnv("ALKANZAR_FLUSH_INFO_LOGS") ? spdlog::level::info : spdlog::level::err);
     spdlog::flush_every(std::chrono::seconds(1));
 
     spdlog::info("AlKanzar: checking SDL2 and OpenGL availability...");
