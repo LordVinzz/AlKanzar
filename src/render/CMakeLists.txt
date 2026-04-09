@@ -32,21 +32,21 @@ if(NOT imgui_POPULATED)
 endif()
 
 add_library(alkanzar_render STATIC
-    Geometry.cpp
-    Material.cpp
-    Profiling.cpp
-    RenderLightPipeline.cpp
-    RenderEngine.cpp
-    RenderPaths.cpp
-    RenderResourceRegistry.cpp
-    RenderSceneView.cpp
-    SceneGeometryRenderer.cpp
-    SceneOverlayRenderer.cpp
-    ShadowSystem.cpp
-    ShaderProgram.cpp
-    MeshBuffer.cpp
-    LightExecutionVolume.cpp
-    StaticGltfModel.cpp
+    engine/RenderEngine.cpp
+    engine/RenderPaths.cpp
+    engine/RenderResourceRegistry.cpp
+    engine/RenderSceneView.cpp
+    pipeline/RenderLightPipeline.cpp
+    pipeline/SceneGeometryRenderer.cpp
+    pipeline/SceneOverlayRenderer.cpp
+    pipeline/ShadowSystem.cpp
+    pipeline/LightExecutionVolume.cpp
+    resources/Geometry.cpp
+    resources/Material.cpp
+    resources/MeshBuffer.cpp
+    resources/Profiling.cpp
+    resources/ShaderProgram.cpp
+    resources/StaticGltfModel.cpp
 )
 
 set(SHADER_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)

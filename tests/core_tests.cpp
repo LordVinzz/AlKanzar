@@ -17,22 +17,22 @@
 
 #include <glm/ext/matrix_clip_space.hpp>
 
-#include "core/CommandHistory.hpp"
-#include "core/ComponentStore.hpp"
-#include "core/EventBus.hpp"
-#include "core/Events.hpp"
-#include "core/LightSystem.hpp"
-#include "core/MaterialLibrary.hpp"
-#include "core/PickingSystem.hpp"
-#include "core/ProfilerService.hpp"
-#include "core/RenderExtractionSystem.hpp"
-#include "core/SelectionModel.hpp"
-#include "core/TaskScheduler.hpp"
-#include "core/TransformSystem.hpp"
-#include "core/World.hpp"
-#include "render/Profiling.hpp"
-#include "render/RenderLightPipeline.hpp"
-#include "render/RenderSceneView.hpp"
+#include "core/editor/CommandHistory.hpp"
+#include "core/ecs/ComponentStore.hpp"
+#include "core/events/EventBus.hpp"
+#include "core/events/Events.hpp"
+#include "core/lighting/LightSystem.hpp"
+#include "core/lighting/MaterialLibrary.hpp"
+#include "core/systems/PickingSystem.hpp"
+#include "core/profiling/ProfilerService.hpp"
+#include "core/systems/RenderExtractionSystem.hpp"
+#include "core/editor/SelectionModel.hpp"
+#include "core/systems/TaskScheduler.hpp"
+#include "core/transform/TransformSystem.hpp"
+#include "core/ecs/World.hpp"
+#include "render/resources/Profiling.hpp"
+#include "render/pipeline/RenderLightPipeline.hpp"
+#include "render/engine/RenderSceneView.hpp"
 
 namespace {
 

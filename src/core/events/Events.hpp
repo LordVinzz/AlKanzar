@@ -1,0 +1,86 @@
+#pragma once
+
+#include <optional>
+#include <variant>
+
+#include "core/ecs/Entity.hpp"
+#include "core/lighting/MaterialLibrary.hpp"
+#include "render/engine/RenderTypes.hpp"
+
+namespace core {
+
+struct QuitRequestedEvent {};
+struct EnterEditorEvent {};
+struct ExitEditorEvent {};
+struct EnterGameplayEvent {};
+struct ToggleEditorEvent {};
+struct ToggleOrbitCameraEvent {};
+struct ToggleLightDebugEvent {};
+struct UndoRequestedEvent {};
+struct RedoRequestedEvent {};
+
+struct DebugViewSelectedEvent {
+    render::DebugView view{render::DebugView::Final};
+};
+
+struct ShadowCascadeStepEvent {
+    int delta{0};
+};
+
+struct WindowResizedEvent {
+    int width{0};
+    int height{0};
+};
+
+struct ViewportWheelEvent {
+    int delta{0};
+};
+
+struct ViewportPanEvent {
+    int dx{0};
+    int dy{0};
+};
+
+struct ViewportClickedEvent {
+    int x{0};
+    int y{0};
+};
+
+struct SelectionChangedEvent {
+    std::optional<EntityId> entity{};
+};
+
+struct TransformChangedEvent {
+    EntityId entity{};
+};
+
+struct LightChangedEvent {
+    EntityId entity{};
+};
+
+struct MaterialChangedEvent {
+    MaterialHandle material{};
+};
+
+using AppEvent = std::variant<
+    QuitRequestedEvent,
+    EnterEditorEvent,
+    ExitEditorEvent,
+    EnterGameplayEvent,
+    ToggleEditorEvent,
+    ToggleOrbitCameraEvent,
+    ToggleLightDebugEvent,
+    UndoRequestedEvent,
+    RedoRequestedEvent,
+    DebugViewSelectedEvent,
+    ShadowCascadeStepEvent,
+    WindowResizedEvent,
+    ViewportWheelEvent,
+    ViewportPanEvent,
+    ViewportClickedEvent,
+    SelectionChangedEvent,
+    TransformChangedEvent,
+    LightChangedEvent,
+    MaterialChangedEvent>;
+
+}  // namespace core

@@ -19,19 +19,19 @@ find_package(glm CONFIG REQUIRED)
 add_subdirectory(src/render)
 
 add_library(alkanzar_core STATIC
-    src/core/AppState.cpp
-    src/core/Application.cpp
-    src/core/Camera.cpp
-    src/core/LightSystem.cpp
-    src/core/PerfettoTraceExporter.cpp
-    src/core/PickingSystem.cpp
-    src/core/ProfilerService.cpp
-    src/core/RenderExtractionSystem.cpp
-    src/core/SceneFactory.cpp
-    src/core/SceneRegistry.cpp
-    src/core/TaskScheduler.cpp
-    src/core/TransformMath.cpp
-    src/core/TransformSystem.cpp
+    src/core/app/AppState.cpp
+    src/core/app/Application.cpp
+    src/core/scene/Camera.cpp
+    src/core/scene/SceneFactory.cpp
+    src/core/scene/SceneRegistry.cpp
+    src/core/lighting/LightSystem.cpp
+    src/core/transform/TransformMath.cpp
+    src/core/transform/TransformSystem.cpp
+    src/core/profiling/PerfettoTraceExporter.cpp
+    src/core/profiling/ProfilerService.cpp
+    src/core/systems/PickingSystem.cpp
+    src/core/systems/RenderExtractionSystem.cpp
+    src/core/systems/TaskScheduler.cpp
 )
 
 target_include_directories(alkanzar_core

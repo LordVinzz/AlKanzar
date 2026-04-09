@@ -3,8 +3,8 @@
 #include <SDL.h>
 #include <SDL_opengl.h>
 
-#include "core/Application.hpp"
-#include "render/RenderEngine.hpp"
+#include "core/app/Application.hpp"
+#include "render/engine/RenderEngine.hpp"
 #include <spdlog/spdlog.h>
 #include <spdlog/async.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
