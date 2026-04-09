@@ -18,6 +18,7 @@
 #include <glm/ext/matrix_clip_space.hpp>
 
 #include "core/editor/CommandHistory.hpp"
+#include "core/editor/EditorSession.hpp"
 #include "core/ecs/ComponentStore.hpp"
 #include "core/events/EventBus.hpp"
 #include "core/events/Events.hpp"
@@ -212,6 +213,53 @@ void testCommandHistoryUndoRedoAndMerge() {
     assert(value == 0);
     history.redo();
     assert(value == 3);
+}
+
+void testEditorSessionWindowVisibilityHelpers() {
+    core::EditorSession session;
+
+    assert(session.sceneHierarchyVisible);
+    assert(session.inspectorWindowVisible);
+    assert(session.profilerWindowVisible);
+
+    session.showAllWindows();
+    assert(session.mainWindowVisible);
+    assert(session.mainWindowFocusRequested);
+    assert(session.sceneHierarchyVisible);
+    assert(session.inspectorWindowVisible);
+    assert(session.profilerWindowVisible);
+    assert(!session.sceneHierarchyFocusRequested);
+    assert(!session.inspectorWindowFocusRequested);
+    assert(!session.profilerWindowFocusRequested);
+
+    session.setToolWindowsVisible(false);
+    assert(!session.anyToolWindowVisible());
+    assert(session.mainWindowVisible);
+
+    session.ensureToolWindowsVisible();
+    assert(session.sceneHierarchyVisible);
+    assert(session.inspectorWindowVisible);
+    assert(session.profilerWindowVisible);
+
+    session.sceneHierarchyVisible = false;
+    session.inspectorWindowVisible = true;
+    session.profilerWindowVisible = false;
+    session.suspendEditorUi();
+    assert(!session.mainWindowVisible);
+    assert(!session.sceneHierarchyVisible);
+    assert(session.inspectorWindowVisible);
+    assert(!session.profilerWindowVisible);
+    assert(!session.mainWindowFocusRequested);
+    assert(!session.sceneHierarchyFocusRequested);
+    assert(!session.inspectorWindowFocusRequested);
+    assert(!session.profilerWindowFocusRequested);
+    assert(!session.textureBrowserFocusRequested);
+
+    session.openMainWindow();
+    assert(session.mainWindowVisible);
+    assert(!session.sceneHierarchyVisible);
+    assert(session.inspectorWindowVisible);
+    assert(!session.profilerWindowVisible);
 }
 
 void testTaskSchedulerParallelForCoversFullRange() {
@@ -1022,6 +1070,7 @@ int main() {
     testComponentStoreDenseRemove();
     testEventBusOrderingAndUnsubscribe();
     testCommandHistoryUndoRedoAndMerge();
+    testEditorSessionWindowVisibilityHelpers();
     testTaskSchedulerParallelForCoversFullRange();
     testTaskSchedulerWaitCompletesScheduledGroup();
     testTaskSchedulerAsyncHandleDeliversResult();

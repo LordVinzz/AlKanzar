@@ -411,7 +411,9 @@ void drawEditorMainWindow(EngineServices& services) {
         bool sceneHierarchyVisible = services.editorSession.sceneHierarchyVisible;
         if (ImGui::Checkbox("Scene Hierarchy", &sceneHierarchyVisible)) {
             services.editorSession.sceneHierarchyVisible = sceneHierarchyVisible;
-            services.editorSession.sceneHierarchyFocusRequested = sceneHierarchyVisible;
+            if (!sceneHierarchyVisible) {
+                services.editorSession.sceneHierarchyFocusRequested = false;
+            }
         }
         ImGui::SameLine();
         ImGui::TextDisabled("Ctrl+S");
@@ -419,7 +421,9 @@ void drawEditorMainWindow(EngineServices& services) {
         bool inspectorVisible = services.editorSession.inspectorWindowVisible;
         if (ImGui::Checkbox("Inspector", &inspectorVisible)) {
             services.editorSession.inspectorWindowVisible = inspectorVisible;
-            services.editorSession.inspectorWindowFocusRequested = inspectorVisible;
+            if (!inspectorVisible) {
+                services.editorSession.inspectorWindowFocusRequested = false;
+            }
         }
         ImGui::SameLine();
         ImGui::TextDisabled("Ctrl+I");
@@ -427,32 +431,24 @@ void drawEditorMainWindow(EngineServices& services) {
         bool profilerVisible = services.editorSession.profilerWindowVisible;
         if (ImGui::Checkbox("Profiler", &profilerVisible)) {
             services.editorSession.profilerWindowVisible = profilerVisible;
-            services.editorSession.profilerWindowFocusRequested = profilerVisible;
+            if (!profilerVisible) {
+                services.editorSession.profilerWindowFocusRequested = false;
+            }
         }
         ImGui::SameLine();
         ImGui::TextDisabled("Ctrl+P");
 
         ImGui::Separator();
         if (ImGui::Button("Show All")) {
-            services.editorSession.sceneHierarchyVisible = true;
-            services.editorSession.sceneHierarchyFocusRequested = true;
-            services.editorSession.inspectorWindowVisible = true;
-            services.editorSession.inspectorWindowFocusRequested = true;
-            services.editorSession.profilerWindowVisible = true;
-            services.editorSession.profilerWindowFocusRequested = true;
+            services.editorSession.setToolWindowsVisible(true);
         }
         ImGui::SameLine();
         if (ImGui::Button("Hide All")) {
-            services.editorSession.sceneHierarchyVisible = false;
-            services.editorSession.sceneHierarchyFocusRequested = false;
-            services.editorSession.inspectorWindowVisible = false;
-            services.editorSession.inspectorWindowFocusRequested = false;
-            services.editorSession.profilerWindowVisible = false;
-            services.editorSession.profilerWindowFocusRequested = false;
+            services.editorSession.setToolWindowsVisible(false);
         }
 
         ImGui::Separator();
-        ImGui::TextDisabled("Press E to show or hide this window.");
+        ImGui::TextDisabled("Press E to toggle all editor features.");
     }
     ImGui::End();
 
@@ -1450,26 +1446,13 @@ void GameplayState::update(EngineServices& services) {
 void GameplayState::renderUi(EngineServices&) {}
 
 void EditorState::onEnter(EngineServices& services) {
-    if (!services.editorSession.mainWindowVisible &&
-        !services.editorSession.sceneHierarchyVisible &&
-        !services.editorSession.inspectorWindowVisible &&
-        !services.editorSession.profilerWindowVisible) {
-        services.editorSession.mainWindowVisible = true;
-        services.editorSession.mainWindowFocusRequested = true;
-        services.editorSession.sceneHierarchyVisible = true;
-        services.editorSession.sceneHierarchyFocusRequested = true;
-        services.editorSession.inspectorWindowVisible = true;
-        services.editorSession.profilerWindowVisible = true;
+    if (!services.editorSession.mainWindowVisible) {
+        services.editorSession.openMainWindow();
     }
 }
 
 void EditorState::onExit(EngineServices& services) {
-    services.editorSession.mainWindowVisible = false;
-    services.editorSession.mainWindowFocusRequested = false;
-    services.editorSession.sceneHierarchyFocusRequested = false;
-    services.editorSession.inspectorWindowFocusRequested = false;
-    services.editorSession.profilerWindowFocusRequested = false;
-    services.editorSession.textureBrowserFocusRequested = false;
+    services.editorSession.suspendEditorUi();
 }
 
 void EditorState::update(EngineServices& services) {

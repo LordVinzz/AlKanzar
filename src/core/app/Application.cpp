@@ -108,32 +108,8 @@ void logFrameStageBoundary(
     );
 }
 
-bool anyEditorToolWindowVisible(const EditorSession& session) {
-    return session.sceneHierarchyVisible || session.inspectorWindowVisible || session.profilerWindowVisible;
-}
-
-void ensureEditorToolWindowsVisible(EditorSession& session) {
-    if (anyEditorToolWindowVisible(session)) {
-        return;
-    }
-
-    session.sceneHierarchyVisible = true;
-    session.inspectorWindowVisible = true;
-    session.profilerWindowVisible = true;
-}
-
 void openEditorMainWindow(EditorSession& session) {
-    ensureEditorToolWindowsVisible(session);
-    session.mainWindowVisible = true;
-    session.mainWindowFocusRequested = true;
-}
-
-void clearEditorWindowFocus(EditorSession& session) {
-    session.mainWindowFocusRequested = false;
-    session.sceneHierarchyFocusRequested = false;
-    session.inspectorWindowFocusRequested = false;
-    session.profilerWindowFocusRequested = false;
-    session.textureBrowserFocusRequested = false;
+    session.openMainWindow();
 }
 
 }  // namespace
@@ -430,8 +406,7 @@ void Application::bindEventHandlers() {
     });
     services_.events.subscribe<ToggleEditorEvent>([this](const ToggleEditorEvent&) {
         if (currentMode_ == AppMode::Editor) {
-            services_.editorSession.mainWindowVisible = false;
-            clearEditorWindowFocus(services_.editorSession);
+            services_.editorSession.suspendEditorUi();
         } else {
             openEditorMainWindow(services_.editorSession);
         }
@@ -510,13 +485,7 @@ void Application::translateSdlEvent(const SDL_Event& event) {
                 break;
             }
             if (event.key.keysym.sym == SDLK_e && event.key.repeat == 0) {
-                if (currentMode_ != AppMode::Editor) {
-                    services_.requestedMode = AppMode::Editor;
-                    openEditorMainWindow(services_.editorSession);
-                } else {
-                    services_.editorSession.mainWindowVisible = !services_.editorSession.mainWindowVisible;
-                    services_.editorSession.mainWindowFocusRequested = services_.editorSession.mainWindowVisible;
-                }
+                services_.events.publish(ToggleEditorEvent{});
                 break;
             }
 
