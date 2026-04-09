@@ -8,6 +8,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(CTest)
+
 find_package(SDL2 REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(spdlog REQUIRED)
@@ -15,12 +17,53 @@ find_package(glm CONFIG REQUIRED)
 
 add_subdirectory(src/render)
 
+add_library(alkanzar_core STATIC
+    src/core/AppState.cpp
+    src/core/Application.cpp
+    src/core/Camera.cpp
+    src/core/LightSystem.cpp
+    src/core/PickingSystem.cpp
+    src/core/RenderExtractionSystem.cpp
+    src/core/SceneFactory.cpp
+    src/core/SceneRegistry.cpp
+    src/core/TransformMath.cpp
+    src/core/TransformSystem.cpp
+)
+
+target_include_directories(alkanzar_core
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(alkanzar_core
+    PUBLIC
+        alkanzar_render
+        spdlog::spdlog
+)
+
 add_executable(AlKanzar
     src/main.cpp
 )
 
 target_link_libraries(AlKanzar
     PRIVATE
-        alkanzar_render
-        spdlog::spdlog
+        alkanzar_core
 )
+
+if(BUILD_TESTING)
+    add_executable(alkanzar_core_tests
+        tests/core_tests.cpp
+    )
+
+    target_include_directories(alkanzar_core_tests
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+
+    target_link_libraries(alkanzar_core_tests
+        PRIVATE
+            alkanzar_core
+    )
+
+    add_test(NAME alkanzar_core_tests COMMAND alkanzar_core_tests)
+endif()

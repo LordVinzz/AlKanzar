@@ -34,7 +34,13 @@ endif()
 add_library(alkanzar_render STATIC
     Geometry.cpp
     Material.cpp
+    RenderLightPipeline.cpp
     RenderEngine.cpp
+    RenderPaths.cpp
+    RenderResourceRegistry.cpp
+    RenderSceneView.cpp
+    SceneGeometryRenderer.cpp
+    SceneOverlayRenderer.cpp
     ShadowSystem.cpp
     ShaderProgram.cpp
     MeshBuffer.cpp
@@ -108,7 +114,7 @@ target_link_libraries(alkanzar_render
         SDL2::SDL2
         OpenGL::GL
         glm::glm
-    PRIVATE
         imgui
+    PRIVATE
         spdlog::spdlog
 )

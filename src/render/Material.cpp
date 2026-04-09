@@ -442,4 +442,105 @@ const char* textureBindingModeName(TextureBindingMode mode) {
     }
 }
 
+const char* materialTextureSlotName(MaterialTextureSlot slot) {
+    switch (slot) {
+        case MaterialTextureSlot::BaseColor:
+            return "Base Color";
+        case MaterialTextureSlot::MetallicRoughness:
+            return "Metallic / Roughness";
+        case MaterialTextureSlot::Normal:
+            return "Normal";
+        case MaterialTextureSlot::Ao:
+            return "Ambient Occlusion";
+        case MaterialTextureSlot::Emissive:
+            return "Emissive";
+        case MaterialTextureSlot::Alpha:
+            return "Alpha";
+        case MaterialTextureSlot::Clearcoat:
+            return "Clearcoat";
+        case MaterialTextureSlot::DetailNormal:
+            return "Detail Normal";
+        case MaterialTextureSlot::Height:
+            return "Height";
+        default:
+            return "Unknown";
+    }
+}
+
+TextureSemantic textureSemanticForSlot(MaterialTextureSlot slot) {
+    switch (slot) {
+        case MaterialTextureSlot::BaseColor:
+            return TextureSemantic::BaseColor;
+        case MaterialTextureSlot::Normal:
+        case MaterialTextureSlot::DetailNormal:
+            return TextureSemantic::Normal;
+        case MaterialTextureSlot::MetallicRoughness:
+            return TextureSemantic::ORM;
+        case MaterialTextureSlot::Ao:
+            return TextureSemantic::AO;
+        case MaterialTextureSlot::Emissive:
+            return TextureSemantic::Emissive;
+        case MaterialTextureSlot::Alpha:
+            return TextureSemantic::Alpha;
+        case MaterialTextureSlot::Clearcoat:
+            return TextureSemantic::Clearcoat;
+        case MaterialTextureSlot::Height:
+            return TextureSemantic::Height;
+        default:
+            return TextureSemantic::Generic;
+    }
+}
+
+glm::vec4 defaultInlineValueForSlot(MaterialTextureSlot slot) {
+    switch (slot) {
+        case MaterialTextureSlot::BaseColor:
+            return glm::vec4(1.0f);
+        case MaterialTextureSlot::MetallicRoughness:
+            return glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);
+        case MaterialTextureSlot::Normal:
+        case MaterialTextureSlot::DetailNormal:
+            return glm::vec4(0.5f, 0.5f, 1.0f, 1.0f);
+        case MaterialTextureSlot::Ao:
+        case MaterialTextureSlot::Alpha:
+            return glm::vec4(1.0f);
+        case MaterialTextureSlot::Emissive:
+            return glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        case MaterialTextureSlot::Clearcoat:
+            return glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);
+        case MaterialTextureSlot::Height:
+            return glm::vec4(0.5f, 0.5f, 0.5f, 1.0f);
+        default:
+            return glm::vec4(0.0f);
+    }
+}
+
+TextureRef* textureRefForSlot(Material& material, MaterialTextureSlot slot) {
+    switch (slot) {
+        case MaterialTextureSlot::BaseColor:
+            return &material.baseColor;
+        case MaterialTextureSlot::MetallicRoughness:
+            return &material.metallicRoughness.texture;
+        case MaterialTextureSlot::Normal:
+            return &material.normal;
+        case MaterialTextureSlot::Ao:
+            return &material.ao;
+        case MaterialTextureSlot::Emissive:
+            return &material.emissive;
+        case MaterialTextureSlot::Alpha:
+            return &material.alpha;
+        case MaterialTextureSlot::Clearcoat:
+            return &material.clearcoat.texture;
+        case MaterialTextureSlot::DetailNormal:
+            return &material.detailNormal.texture;
+        case MaterialTextureSlot::Height:
+            return &material.height.texture;
+        default:
+            return nullptr;
+    }
+}
+
+const TextureRef* textureRefForSlot(const Material& material, MaterialTextureSlot slot) {
+    return textureRefForSlot(const_cast<Material&>(material), slot);
+}
+
 }  // namespace render

@@ -63,6 +63,18 @@ enum class TextureBindingMode {
     InlineValue,
 };
 
+enum class MaterialTextureSlot {
+    BaseColor = 0,
+    MetallicRoughness,
+    Normal,
+    Ao,
+    Emissive,
+    Alpha,
+    Clearcoat,
+    DetailNormal,
+    Height,
+};
+
 struct Texture {
     std::string name;
     int width{0};
@@ -252,5 +264,11 @@ const char* alphaModeName(AlphaMode mode);
 const char* textureSemanticName(TextureSemantic semantic);
 const char* textureOriginName(TextureOrigin origin);
 const char* textureBindingModeName(TextureBindingMode mode);
+const char* materialTextureSlotName(MaterialTextureSlot slot);
+
+TextureSemantic textureSemanticForSlot(MaterialTextureSlot slot);
+glm::vec4 defaultInlineValueForSlot(MaterialTextureSlot slot);
+TextureRef* textureRefForSlot(Material& material, MaterialTextureSlot slot);
+const TextureRef* textureRefForSlot(const Material& material, MaterialTextureSlot slot);
 
 }  // namespace render
