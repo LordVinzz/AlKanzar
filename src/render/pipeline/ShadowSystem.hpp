@@ -27,6 +27,9 @@ public:
     struct ShadowRenderable {
         const MeshBuffer* mesh{nullptr};
         glm::mat4 modelMatrix{1.0f};
+        bool skinned{false};
+        int jointMatrixBase{0};
+        int jointMatrixCount{0};
     };
 
     /**
@@ -113,17 +116,17 @@ public:
      * Renders directional cascades into the shadow map array.
      * @param meshes Meshes to draw as shadow casters.
      */
-    void renderDirectionalShadows(const std::vector<ShadowRenderable>& renderables) const;
+    void renderDirectionalShadows(const std::vector<ShadowRenderable>& renderables, GLuint jointTextureBuffer) const;
     /**
      * Renders spot light shadows into the shadow map array.
      * @param meshes Meshes to draw as shadow casters.
      */
-    void renderSpotShadows(const std::vector<ShadowRenderable>& renderables) const;
+    void renderSpotShadows(const std::vector<ShadowRenderable>& renderables, GLuint jointTextureBuffer) const;
     /**
      * Renders point light shadows into the cubemap array.
      * @param meshes Meshes to draw as shadow casters.
      */
-    void renderPointShadows(const std::vector<ShadowRenderable>& renderables) const;
+    void renderPointShadows(const std::vector<ShadowRenderable>& renderables, GLuint jointTextureBuffer) const;
 
     /**
      * Returns the active directional cascade count.
@@ -221,6 +224,9 @@ private:
     GLint shadowModeLocation_{-1};
     GLint shadowLightPositionLocation_{-1};
     GLint shadowFarPlaneLocation_{-1};
+    GLint shadowSkinnedLocation_{-1};
+    GLint shadowJointBaseIndexLocation_{-1};
+    GLint shadowJointCountLocation_{-1};
 
     int dirCascadeCount_{3};
     int dirShadowResolution_{2048};

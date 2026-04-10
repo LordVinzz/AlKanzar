@@ -62,6 +62,12 @@ bool ShadowSystem::init(const std::string& shaderRoot) {
     shadowModeLocation_ = shadowDepthShader_.uniformLocation("uShadowMode");
     shadowLightPositionLocation_ = shadowDepthShader_.uniformLocation("uLightPositionWorld");
     shadowFarPlaneLocation_ = shadowDepthShader_.uniformLocation("uLightFarPlane");
+    shadowSkinnedLocation_ = shadowDepthShader_.uniformLocation("uSkinned");
+    shadowJointBaseIndexLocation_ = shadowDepthShader_.uniformLocation("uJointBaseIndex");
+    shadowJointCountLocation_ = shadowDepthShader_.uniformLocation("uJointCount");
+
+    shadowDepthShader_.use();
+    glUniform1i(shadowDepthShader_.uniformLocation("uJointBuffer"), 0);
 
     ensureDirectionalResources();
     ensureSpotResources();
@@ -351,7 +357,7 @@ int ShadowSystem::registerPointShadow(const PointShadowDesc& desc) {
     return idx;
 }
 
-void ShadowSystem::renderDirectionalShadows(const std::vector<ShadowRenderable>& renderables) const {
+void ShadowSystem::renderDirectionalShadows(const std::vector<ShadowRenderable>& renderables, GLuint jointTextureBuffer) const {
     if (dirShadowMap_ == 0 || dirShadowFbo_ == 0 || dirCascadeCount_ == 0) {
         return;
     }
@@ -368,6 +374,8 @@ void ShadowSystem::renderDirectionalShadows(const std::vector<ShadowRenderable>&
     glPolygonOffset(2.0f, 4.0f);
 
     shadowDepthShader_.use();
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, jointTextureBuffer);
     glUniform1i(shadowModeLocation_, 0);
     for (int cascade = 0; cascade < dirCascadeCount_; ++cascade) {
         glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, dirShadowMap_, 0, cascade);
@@ -378,6 +386,9 @@ void ShadowSystem::renderDirectionalShadows(const std::vector<ShadowRenderable>&
                 continue;
             }
             glUniformMatrix4fv(shadowModelLocation_, 1, GL_FALSE, glm::value_ptr(renderable.modelMatrix));
+            glUniform1i(shadowSkinnedLocation_, renderable.skinned ? 1 : 0);
+            glUniform1i(shadowJointBaseIndexLocation_, renderable.jointMatrixBase);
+            glUniform1i(shadowJointCountLocation_, renderable.jointMatrixCount);
             renderable.mesh->draw();
         }
     }
@@ -388,7 +399,7 @@ void ShadowSystem::renderDirectionalShadows(const std::vector<ShadowRenderable>&
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-void ShadowSystem::renderSpotShadows(const std::vector<ShadowRenderable>& renderables) const {
+void ShadowSystem::renderSpotShadows(const std::vector<ShadowRenderable>& renderables, GLuint jointTextureBuffer) const {
     if (spotShadowMap_ == 0 || spotShadowFbo_ == 0 || spotShadowCount_ == 0) {
         return;
     }
@@ -405,6 +416,8 @@ void ShadowSystem::renderSpotShadows(const std::vector<ShadowRenderable>& render
     glPolygonOffset(2.0f, 4.0f);
 
     shadowDepthShader_.use();
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, jointTextureBuffer);
     glUniform1i(shadowModeLocation_, 0);
     for (int i = 0; i < spotShadowCount_; ++i) {
         glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, spotShadowMap_, 0, i);
@@ -415,6 +428,9 @@ void ShadowSystem::renderSpotShadows(const std::vector<ShadowRenderable>& render
                 continue;
             }
             glUniformMatrix4fv(shadowModelLocation_, 1, GL_FALSE, glm::value_ptr(renderable.modelMatrix));
+            glUniform1i(shadowSkinnedLocation_, renderable.skinned ? 1 : 0);
+            glUniform1i(shadowJointBaseIndexLocation_, renderable.jointMatrixBase);
+            glUniform1i(shadowJointCountLocation_, renderable.jointMatrixCount);
             renderable.mesh->draw();
         }
     }
@@ -425,7 +441,7 @@ void ShadowSystem::renderSpotShadows(const std::vector<ShadowRenderable>& render
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-void ShadowSystem::renderPointShadows(const std::vector<ShadowRenderable>& renderables) const {
+void ShadowSystem::renderPointShadows(const std::vector<ShadowRenderable>& renderables, GLuint jointTextureBuffer) const {
     if (pointShadowMap_ == 0 || pointShadowFbo_ == 0 || pointShadowCount_ == 0) {
         return;
     }
@@ -442,6 +458,8 @@ void ShadowSystem::renderPointShadows(const std::vector<ShadowRenderable>& rende
     glPolygonOffset(2.0f, 4.0f);
 
     shadowDepthShader_.use();
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, jointTextureBuffer);
     for (int i = 0; i < pointShadowCount_; ++i) {
         glUniform1i(shadowModeLocation_, 1);
         glUniform3fv(shadowLightPositionLocation_, 1, glm::value_ptr(pointShadowPositions_[i]));
@@ -456,6 +474,9 @@ void ShadowSystem::renderPointShadows(const std::vector<ShadowRenderable>& rende
                     continue;
                 }
                 glUniformMatrix4fv(shadowModelLocation_, 1, GL_FALSE, glm::value_ptr(renderable.modelMatrix));
+                glUniform1i(shadowSkinnedLocation_, renderable.skinned ? 1 : 0);
+                glUniform1i(shadowJointBaseIndexLocation_, renderable.jointMatrixBase);
+                glUniform1i(shadowJointCountLocation_, renderable.jointMatrixCount);
                 renderable.mesh->draw();
             }
         }

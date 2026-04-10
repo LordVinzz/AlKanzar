@@ -44,6 +44,15 @@ RenderEngine::~RenderEngine() {
     shadowSystem_.destroy();
     resourceRegistry_.destroy();
     sceneMeshes_.clear();
+    if (jointMatrixTexture_ != 0) {
+        glDeleteTextures(1, &jointMatrixTexture_);
+        jointMatrixTexture_ = 0;
+    }
+    if (jointMatrixBuffer_ != 0) {
+        glDeleteBuffers(1, &jointMatrixBuffer_);
+        jointMatrixBuffer_ = 0;
+    }
+    jointMatrixBufferSize_ = 0;
 
     if (glContext_) {
         SDL_GL_DeleteContext(glContext_);
@@ -249,6 +258,32 @@ MeshHandle RenderEngine::uploadMesh(const Mesh& mesh) {
     return MeshHandle{sceneMeshes_.size() - 1u};
 }
 
+void RenderEngine::uploadJointMatrices(const std::vector<glm::mat4>& jointMatrices) {
+    const GLsizeiptr bufferSize = static_cast<GLsizeiptr>(jointMatrices.size() * sizeof(glm::mat4));
+    if (bufferSize == 0) {
+        jointMatrixBufferSize_ = 0;
+        return;
+    }
+
+    if (jointMatrixBuffer_ == 0) {
+        glGenBuffers(1, &jointMatrixBuffer_);
+    }
+    if (jointMatrixTexture_ == 0) {
+        glGenTextures(1, &jointMatrixTexture_);
+    }
+
+    glBindBuffer(GL_TEXTURE_BUFFER, jointMatrixBuffer_);
+    if (jointMatrixBufferSize_ != bufferSize) {
+        glBufferData(GL_TEXTURE_BUFFER, bufferSize, jointMatrices.data(), GL_DYNAMIC_DRAW);
+        jointMatrixBufferSize_ = bufferSize;
+    } else {
+        glBufferSubData(GL_TEXTURE_BUFFER, 0, bufferSize, jointMatrices.data());
+    }
+
+    glBindTexture(GL_TEXTURE_BUFFER, jointMatrixTexture_);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, jointMatrixBuffer_);
+}
+
 std::shared_ptr<Texture> RenderEngine::registerTexture(const std::shared_ptr<Texture>& texture) {
     return resourceRegistry_.registerTexture(texture);
 }
@@ -288,11 +323,16 @@ void RenderEngine::renderFrame(
             sceneView_ = buildRenderSceneView(frame, meshLookup, scheduler, useParallelSceneView);
         }
         {
+            ALKANZAR_PROFILE_SCOPE(*profiler_, "Joint Palette Upload");
+            uploadJointMatrices(frame.jointMatrices);
+        }
+        {
             ALKANZAR_PROFILE_SCOPE(*profiler_, "Light Frame Build");
             lightFrame_ = lightPipeline_.buildFrame(sceneView_, camera.view, shadowSystem_, renderPath_->usesDeferredLighting());
         }
     } else {
         sceneView_ = buildRenderSceneView(frame, meshLookup, scheduler, useParallelSceneView);
+        uploadJointMatrices(frame.jointMatrices);
         lightFrame_ = lightPipeline_.buildFrame(sceneView_, camera.view, shadowSystem_, renderPath_->usesDeferredLighting());
     }
 
@@ -309,6 +349,7 @@ void RenderEngine::renderFrame(
         geometryRenderer_,
         *overlayRenderer_,
         shadowSystem_,
+        jointMatrixTexture_,
         profiler_,
         directionalLightDirection_,
         directionalLightColor_,
@@ -336,6 +377,15 @@ std::vector<ResourceMemoryRecord> RenderEngine::profilingResources() const {
             "Mesh Buffer",
             0u,
             mesh->gpuBytes()
+        });
+    }
+
+    if (jointMatrixBuffer_ != 0 && jointMatrixBufferSize_ > 0) {
+        resources.push_back(ResourceMemoryRecord{
+            "Joint Matrix Buffer",
+            "Animation Buffer",
+            0u,
+            static_cast<std::uint64_t>(jointMatrixBufferSize_)
         });
     }
 

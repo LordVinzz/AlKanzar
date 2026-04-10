@@ -26,9 +26,11 @@ struct EditorSession {
     bool profilerWindowFocusRequested{false};
     bool profilerFollowLatest{true};
     int profilerSelectedFrame{0};
+    int animationInspectorSkinIndex{0};
     std::string profilerExportStatus{};
     bool profilerExportStatusIsError{false};
     std::array<char, 128> textureBrowserSearch{};
+    std::array<char, 128> animationSkeletonSearch{};
 
     [[nodiscard]] bool anyToolWindowVisible() const {
         return sceneHierarchyVisible || inspectorWindowVisible || profilerWindowVisible;

@@ -76,6 +76,7 @@ private:
     bool initImGui();
     void shutdownImGui();
     MeshBuffer* createSceneMesh(const Mesh& mesh);
+    void uploadJointMatrices(const std::vector<glm::mat4>& jointMatrices);
 
     SDL_Window* window_{nullptr};
     SDL_GLContext glContext_{nullptr};
@@ -85,6 +86,9 @@ private:
     bool imguiReady_{false};
 
     std::vector<std::unique_ptr<MeshBuffer>> sceneMeshes_{};
+    GLuint jointMatrixBuffer_{0};
+    GLuint jointMatrixTexture_{0};
+    GLsizeiptr jointMatrixBufferSize_{0};
     RenderResourceRegistry resourceRegistry_{};
     MaterialBinder materialBinder_{};
     SceneGeometryRenderer geometryRenderer_{};

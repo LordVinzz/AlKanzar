@@ -24,6 +24,9 @@ struct FrameRenderable {
     render::Bounds3 worldBounds{};
     glm::mat4 modelMatrix{1.0f};
     bool visible{true};
+    bool skinned{false};
+    int jointMatrixBase{0};
+    int jointMatrixCount{0};
 };
 
 struct FrameLight {
@@ -57,23 +60,48 @@ struct FrameSelection {
     glm::mat4 transformMatrix{1.0f};
 };
 
+struct FrameSkeletonDebug {
+    std::optional<EntityId> owner{};
+    int skinIndex{-1};
+    bool showOverlay{false};
+    std::vector<std::string> jointNames{};
+    std::vector<int> parentIndices{};
+    std::vector<glm::vec3> jointWorldPositions{};
+    std::vector<glm::mat4> jointMatrices{};
+
+    void clear() {
+        owner.reset();
+        skinIndex = -1;
+        showOverlay = false;
+        jointNames.clear();
+        parentIndices.clear();
+        jointWorldPositions.clear();
+        jointMatrices.clear();
+    }
+};
+
 struct FrameSceneData {
     std::vector<FrameRenderable> renderables{};
     std::vector<FrameLight> lights{};
     std::vector<FrameLightVolume> lightVolumes{};
+    std::vector<glm::mat4> jointMatrices{};
     FrameSelection selection{};
+    FrameSkeletonDebug selectionSkeleton{};
 
     void reserve(std::size_t renderableCount, std::size_t lightCount, std::size_t volumeCount) {
         renderables.reserve(renderableCount);
         lights.reserve(lightCount);
         lightVolumes.reserve(volumeCount);
+        jointMatrices.reserve(renderableCount * 64u);
     }
 
     void clear() {
         renderables.clear();
         lights.clear();
         lightVolumes.clear();
+        jointMatrices.clear();
         selection = FrameSelection{};
+        selectionSkeleton.clear();
     }
 };
 

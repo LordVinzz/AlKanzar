@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #ifndef GL_GLEXT_PROTOTYPES
 #define GL_GLEXT_PROTOTYPES
@@ -58,6 +59,12 @@ private:
         int width,
         int height
     ) const;
+    void drawSkeletonLines(
+        const std::vector<glm::vec3>& jointWorldPositions,
+        const std::vector<int>& parentIndices,
+        const glm::mat4& projection,
+        const glm::mat4& view
+    ) const;
 
     ShaderProgram debugColorShader_{};
     ShaderProgram lightIconShader_{};
@@ -73,6 +80,8 @@ private:
     GLint lightIconOpacityLocation_{-1};
     GLuint pointLightIconTexture_{0};
     GLuint spotLightIconTexture_{0};
+    mutable GLuint skeletonLineVao_{0};
+    mutable GLuint skeletonLineVbo_{0};
 };
 
 }  // namespace render

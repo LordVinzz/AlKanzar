@@ -32,6 +32,8 @@ public:
         visibilities.remove(entity);
         bounds.remove(entity);
         renderables.remove(entity);
+        animatedModels.remove(entity);
+        skinnedRenderables.remove(entity);
         pointLights.remove(entity);
         spotLights.remove(entity);
         if (entity.index < transformCache_.size()) {
@@ -57,6 +59,8 @@ public:
         visibilities.clear();
         bounds.clear();
         renderables.clear();
+        animatedModels.clear();
+        skinnedRenderables.clear();
         pointLights.clear();
         spotLights.clear();
         transformCache_.clear();
@@ -106,6 +110,14 @@ public:
     [[nodiscard]] TransformComponent* editableTransform(EntityId entity) {
         EntityId current = entity;
         while (current.valid()) {
+            if (const SkinnedRenderableComponent* skinned = skinnedRenderables.tryGet(current);
+                skinned != nullptr &&
+                skinned->animationOwner.valid() &&
+                skinned->animationOwner != current &&
+                isAlive(skinned->animationOwner)) {
+                current = skinned->animationOwner;
+                continue;
+            }
             if (TransformComponent* transform = transforms.tryGet(current)) {
                 return transform;
             }
@@ -121,9 +133,37 @@ public:
     [[nodiscard]] EntityId editableTransformEntity(EntityId entity) const {
         EntityId current = entity;
         while (current.valid()) {
+            if (const SkinnedRenderableComponent* skinned = skinnedRenderables.tryGet(current);
+                skinned != nullptr &&
+                skinned->animationOwner.valid() &&
+                skinned->animationOwner != current &&
+                isAlive(skinned->animationOwner)) {
+                current = skinned->animationOwner;
+                continue;
+            }
             if (transforms.contains(current)) {
                 return current;
             }
+            const ParentComponent* parent = parents.tryGet(current);
+            if (parent == nullptr || !isAlive(parent->parent)) {
+                break;
+            }
+            current = parent->parent;
+        }
+        return {};
+    }
+
+    [[nodiscard]] EntityId animationOwnerEntity(EntityId entity) const {
+        EntityId current = entity;
+        while (current.valid()) {
+            if (animatedModels.contains(current)) {
+                return current;
+            }
+            if (const SkinnedRenderableComponent* skinned = skinnedRenderables.tryGet(current);
+                skinned != nullptr && isAlive(skinned->animationOwner)) {
+                return skinned->animationOwner;
+            }
+
             const ParentComponent* parent = parents.tryGet(current);
             if (parent == nullptr || !isAlive(parent->parent)) {
                 break;
@@ -148,6 +188,8 @@ public:
     ComponentStore<VisibilityComponent> visibilities{};
     ComponentStore<BoundsComponent> bounds{};
     ComponentStore<RenderableComponent> renderables{};
+    ComponentStore<AnimatedModelComponent> animatedModels{};
+    ComponentStore<SkinnedRenderableComponent> skinnedRenderables{};
     ComponentStore<PointLightComponent> pointLights{};
     ComponentStore<SpotLightComponent> spotLights{};
     std::vector<TransformCacheEntry> transformCache_{};

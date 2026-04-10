@@ -7,6 +7,7 @@
 
 #include <SDL.h>
 #include <glm/ext/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <spdlog/spdlog.h>
 
 #include "core/transform/TransformMath.hpp"
@@ -120,14 +121,34 @@ render::Bounds3 computeMeshBounds(const render::Mesh& mesh) {
     return bounds;
 }
 
-render::Bounds3 computeModelBounds(const render::StaticModelData& model) {
+render::Bounds3 computeModelBounds(const render::GltfModelData& model) {
     render::Bounds3 bounds{};
     bool hasBounds = false;
     for (const auto& section : model.sections) {
         if (section.mesh.positions.empty()) {
             continue;
         }
-        const render::Bounds3 sectionBounds = computeMeshBounds(section.mesh);
+        glm::mat4 nodeMatrix(1.0f);
+        if (section.nodeIndex >= 0 && section.nodeIndex < static_cast<int>(model.nodes.size())) {
+            nodeMatrix = model.nodes[static_cast<std::size_t>(section.nodeIndex)].bindGlobalMatrix;
+        }
+
+        render::Bounds3 sectionBounds{};
+        bool hasSectionBounds = false;
+        for (const glm::vec3& position : section.mesh.positions) {
+            const glm::vec3 worldPosition = glm::vec3(nodeMatrix * glm::vec4(position, 1.0f));
+            if (!hasSectionBounds) {
+                sectionBounds.min = worldPosition;
+                sectionBounds.max = worldPosition;
+                hasSectionBounds = true;
+                continue;
+            }
+            sectionBounds.min = glm::min(sectionBounds.min, worldPosition);
+            sectionBounds.max = glm::max(sectionBounds.max, worldPosition);
+        }
+        if (!hasSectionBounds) {
+            continue;
+        }
         if (!hasBounds) {
             bounds = sectionBounds;
             hasBounds = true;
@@ -139,26 +160,15 @@ render::Bounds3 computeModelBounds(const render::StaticModelData& model) {
     return bounds;
 }
 
-void transformMesh(render::Mesh& mesh, const glm::mat4& transform) {
-    const glm::mat3 normalMatrix = glm::mat3(glm::transpose(glm::inverse(transform)));
-    for (std::size_t vertexIndex = 0; vertexIndex < mesh.positions.size(); ++vertexIndex) {
-        mesh.positions[vertexIndex] = glm::vec3(transform * glm::vec4(mesh.positions[vertexIndex], 1.0f));
-        glm::vec3 transformedNormal = normalMatrix * mesh.normals[vertexIndex];
-        if (glm::dot(transformedNormal, transformedNormal) > 1.0e-6f) {
-            transformedNormal = glm::normalize(transformedNormal);
-        }
-        mesh.normals[vertexIndex] = transformedNormal;
-    }
-    render::computeTangents(mesh);
+core::TransformComponent transformFromNodeTransform(const render::NodeTransform& transform) {
+    return core::TransformComponent{
+        transform.translation,
+        glm::degrees(glm::eulerAngles(transform.rotation)),
+        transform.scale
+    };
 }
 
-void transformModel(render::StaticModelData& model, const glm::mat4& transform) {
-    for (auto& section : model.sections) {
-        transformMesh(section.mesh, transform);
-    }
-}
-
-bool fitModelToFootprint(render::StaticModelData& model, float targetFootprint) {
+bool fitModelToFootprint(render::GltfModelData& model, float targetFootprint) {
     const render::Bounds3 bounds = computeModelBounds(model);
     const glm::vec3 size = bounds.max - bounds.min;
     const float footprint = std::max(size.x, size.z);
@@ -167,7 +177,13 @@ bool fitModelToFootprint(render::StaticModelData& model, float targetFootprint) 
     }
 
     const float scale = targetFootprint / footprint;
-    transformModel(model, glm::scale(glm::mat4(1.0f), glm::vec3(scale)));
+    for (int rootNodeIndex : model.sceneRootNodes) {
+        if (rootNodeIndex < 0 || rootNodeIndex >= static_cast<int>(model.nodes.size())) {
+            continue;
+        }
+        model.nodes[static_cast<std::size_t>(rootNodeIndex)].localTransform.scale *= glm::vec3(scale);
+    }
+    render::refreshModelBindPose(model);
     return true;
 }
 
@@ -408,19 +424,19 @@ bool SceneFactory::buildScene(
 
     const std::string modelRoot = assetRootPath("models/");
     for (const ModelInstanceBlueprint& modelBlueprint : blueprint.models) {
-        render::StaticModelData model{};
-        if (!render::loadStaticGltfModel(modelRoot + modelBlueprint.path, model)) {
+        auto modelAsset = std::make_shared<render::GltfModelData>();
+        if (!render::loadGltfModel(modelRoot + modelBlueprint.path, *modelAsset)) {
             spdlog::error("SceneFactory: failed to load model '{}'", modelBlueprint.path);
             return false;
         }
 
-        if (modelBlueprint.fitToFootprint && !fitModelToFootprint(model, modelBlueprint.footprint)) {
+        if (modelBlueprint.fitToFootprint && !fitModelToFootprint(*modelAsset, modelBlueprint.footprint)) {
             spdlog::error("SceneFactory: failed to fit model '{}'", modelBlueprint.path);
             return false;
         }
 
         if (modelBlueprint.name == "House") {
-            for (auto& section : model.sections) {
+            for (auto& section : modelAsset->sections) {
                 if (!section.material) {
                     section.material = std::make_shared<render::Material>();
                     section.material->name = section.name;
@@ -451,9 +467,13 @@ bool SceneFactory::buildScene(
         world.names.emplace(rootEntity, NameComponent{modelBlueprint.name});
         world.transforms.emplace(rootEntity, modelBlueprint.transform);
         world.visibilities.emplace(rootEntity, VisibilityComponent{true});
+        if (modelAsset->animated()) {
+            world.animatedModels.emplace(rootEntity, AnimatedModelComponent{modelAsset});
+        }
         world.markTransformsDirty(rootEntity);
 
-        for (const auto& section : model.sections) {
+        for (std::size_t sectionIndex = 0; sectionIndex < modelAsset->sections.size(); ++sectionIndex) {
+            const auto& section = modelAsset->sections[sectionIndex];
             const render::MeshHandle meshHandle = renderer.uploadMesh(section.mesh);
             if (!meshHandle.valid()) {
                 spdlog::warn("SceneFactory: skipped model section '{}'", section.name);
@@ -469,9 +489,26 @@ bool SceneFactory::buildScene(
             const EntityId sectionEntity = world.createEntity();
             world.names.emplace(sectionEntity, NameComponent{modelBlueprint.name + " / " + section.name});
             world.parents.emplace(sectionEntity, ParentComponent{rootEntity});
+            if (section.nodeIndex >= 0 && section.nodeIndex < static_cast<int>(modelAsset->nodes.size())) {
+                render::NodeTransform nodeTransform{};
+                if (render::decomposeNodeTransform(
+                        modelAsset->nodes[static_cast<std::size_t>(section.nodeIndex)].bindGlobalMatrix,
+                        nodeTransform
+                    )) {
+                    world.transforms.emplace(sectionEntity, transformFromNodeTransform(nodeTransform));
+                }
+            }
             world.bounds.emplace(sectionEntity, BoundsComponent{computeMeshBounds(section.mesh)});
             world.visibilities.emplace(sectionEntity, VisibilityComponent{true});
             world.renderables.emplace(sectionEntity, RenderableComponent{meshHandle, materialHandle, modelBlueprint.layer});
+            if (section.skinIndex >= 0 && modelAsset->animated()) {
+                world.skinnedRenderables.emplace(sectionEntity, SkinnedRenderableComponent{
+                    rootEntity,
+                    section.skinIndex,
+                    section.nodeIndex,
+                    static_cast<int>(sectionIndex)
+                });
+            }
             world.markTransformsDirty(sectionEntity);
         }
     }

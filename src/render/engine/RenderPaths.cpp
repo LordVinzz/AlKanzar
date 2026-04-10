@@ -79,7 +79,8 @@ void RenderPathBase::drawStandardSceneLayers(
                 layer,
                 shaderContext,
                 context.materialBinder,
-                context.resources
+                context.resources,
+                context.jointTextureBuffer
             );
             return;
         }
@@ -89,7 +90,8 @@ void RenderPathBase::drawStandardSceneLayers(
             layer,
             shaderContext,
             context.materialBinder,
-            context.resources
+            context.resources,
+            context.jointTextureBuffer
         );
     };
 
@@ -111,6 +113,9 @@ bool SimpleForwardPath::init(const std::string& shaderRoot, MaterialBinder& mate
 
     geometryContext_.modelLocation = modelLocation_;
     geometryContext_.normalMatrixLocation = normalMatrixLocation_;
+    geometryContext_.skinnedLocation = shader_.uniformLocation("uSkinned");
+    geometryContext_.jointBaseIndexLocation = shader_.uniformLocation("uJointBaseIndex");
+    geometryContext_.jointCountLocation = shader_.uniformLocation("uJointCount");
     geometryContext_.materialLocations = materialBinder.captureUniformLocations(shader_);
 
     shader_.use();
@@ -123,6 +128,7 @@ bool SimpleForwardPath::init(const std::string& shaderRoot, MaterialBinder& mate
     glUniform1i(shader_.uniformLocation("uClearcoatTexture"), 6);
     glUniform1i(shader_.uniformLocation("uDetailNormalTexture"), 7);
     glUniform1i(shader_.uniformLocation("uHeightTexture"), 8);
+    glUniform1i(shader_.uniformLocation("uJointBuffer"), 9);
     return true;
 }
 
@@ -184,6 +190,9 @@ bool DeferredRenderPath::init(const std::string& shaderRoot, MaterialBinder& mat
 
     geometryContext_.modelLocation = geometryShader_.uniformLocation("uModel");
     geometryContext_.normalMatrixLocation = geometryShader_.uniformLocation("uNormalMatrix");
+    geometryContext_.skinnedLocation = geometryShader_.uniformLocation("uSkinned");
+    geometryContext_.jointBaseIndexLocation = geometryShader_.uniformLocation("uJointBaseIndex");
+    geometryContext_.jointCountLocation = geometryShader_.uniformLocation("uJointCount");
     geometryContext_.materialLocations = materialBinder.captureUniformLocations(geometryShader_);
     gbufferViewLocation_ = geometryShader_.uniformLocation("uView");
     gbufferProjLocation_ = geometryShader_.uniformLocation("uProj");
@@ -269,6 +278,7 @@ bool DeferredRenderPath::init(const std::string& shaderRoot, MaterialBinder& mat
     glUniform1i(geometryShader_.uniformLocation("uClearcoatTexture"), 6);
     glUniform1i(geometryShader_.uniformLocation("uDetailNormalTexture"), 7);
     glUniform1i(geometryShader_.uniformLocation("uHeightTexture"), 8);
+    glUniform1i(geometryShader_.uniformLocation("uJointBuffer"), 9);
 
     return shadowSystem.init(shaderRoot);
 }
@@ -303,22 +313,22 @@ bool DeferredRenderPath::beginFrame(const RenderPathContext& context) {
         {
             ALKANZAR_PROFILE_SCOPE(*context.profiler, "Directional Shadow Pass");
             ALKANZAR_PROFILE_GPU_SCOPE(*context.profiler, "Directional Shadow Pass");
-            context.shadowSystem.renderDirectionalShadows(shadowRenderables);
+            context.shadowSystem.renderDirectionalShadows(shadowRenderables, context.jointTextureBuffer);
         }
         {
             ALKANZAR_PROFILE_SCOPE(*context.profiler, "Spot Shadow Pass");
             ALKANZAR_PROFILE_GPU_SCOPE(*context.profiler, "Spot Shadow Pass");
-            context.shadowSystem.renderSpotShadows(shadowRenderables);
+            context.shadowSystem.renderSpotShadows(shadowRenderables, context.jointTextureBuffer);
         }
         {
             ALKANZAR_PROFILE_SCOPE(*context.profiler, "Point Shadow Pass");
             ALKANZAR_PROFILE_GPU_SCOPE(*context.profiler, "Point Shadow Pass");
-            context.shadowSystem.renderPointShadows(shadowRenderables);
+            context.shadowSystem.renderPointShadows(shadowRenderables, context.jointTextureBuffer);
         }
     } else {
-        context.shadowSystem.renderDirectionalShadows(shadowRenderables);
-        context.shadowSystem.renderSpotShadows(shadowRenderables);
-        context.shadowSystem.renderPointShadows(shadowRenderables);
+        context.shadowSystem.renderDirectionalShadows(shadowRenderables, context.jointTextureBuffer);
+        context.shadowSystem.renderSpotShadows(shadowRenderables, context.jointTextureBuffer);
+        context.shadowSystem.renderPointShadows(shadowRenderables, context.jointTextureBuffer);
     }
     return true;
 }

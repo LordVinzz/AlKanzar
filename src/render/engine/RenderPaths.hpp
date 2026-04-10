@@ -32,6 +32,7 @@ struct RenderPathContext {
     SceneGeometryRenderer& geometryRenderer;
     SceneOverlayRenderer& overlayRenderer;
     ShadowSystem& shadowSystem;
+    GLuint jointTextureBuffer{0};
     core::ProfilerService* profiler{nullptr};
     glm::vec3 directionalLightDirection{0.0f, -1.0f, 0.0f};
     glm::vec3 directionalLightColor{1.0f};

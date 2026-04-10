@@ -3,6 +3,7 @@
 #include <optional>
 
 #include "AppState.hpp"
+#include "core/animation/AnimationSystem.hpp"
 #include "core/scene/Camera.hpp"
 #include "core/editor/CommandHistory.hpp"
 #include "core/editor/EditorSession.hpp"
@@ -54,6 +55,7 @@ struct EngineServices {
     CameraState camera;
     EditorSession editorSession;
     FrameSceneData frame;
+    AnimationSystem animationSystem;
     TransformSystem transformSystem;
     LightSystem lightSystem;
     RenderExtractionSystem renderExtractionSystem;

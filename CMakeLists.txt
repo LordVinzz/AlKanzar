@@ -19,6 +19,7 @@ find_package(glm CONFIG REQUIRED)
 add_subdirectory(src/render)
 
 add_library(alkanzar_core STATIC
+    src/core/animation/AnimationSystem.cpp
     src/core/app/AppState.cpp
     src/core/app/Application.cpp
     src/core/scene/Camera.cpp

@@ -120,7 +120,8 @@ MeshBufferMemoryEstimate estimateMeshBufferBytes(const Mesh& mesh) {
     }
 
     return MeshBufferMemoryEstimate{
-        static_cast<std::uint64_t>(mesh.vertexCount()) * 18u * sizeof(float),
+        static_cast<std::uint64_t>(mesh.vertexCount()) *
+            (18u * sizeof(float) + 4u * sizeof(std::uint32_t) + 4u * sizeof(float)),
         static_cast<std::uint64_t>(mesh.indices.size()) * sizeof(unsigned int),
     };
 }

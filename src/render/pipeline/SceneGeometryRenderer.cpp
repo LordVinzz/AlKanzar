@@ -130,10 +130,13 @@ void SceneGeometryRenderer::drawLayer(
     RenderLayer layer,
     const SceneGeometryShaderContext& shaderContext,
     const MaterialBinder& materialBinder,
-    const RenderResourceRegistry& resources
+    const RenderResourceRegistry& resources,
+    GLuint jointTextureBuffer
 ) const {
     const GLboolean depthWrite = layer == RenderLayer::Ground ? GL_FALSE : GL_TRUE;
     glDepthMask(depthWrite);
+    glActiveTexture(GL_TEXTURE9);
+    glBindTexture(GL_TEXTURE_BUFFER, jointTextureBuffer);
 
     static const Material defaultMaterial{};
     for (const RenderSceneObjectView& object : scene.objects) {
@@ -147,6 +150,9 @@ void SceneGeometryRenderer::drawLayer(
         glUniformMatrix4fv(shaderContext.modelLocation, 1, GL_FALSE, glm::value_ptr(object.modelMatrix));
         const glm::mat3 normalMatrix = core::normalMatrixFromModel(object.modelMatrix);
         glUniformMatrix3fv(shaderContext.normalMatrixLocation, 1, GL_FALSE, glm::value_ptr(normalMatrix));
+        glUniform1i(shaderContext.skinnedLocation, object.skinned ? 1 : 0);
+        glUniform1i(shaderContext.jointBaseIndexLocation, object.jointMatrixBase);
+        glUniform1i(shaderContext.jointCountLocation, object.jointMatrixCount);
         materialBinder.bindMaterialUniforms(inputs, shaderContext.materialLocations);
         materialBinder.bindTextures(inputs, resources);
         object.mesh->draw();

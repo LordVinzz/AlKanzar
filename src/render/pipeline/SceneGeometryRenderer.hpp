@@ -46,6 +46,9 @@ struct MaterialUniformLocations {
 struct SceneGeometryShaderContext {
     GLint modelLocation{-1};
     GLint normalMatrixLocation{-1};
+    GLint skinnedLocation{-1};
+    GLint jointBaseIndexLocation{-1};
+    GLint jointCountLocation{-1};
     MaterialUniformLocations materialLocations{};
 };
 
@@ -66,7 +69,8 @@ public:
         RenderLayer layer,
         const SceneGeometryShaderContext& shaderContext,
         const MaterialBinder& materialBinder,
-        const RenderResourceRegistry& resources
+        const RenderResourceRegistry& resources,
+        GLuint jointTextureBuffer
     ) const;
 };
 

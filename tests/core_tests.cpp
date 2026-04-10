@@ -16,7 +16,9 @@
 #include <variant>
 
 #include <glm/ext/matrix_clip_space.hpp>
+#include <glm/ext/matrix_transform.hpp>
 
+#include "core/animation/AnimationSystem.hpp"
 #include "core/editor/CommandHistory.hpp"
 #include "core/editor/EditorSession.hpp"
 #include "core/ecs/ComponentStore.hpp"
@@ -32,6 +34,7 @@
 #include "core/transform/TransformSystem.hpp"
 #include "core/ecs/World.hpp"
 #include "render/resources/Profiling.hpp"
+#include "render/resources/StaticGltfModel.hpp"
 #include "render/pipeline/RenderLightPipeline.hpp"
 #include "render/engine/RenderSceneView.hpp"
 
@@ -150,6 +153,23 @@ std::string readFileToString(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     assert(input.is_open());
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+std::filesystem::path repositoryRoot() {
+    return std::filesystem::path(__FILE__).parent_path().parent_path();
+}
+
+std::filesystem::path assetPath(const std::string& relative) {
+    return repositoryRoot() / relative;
+}
+
+int findClipIndexContaining(const render::GltfModelData& model, std::string_view token) {
+    for (std::size_t clipIndex = 0; clipIndex < model.animations.size(); ++clipIndex) {
+        if (model.animations[clipIndex].name.find(token) != std::string::npos) {
+            return static_cast<int>(clipIndex);
+        }
+    }
+    return -1;
 }
 
 void testEntityPoolReuse() {
@@ -463,6 +483,89 @@ void testLightVolumeAssignmentIsStableAcrossLightTypes() {
     assert(staticLights[1] == point);
 }
 
+void testGltfLoaderReadsAnimatedCharacterData() {
+    render::GltfModelData model{};
+    assert(render::loadGltfModel(assetPath("src/render/models/Adventurer.glb").string(), model));
+    assert(model.sections.size() == 5u);
+    assert(model.skins.size() == 5u);
+    assert(model.animations.size() == 24u);
+    assert(model.nodes.size() == 86u);
+    assert(model.skins[0].jointNodeIndices.size() == 62u);
+    assert(model.skins[0].skeletonRootNode == 2);
+    assert(model.skins[0].skeletonNodeIndices.size() > model.skins[0].jointNodeIndices.size());
+    assert(model.skins[0].skeletonNodeIndices.front() == model.skins[0].skeletonRootNode);
+    bool foundLowerLegEnd = false;
+    bool foundFootLeft = false;
+    bool foundPtLeft = false;
+    for (std::size_t index = 0; index < model.skins[0].skeletonNodeIndices.size(); ++index) {
+        const int nodeIndex = model.skins[0].skeletonNodeIndices[index];
+        const std::string& nodeName = model.nodes[static_cast<std::size_t>(nodeIndex)].name;
+        if (nodeName == "LowerLeg.L_end") {
+            foundLowerLegEnd = true;
+        } else if (nodeName == "Foot.L") {
+            foundFootLeft = true;
+            assert(model.skins[0].skeletonParentIndices[index] == 0);
+        } else if (nodeName == "PT.L") {
+            foundPtLeft = true;
+            assert(model.skins[0].skeletonParentIndices[index] == 0);
+        }
+    }
+    assert(foundLowerLegEnd);
+    assert(foundFootLeft);
+    assert(foundPtLeft);
+}
+
+void testGltfLoaderReadsStaticHouseData() {
+    render::GltfModelData model{};
+    assert(render::loadGltfModel(assetPath("src/render/models/FantasyHouse.glb").string(), model));
+    assert(!model.sections.empty());
+    assert(model.skins.empty());
+    assert(model.animations.empty());
+}
+
+void testAnimationSystemDefaultsToIdleAndCrossfades() {
+    auto model = std::make_shared<render::GltfModelData>();
+    assert(render::loadGltfModel(assetPath("src/render/models/Adventurer.glb").string(), *model));
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    world.animatedModels.emplace(entity, core::AnimatedModelComponent{model});
+
+    core::AnimationSystem system;
+    core::TaskScheduler scheduler = makeScheduler();
+    system.update(world, core::TimeContext{0.0f, 0.0f}, scheduler, false);
+
+    core::AnimatedModelComponent& animation = world.animatedModels.get(entity);
+    assert(animation.currentClip >= 0);
+    assert(model->animations[static_cast<std::size_t>(animation.currentClip)].name.find("Idle") != std::string::npos);
+    assert(animation.localPose.size() == model->nodes.size());
+    assert(animation.skinJointMatrices.size() == model->skins.size());
+
+    const int runClip = findClipIndexContaining(*model, "Run");
+    assert(runClip >= 0);
+    animation.requestedClip = runClip;
+    animation.blendDuration = 0.2f;
+
+    system.update(world, core::TimeContext{0.0f, 0.0f}, scheduler, false);
+    assert(animation.nextClip == runClip);
+    assert(animation.blendElapsed == 0.0f);
+
+    system.update(world, core::TimeContext{0.0f, 0.1f}, scheduler, false);
+    assert(animation.nextClip == runClip);
+    assert(animation.blendElapsed > 0.09f);
+    assert(animation.currentTime > 0.0f);
+    assert(animation.nextTime > 0.0f);
+
+    system.update(world, core::TimeContext{0.0f, 0.2f}, scheduler, false);
+    assert(animation.nextClip == -1);
+    assert(animation.currentClip == runClip);
+
+    animation.playing = false;
+    const float pausedTime = animation.currentTime;
+    system.update(world, core::TimeContext{0.0f, 0.5f}, scheduler, false);
+    assert(nearlyEqual(animation.currentTime, pausedTime, 0.0001));
+}
+
 void testMaterialHandleSharingExtraction() {
     core::World world;
     core::TaskScheduler scheduler = makeScheduler();
@@ -538,6 +641,233 @@ void testRenderExtractionPreservesOutputOrdering() {
     assert(frame.lights.size() == 2u);
     assert(frame.lights[0].entity == point);
     assert(frame.lights[1].entity == spot);
+}
+
+void testRenderExtractionPopulatesSkinnedJointRangesAndSelectionOwner() {
+    auto model = std::make_shared<render::GltfModelData>();
+    assert(render::loadGltfModel(assetPath("src/render/models/Adventurer.glb").string(), *model));
+    assert(!model->sections.empty());
+    assert(!model->skins.empty());
+
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler();
+    core::MaterialLibrary materials;
+    core::SelectionModel selection;
+    core::AnimationSystem animationSystem;
+    core::TransformSystem transformSystem;
+    core::RenderExtractionSystem extraction;
+
+    auto material = std::make_shared<render::Material>();
+    const core::MaterialHandle materialHandle = materials.add(material);
+
+    const core::EntityId root = world.createEntity();
+    world.transforms.emplace(root, core::TransformComponent{
+        glm::vec3(0.0f),
+        glm::vec3(0.0f),
+        glm::vec3(2.0f)
+    });
+    core::AnimatedModelComponent animated{model};
+    animated.skinJointMatrices = {{glm::mat4(1.0f)}};
+    world.animatedModels.emplace(root, std::move(animated));
+
+    const render::GltfMeshSection& section = model->sections.front();
+    const core::EntityId sectionEntity = world.createEntity();
+    world.parents.emplace(sectionEntity, core::ParentComponent{root});
+    world.transforms.emplace(sectionEntity, core::TransformComponent{});
+    world.bounds.emplace(sectionEntity, core::BoundsComponent{render::Bounds3{glm::vec3(-0.5f), glm::vec3(0.5f)}});
+    world.visibilities.emplace(sectionEntity, core::VisibilityComponent{true});
+    world.renderables.emplace(sectionEntity, core::RenderableComponent{render::MeshHandle{0}, materialHandle, render::RenderLayer::Actors});
+    world.skinnedRenderables.emplace(sectionEntity, core::SkinnedRenderableComponent{
+        root,
+        section.skinIndex,
+        section.nodeIndex,
+        0
+    });
+    world.markTransformsDirty(root);
+    world.markTransformsDirty(sectionEntity);
+
+    animationSystem.update(world, core::TimeContext{0.0f, 0.0f}, scheduler, false);
+    transformSystem.update(world, scheduler, false);
+
+    core::FrameSceneData frame;
+    selection.set(sectionEntity);
+    extraction.extract(world, materials, selection, frame, scheduler, false);
+    assert(frame.renderables.size() == 1u);
+    assert(frame.renderables[0].skinned);
+    assert(world.editableTransformEntity(sectionEntity) == root);
+    assert(nearlyEqual(frame.renderables[0].modelMatrix[0][0], 2.0, 0.0001));
+    assert(nearlyEqual(frame.renderables[0].modelMatrix[1][1], 2.0, 0.0001));
+    assert(nearlyEqual(frame.renderables[0].modelMatrix[2][2], 2.0, 0.0001));
+    assert(nearlyEqual(frame.selection.transformMatrix[0][0], 2.0, 0.0001));
+    assert(nearlyEqual(frame.selection.transformMatrix[1][1], 2.0, 0.0001));
+    assert(nearlyEqual(frame.selection.transformMatrix[2][2], 2.0, 0.0001));
+    assert(frame.renderables[0].jointMatrixBase == 0);
+    assert(frame.renderables[0].jointMatrixCount == static_cast<int>(model->skins[section.skinIndex].jointNodeIndices.size()));
+    assert(frame.jointMatrices.size() == model->skins[section.skinIndex].jointNodeIndices.size());
+    assert(frame.selectionSkeleton.owner.has_value());
+    assert(*frame.selectionSkeleton.owner == root);
+
+    frame.clear();
+    selection.set(root);
+    extraction.extract(world, materials, selection, frame, scheduler, false);
+    assert(frame.selectionSkeleton.owner.has_value());
+    assert(*frame.selectionSkeleton.owner == root);
+}
+
+void testRenderExtractionAlignsSkinnedChildBoundsWithRenderedMesh() {
+    auto model = std::make_shared<render::GltfModelData>();
+    model->skins.emplace_back();
+    model->sections.push_back(render::GltfMeshSection{
+        "Synthetic Section",
+        0,
+        0,
+        render::Mesh{
+            std::vector<glm::vec3>{glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec3(1.0f, 0.0f, 0.0f)},
+            {},
+            {},
+            {},
+            {},
+            std::vector<glm::uvec4>{glm::uvec4(0u), glm::uvec4(0u)},
+            std::vector<glm::vec4>{glm::vec4(1.0f, 0.0f, 0.0f, 0.0f), glm::vec4(1.0f, 0.0f, 0.0f, 0.0f)},
+            {}
+        },
+        {}
+    });
+
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler();
+    core::MaterialLibrary materials;
+    core::SelectionModel selection;
+    core::TransformSystem transformSystem;
+    core::RenderExtractionSystem extraction;
+
+    auto material = std::make_shared<render::Material>();
+    const core::MaterialHandle materialHandle = materials.add(material);
+
+    const core::EntityId root = world.createEntity();
+    world.transforms.emplace(root, core::TransformComponent{
+        glm::vec3(0.0f),
+        glm::vec3(0.0f),
+        glm::vec3(2.0f)
+    });
+    core::AnimatedModelComponent animatedBounds{model};
+    animatedBounds.skinJointMatrices = {{glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, 0.0f, 0.0f))}};
+    world.animatedModels.emplace(root, std::move(animatedBounds));
+
+    const core::EntityId sectionEntity = world.createEntity();
+    world.parents.emplace(sectionEntity, core::ParentComponent{root});
+    world.transforms.emplace(sectionEntity, core::TransformComponent{
+        glm::vec3(3.0f, 0.0f, 0.0f),
+        glm::vec3(0.0f),
+        glm::vec3(1.0f)
+    });
+    world.bounds.emplace(sectionEntity, core::BoundsComponent{
+        render::Bounds3{glm::vec3(-0.5f), glm::vec3(0.5f)}
+    });
+    world.visibilities.emplace(sectionEntity, core::VisibilityComponent{true});
+    world.renderables.emplace(sectionEntity, core::RenderableComponent{
+        render::MeshHandle{0},
+        materialHandle,
+        render::RenderLayer::Actors
+    });
+    world.skinnedRenderables.emplace(sectionEntity, core::SkinnedRenderableComponent{root, 0, 0, 0});
+    world.markTransformsDirty(root);
+    world.markTransformsDirty(sectionEntity);
+
+    transformSystem.update(world, scheduler, false);
+    assert(nearlyEqual(world.transformCache_[sectionEntity.index].worldBounds.min.x, 5.0, 0.0001));
+    assert(nearlyEqual(world.transformCache_[sectionEntity.index].worldBounds.max.x, 7.0, 0.0001));
+    assert(nearlyEqual(world.transformCache_[root.index].worldBounds.min.x, 5.0, 0.0001));
+    assert(nearlyEqual(world.transformCache_[root.index].worldBounds.max.x, 7.0, 0.0001));
+
+    core::FrameSceneData frame;
+    selection.set(sectionEntity);
+    extraction.extract(world, materials, selection, frame, scheduler, false);
+
+    assert(frame.renderables.size() == 1u);
+    assert(frame.renderables[0].skinned);
+    assert(nearlyEqual(frame.renderables[0].worldBounds.min.x, 4.0, 0.0001));
+    assert(nearlyEqual(frame.renderables[0].worldBounds.max.x, 8.0, 0.0001));
+    assert(nearlyEqual(frame.selection.worldBounds.min.x, 4.0, 0.0001));
+    assert(nearlyEqual(frame.selection.worldBounds.max.x, 8.0, 0.0001));
+    assert(nearlyEqual(frame.selection.transformMatrix[0][0], 2.0, 0.0001));
+
+    frame.clear();
+    selection.set(root);
+    extraction.extract(world, materials, selection, frame, scheduler, false);
+    assert(frame.selection.hasWorldBounds);
+    assert(nearlyEqual(frame.selection.worldBounds.min.x, 4.0, 0.0001));
+    assert(nearlyEqual(frame.selection.worldBounds.max.x, 8.0, 0.0001));
+}
+
+void testRenderExtractionFiltersHelperSkeletonBranches() {
+    auto model = std::make_shared<render::GltfModelData>();
+    model->nodes = {
+        render::GltfNode{"Root"},
+        render::GltfNode{"LowerLeg.L"},
+        render::GltfNode{"LowerLeg.L_end"},
+        render::GltfNode{"PT.L"},
+        render::GltfNode{"PT.L_end"},
+    };
+    model->skins.push_back(render::SkinData{
+        "SyntheticSkin",
+        0,
+        {0, 1},
+        {-1, 0},
+        {"Root", "LowerLeg.L"},
+        {glm::mat4(1.0f), glm::mat4(1.0f)},
+        {0, 1, 2, 3, 4},
+        {-1, 0, 1, 0, 3},
+        {0, 1, -1, -1, -1},
+    });
+
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler();
+    core::MaterialLibrary materials;
+    core::SelectionModel selection;
+    core::TransformSystem transformSystem;
+    core::RenderExtractionSystem extraction;
+
+    const core::EntityId root = world.createEntity();
+    world.transforms.emplace(root, core::TransformComponent{});
+    core::AnimatedModelComponent animated{model};
+    animated.globalNodeMatrices = {
+        glm::mat4(1.0f),
+        glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -0.7f, 0.0f)),
+        glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -1.1f, 0.0f)),
+        glm::translate(glm::mat4(1.0f), glm::vec3(0.2f, -0.2f, 0.8f)),
+        glm::translate(glm::mat4(1.0f), glm::vec3(0.2f, -0.2f, 1.2f)),
+    };
+    animated.skinJointMatrices = {{glm::mat4(1.0f), glm::mat4(1.0f)}};
+    world.animatedModels.emplace(root, std::move(animated));
+    world.markTransformsDirty(root);
+
+    transformSystem.update(world, scheduler, false);
+
+    core::FrameSceneData frame;
+    selection.set(root);
+    extraction.extract(world, materials, selection, frame, scheduler, false);
+
+    assert(frame.selectionSkeleton.owner.has_value());
+    assert(*frame.selectionSkeleton.owner == root);
+    assert(frame.selectionSkeleton.jointNames.size() == 3u);
+    assert(frame.selectionSkeleton.jointNames[0] == "Root");
+    assert(frame.selectionSkeleton.jointNames[1] == "LowerLeg.L");
+    assert(frame.selectionSkeleton.jointNames[2] == "LowerLeg.L_end");
+    assert(frame.selectionSkeleton.parentIndices.size() == 3u);
+    assert(frame.selectionSkeleton.parentIndices[0] == -1);
+    assert(frame.selectionSkeleton.parentIndices[1] == 0);
+    assert(frame.selectionSkeleton.parentIndices[2] == 1);
+    assert(std::find(
+        frame.selectionSkeleton.jointNames.begin(),
+        frame.selectionSkeleton.jointNames.end(),
+        std::string("PT.L")
+    ) == frame.selectionSkeleton.jointNames.end());
+    assert(std::find(
+        frame.selectionSkeleton.jointNames.begin(),
+        frame.selectionSkeleton.jointNames.end(),
+        std::string("PT.L_end")
+    ) == frame.selectionSkeleton.jointNames.end());
 }
 
 void testRenderSceneViewBuildResolvesRenderableSelection() {
@@ -1046,6 +1376,8 @@ void testProfilingMemoryEstimators() {
         std::vector<glm::vec4>(2, glm::vec4(1.0f, 0.0f, 0.0f, 1.0f)),
         std::vector<std::vector<glm::vec2>>(2, std::vector<glm::vec2>(2, glm::vec2(0.0f))),
         std::vector<glm::vec4>(2, glm::vec4(1.0f)),
+        std::vector<glm::uvec4>(2, glm::uvec4(0u)),
+        std::vector<glm::vec4>(2, glm::vec4(0.0f)),
         std::vector<unsigned int>{0u, 1u, 0u}
     };
 
@@ -1059,7 +1391,10 @@ void testProfilingMemoryEstimators() {
     assert(textureGpuBytes == 84u);
     assert(shadowMapBytes == 4096u);
     assert(renderTargetBytes == 128u);
-    assert(meshBytes.vertexBytes == static_cast<std::uint64_t>(2u * 18u * sizeof(float)));
+    assert(
+        meshBytes.vertexBytes ==
+        static_cast<std::uint64_t>(2u * (22u * sizeof(float) + 4u * sizeof(std::uint32_t)))
+    );
     assert(meshBytes.indexBytes == static_cast<std::uint64_t>(3u * sizeof(unsigned int)));
 }
 
@@ -1082,6 +1417,9 @@ int main() {
     testLightVolumeAssignmentIsStableAcrossLightTypes();
     testMaterialHandleSharingExtraction();
     testRenderExtractionPreservesOutputOrdering();
+    testRenderExtractionPopulatesSkinnedJointRangesAndSelectionOwner();
+    testRenderExtractionAlignsSkinnedChildBoundsWithRenderedMesh();
+    testRenderExtractionFiltersHelperSkeletonBranches();
     testRenderSceneViewBuildResolvesRenderableSelection();
     testRenderSceneViewBuildResolvesLightSelection();
     testRenderSceneViewBuildResolvesNodeSelection();

@@ -30,6 +30,8 @@ void ensureMeshAttributeSizes(Mesh& mesh, std::size_t uvSetCount) {
     mesh.normals.resize(vertexCount, glm::vec3(0.0f, 1.0f, 0.0f));
     mesh.tangents.resize(vertexCount, glm::vec4(1.0f, 0.0f, 0.0f, 1.0f));
     mesh.colors.resize(vertexCount, glm::vec4(1.0f));
+    mesh.jointIndices.resize(vertexCount, glm::uvec4(0u));
+    mesh.jointWeights.resize(vertexCount, glm::vec4(0.0f));
 
     if (mesh.uvSets.size() < uvSetCount) {
         mesh.uvSets.resize(uvSetCount);

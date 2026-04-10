@@ -198,6 +198,16 @@ void Application::run() {
         }
 
         {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Animation Update");
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary("begin", "Animation Update", frameIndex, "main");
+            }
+            services_.animationSystem.update(services_.world, services_.time, services_.scheduler, true);
+            if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                logFrameStageBoundary("end", "Animation Update", frameIndex, "main");
+            }
+        }
+        {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Transform Update");
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary(

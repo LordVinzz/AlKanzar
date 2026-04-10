@@ -6,6 +6,7 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
+#include <glm/ext/vector_uint4.hpp>
 
 namespace render {
 
@@ -15,6 +16,8 @@ struct Mesh {
     std::vector<glm::vec4> tangents;
     std::vector<std::vector<glm::vec2>> uvSets;
     std::vector<glm::vec4> colors;
+    std::vector<glm::uvec4> jointIndices;
+    std::vector<glm::vec4> jointWeights;
     std::vector<unsigned int> indices;
 
     [[nodiscard]] bool empty() const {
@@ -23,6 +26,10 @@ struct Mesh {
 
     [[nodiscard]] std::size_t vertexCount() const {
         return positions.size();
+    }
+
+    [[nodiscard]] bool skinned() const {
+        return !jointIndices.empty() || !jointWeights.empty();
     }
 };
 

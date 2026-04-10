@@ -55,6 +55,9 @@ RenderSceneView buildRenderSceneView(
     scene.lights = frame.lights;
     scene.lightVolumes = frame.lightVolumes;
     scene.selection = resolveRenderSelection(frame);
+    scene.selectionSkeleton.showOverlay = frame.selectionSkeleton.showOverlay;
+    scene.selectionSkeleton.parentIndices = frame.selectionSkeleton.parentIndices;
+    scene.selectionSkeleton.jointWorldPositions = frame.selectionSkeleton.jointWorldPositions;
 
     if (!useParallel) {
         scene.objects.reserve(frame.renderables.size());
@@ -74,6 +77,9 @@ RenderSceneView buildRenderSceneView(
             object.localBounds = renderable.localBounds;
             object.worldBounds = renderable.worldBounds;
             object.modelMatrix = renderable.modelMatrix;
+            object.skinned = renderable.skinned;
+            object.jointMatrixBase = renderable.jointMatrixBase;
+            object.jointMatrixCount = renderable.jointMatrixCount;
             object.visible = renderable.visible;
             scene.objects.push_back(std::move(object));
         }
@@ -103,6 +109,9 @@ RenderSceneView buildRenderSceneView(
                     object.localBounds = renderable.localBounds;
                     object.worldBounds = renderable.worldBounds;
                     object.modelMatrix = renderable.modelMatrix;
+                    object.skinned = renderable.skinned;
+                    object.jointMatrixBase = renderable.jointMatrixBase;
+                    object.jointMatrixCount = renderable.jointMatrixCount;
                     object.visible = renderable.visible;
                     scene.objects[index] = std::move(object);
                 }
@@ -124,6 +133,9 @@ std::vector<ShadowSystem::ShadowRenderable> collectShadowRenderables(const Rende
         renderables.push_back(ShadowSystem::ShadowRenderable{
             object.mesh,
             object.modelMatrix,
+            object.skinned,
+            object.jointMatrixBase,
+            object.jointMatrixCount,
         });
     }
     return renderables;

@@ -24,6 +24,9 @@ struct RenderSceneObjectView {
     Bounds3 localBounds{};
     Bounds3 worldBounds{};
     glm::mat4 modelMatrix{1.0f};
+    bool skinned{false};
+    int jointMatrixBase{0};
+    int jointMatrixCount{0};
     bool visible{true};
 };
 
@@ -42,11 +45,18 @@ struct RenderSelectionView {
     glm::mat4 transformMatrix{1.0f};
 };
 
+struct RenderSelectionSkeletonView {
+    bool showOverlay{false};
+    std::vector<int> parentIndices{};
+    std::vector<glm::vec3> jointWorldPositions{};
+};
+
 struct RenderSceneView {
     std::vector<RenderSceneObjectView> objects{};
     std::vector<core::FrameLight> lights{};
     std::vector<core::FrameLightVolume> lightVolumes{};
     RenderSelectionView selection{};
+    RenderSelectionSkeletonView selectionSkeleton{};
 };
 
 /**

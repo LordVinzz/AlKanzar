@@ -290,6 +290,14 @@ void SceneOverlayRenderer::destroy() {
         glDeleteTextures(1, &spotLightIconTexture_);
         spotLightIconTexture_ = 0;
     }
+    if (skeletonLineVbo_ != 0) {
+        glDeleteBuffers(1, &skeletonLineVbo_);
+        skeletonLineVbo_ = 0;
+    }
+    if (skeletonLineVao_ != 0) {
+        glDeleteVertexArrays(1, &skeletonLineVao_);
+        skeletonLineVao_ = 0;
+    }
     debugMvpLocation_ = -1;
     debugColorLocation_ = -1;
     lightIconClipCenterLocation_ = -1;
@@ -437,6 +445,61 @@ void SceneOverlayRenderer::drawLightIcon(
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+void SceneOverlayRenderer::drawSkeletonLines(
+    const std::vector<glm::vec3>& jointWorldPositions,
+    const std::vector<int>& parentIndices,
+    const glm::mat4& projection,
+    const glm::mat4& view
+) const {
+    if (jointWorldPositions.empty() || parentIndices.empty() || debugColorShader_.id() == 0) {
+        return;
+    }
+
+    std::vector<glm::vec3> lineVertices{};
+    lineVertices.reserve(jointWorldPositions.size() * 2u);
+    const std::size_t jointCount = std::min(jointWorldPositions.size(), parentIndices.size());
+    for (std::size_t jointIndex = 0; jointIndex < jointCount; ++jointIndex) {
+        const int parentIndex = parentIndices[jointIndex];
+        if (parentIndex < 0 || parentIndex >= static_cast<int>(jointCount)) {
+            continue;
+        }
+        lineVertices.push_back(jointWorldPositions[static_cast<std::size_t>(parentIndex)]);
+        lineVertices.push_back(jointWorldPositions[jointIndex]);
+    }
+
+    if (lineVertices.empty()) {
+        return;
+    }
+
+    if (skeletonLineVao_ == 0) {
+        glGenVertexArrays(1, &skeletonLineVao_);
+    }
+    if (skeletonLineVbo_ == 0) {
+        glGenBuffers(1, &skeletonLineVbo_);
+    }
+
+    glBindVertexArray(skeletonLineVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, skeletonLineVbo_);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(lineVertices.size() * sizeof(glm::vec3)),
+        lineVertices.data(),
+        GL_DYNAMIC_DRAW
+    );
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), reinterpret_cast<void*>(0));
+    glDisableVertexAttribArray(5);
+    glVertexAttrib4f(5, 1.0f, 1.0f, 1.0f, 1.0f);
+
+    const glm::mat4 mvp = projection * view;
+    debugColorShader_.use();
+    glUniformMatrix4fv(debugMvpLocation_, 1, GL_FALSE, glm::value_ptr(mvp));
+    glUniform4f(debugColorLocation_, 0.35f, 0.95f, 0.85f, 1.0f);
+    glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(lineVertices.size()));
+
+    glBindVertexArray(0);
+}
+
 void SceneOverlayRenderer::renderSelectionOverlay(
     const RenderSceneView& scene,
     const CameraMatrices& camera,
@@ -444,28 +507,42 @@ void SceneOverlayRenderer::renderSelectionOverlay(
     int width,
     int height
 ) const {
-    if (!options.editorEnabled ||
-        scene.selection.kind == RenderSelectionKind::None ||
-        scene.selection.kind == RenderSelectionKind::Light ||
-        !scene.selection.hasWorldBounds ||
-        debugColorShader_.id() == 0 ||
-        !axisGizmo_.valid() ||
-        !selectionBox_.valid()) {
-        return;
-    }
-    if (scene.selection.kind == RenderSelectionKind::Renderable &&
-        (scene.selection.index < 0 || scene.selection.index >= static_cast<int>(scene.objects.size()))) {
+    if (!options.editorEnabled || debugColorShader_.id() == 0) {
         return;
     }
 
-    const Bounds3 worldBounds = scene.selection.worldBounds;
-    const glm::vec3 center = (worldBounds.min + worldBounds.max) * 0.5f;
-    const glm::vec3 extents = glm::max((worldBounds.max - worldBounds.min) * 0.5f, glm::vec3(0.01f));
-    const float axisScale = std::clamp(
-        glm::length(worldBounds.max - worldBounds.min) * kSelectionScaleFactor,
-        kSelectionAxisScaleMin,
-        kSelectionAxisScaleMax
-    );
+    const bool drawSkeleton = scene.selectionSkeleton.showOverlay &&
+        !scene.selectionSkeleton.jointWorldPositions.empty() &&
+        !scene.selectionSkeleton.parentIndices.empty();
+
+    bool drawSelection = scene.selection.kind != RenderSelectionKind::None &&
+        scene.selection.kind != RenderSelectionKind::Light &&
+        scene.selection.hasWorldBounds &&
+        axisGizmo_.valid() &&
+        selectionBox_.valid();
+    if (drawSelection &&
+        scene.selection.kind == RenderSelectionKind::Renderable &&
+        (scene.selection.index < 0 || scene.selection.index >= static_cast<int>(scene.objects.size()))) {
+        drawSelection = false;
+    }
+    if (!drawSelection && !drawSkeleton) {
+        return;
+    }
+
+    Bounds3 worldBounds{};
+    glm::vec3 center(0.0f);
+    glm::vec3 extents(0.01f);
+    float axisScale = kSelectionAxisScaleMin;
+    if (drawSelection) {
+        worldBounds = scene.selection.worldBounds;
+        center = (worldBounds.min + worldBounds.max) * 0.5f;
+        extents = glm::max((worldBounds.max - worldBounds.min) * 0.5f, glm::vec3(0.01f));
+        axisScale = std::clamp(
+            glm::length(worldBounds.max - worldBounds.min) * kSelectionScaleFactor,
+            kSelectionAxisScaleMin,
+            kSelectionAxisScaleMax
+        );
+    }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, width, height);
@@ -477,21 +554,31 @@ void SceneOverlayRenderer::renderSelectionOverlay(
 
     debugColorShader_.use();
 
-    glm::mat4 axisModel = scene.selection.transformMatrix;
-    axisModel *= glm::scale(glm::mat4(1.0f), glm::vec3(axisScale));
-    drawDebugMesh(axisGizmo_, camera.projection, camera.view, axisModel, glm::vec4(1.0f), false);
+    if (drawSelection) {
+        glm::mat4 axisModel = scene.selection.transformMatrix;
+        axisModel *= glm::scale(glm::mat4(1.0f), glm::vec3(axisScale));
+        drawDebugMesh(axisGizmo_, camera.projection, camera.view, axisModel, glm::vec4(1.0f), false);
 
-    glm::mat4 boxModel(1.0f);
-    boxModel = glm::translate(boxModel, center);
-    boxModel = glm::scale(boxModel, extents);
-    drawDebugMesh(
-        selectionBox_,
-        camera.projection,
-        camera.view,
-        boxModel,
-        glm::vec4(0.98f, 0.85f, 0.30f, kSelectionBoundsAlpha),
-        true
-    );
+        glm::mat4 boxModel(1.0f);
+        boxModel = glm::translate(boxModel, center);
+        boxModel = glm::scale(boxModel, extents);
+        drawDebugMesh(
+            selectionBox_,
+            camera.projection,
+            camera.view,
+            boxModel,
+            glm::vec4(0.98f, 0.85f, 0.30f, kSelectionBoundsAlpha),
+            true
+        );
+    }
+    if (drawSkeleton) {
+        drawSkeletonLines(
+            scene.selectionSkeleton.jointWorldPositions,
+            scene.selectionSkeleton.parentIndices,
+            camera.projection,
+            camera.view
+        );
+    }
 
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
