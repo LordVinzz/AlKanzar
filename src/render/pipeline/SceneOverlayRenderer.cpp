@@ -23,9 +23,7 @@ constexpr float kLightGizmoScaleFactor = 0.12f;
 constexpr float kDirectionalDebugAnchorDistance = 7.5f;
 constexpr float kDebugVolumeAlpha = 0.85f;
 constexpr float kSelectionBoundsAlpha = 0.95f;
-constexpr float kSelectionAxisScaleMin = 0.55f;
-constexpr float kSelectionAxisScaleMax = 1.35f;
-constexpr float kSelectionScaleFactor = 0.2f;
+constexpr float kSelectionAxisViewportFactor = 0.08f;
 constexpr float kLightIconPixelSize = 34.0f;
 constexpr float kLightIconOpacity = 0.5f;
 
@@ -223,6 +221,49 @@ glm::mat4 makeOrientationFromDirection(const glm::vec3& direction) {
     basis[1] = glm::vec4(actualUp, 0.0f);
     basis[2] = glm::vec4(forward, 0.0f);
     return basis;
+}
+
+float selectionAxisScaleFromCamera(const glm::mat4& projection) {
+    const float verticalHalfSpan = projection[1][1] != 0.0f ? 1.0f / projection[1][1] : 1.0f;
+    return verticalHalfSpan * kSelectionAxisViewportFactor;
+}
+
+glm::vec3 normalizeOr(const glm::vec3& value, const glm::vec3& fallback) {
+    const float length = glm::length(value);
+    if (length <= 1.0e-6f) {
+        return fallback;
+    }
+    return value / length;
+}
+
+glm::mat4 makeUnscaledSelectionAxisModel(const glm::mat4& transformMatrix, float axisScale) {
+    glm::vec3 translation = glm::vec3(transformMatrix[3]);
+    const glm::vec3 originalX = glm::vec3(transformMatrix[0]);
+    const glm::vec3 originalY = glm::vec3(transformMatrix[1]);
+    const glm::vec3 originalZ = glm::vec3(transformMatrix[2]);
+
+    glm::vec3 xAxis = normalizeOr(originalX, glm::vec3(1.0f, 0.0f, 0.0f));
+    glm::vec3 yAxis = originalY - xAxis * glm::dot(originalY, xAxis);
+    yAxis = normalizeOr(yAxis, glm::vec3(0.0f, 1.0f, 0.0f));
+
+    glm::vec3 zAxis = glm::cross(xAxis, yAxis);
+    if (glm::dot(zAxis, zAxis) <= 1.0e-6f) {
+        zAxis = normalizeOr(originalZ, glm::vec3(0.0f, 0.0f, 1.0f));
+    } else {
+        zAxis = glm::normalize(zAxis);
+    }
+    if (glm::dot(zAxis, originalZ) < 0.0f) {
+        zAxis = -zAxis;
+    }
+    yAxis = normalizeOr(glm::cross(zAxis, xAxis), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    glm::mat4 axisModel(1.0f);
+    axisModel[0] = glm::vec4(xAxis, 0.0f);
+    axisModel[1] = glm::vec4(yAxis, 0.0f);
+    axisModel[2] = glm::vec4(zAxis, 0.0f);
+    axisModel[3] = glm::vec4(translation, 1.0f);
+
+    return glm::scale(axisModel, glm::vec3(axisScale));
 }
 
 std::string assetRootPath(const char* subdir) {
@@ -532,16 +573,11 @@ void SceneOverlayRenderer::renderSelectionOverlay(
     Bounds3 worldBounds{};
     glm::vec3 center(0.0f);
     glm::vec3 extents(0.01f);
-    float axisScale = kSelectionAxisScaleMin;
+    const float axisScale = selectionAxisScaleFromCamera(camera.projection);
     if (drawSelection) {
         worldBounds = scene.selection.worldBounds;
         center = (worldBounds.min + worldBounds.max) * 0.5f;
         extents = glm::max((worldBounds.max - worldBounds.min) * 0.5f, glm::vec3(0.01f));
-        axisScale = std::clamp(
-            glm::length(worldBounds.max - worldBounds.min) * kSelectionScaleFactor,
-            kSelectionAxisScaleMin,
-            kSelectionAxisScaleMax
-        );
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -555,8 +591,7 @@ void SceneOverlayRenderer::renderSelectionOverlay(
     debugColorShader_.use();
 
     if (drawSelection) {
-        glm::mat4 axisModel = scene.selection.transformMatrix;
-        axisModel *= glm::scale(glm::mat4(1.0f), glm::vec3(axisScale));
+        const glm::mat4 axisModel = makeUnscaledSelectionAxisModel(scene.selection.transformMatrix, axisScale);
         drawDebugMesh(axisGizmo_, camera.projection, camera.view, axisModel, glm::vec4(1.0f), false);
 
         glm::mat4 boxModel(1.0f);
