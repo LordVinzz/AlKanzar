@@ -491,6 +491,7 @@ bool appendPrimitive(
     section.nodeIndex = nodeIndex;
     section.skinIndex = skinIndex;
     section.mesh = std::move(mesh);
+    render::buildJointInfluenceBounds(section);
     section.material = std::move(material);
     outModel.sections.push_back(std::move(section));
     return true;
@@ -587,6 +588,58 @@ void buildSkinSkeletonHierarchy(
 }  // namespace
 
 namespace render {
+
+void buildJointInfluenceBounds(GltfMeshSection& section) {
+    section.jointInfluenceBounds.clear();
+    if (!section.skinned() || section.mesh.positions.empty() || !section.mesh.skinned()) {
+        return;
+    }
+
+    if (section.mesh.jointIndices.size() < section.mesh.positions.size() ||
+        section.mesh.jointWeights.size() < section.mesh.positions.size()) {
+        return;
+    }
+
+    std::unordered_map<int, std::size_t> boundsIndexByJoint{};
+    boundsIndexByJoint.reserve(section.mesh.positions.size());
+    for (std::size_t vertexIndex = 0; vertexIndex < section.mesh.positions.size(); ++vertexIndex) {
+        const glm::vec3& position = section.mesh.positions[vertexIndex];
+        const glm::uvec4 joints = section.mesh.jointIndices[vertexIndex];
+        const glm::vec4 weights = section.mesh.jointWeights[vertexIndex];
+        const std::array<int, kJointInfluenceCount> jointValues{
+            static_cast<int>(joints.x),
+            static_cast<int>(joints.y),
+            static_cast<int>(joints.z),
+            static_cast<int>(joints.w),
+        };
+        const std::array<float, kJointInfluenceCount> weightValues{
+            weights.x,
+            weights.y,
+            weights.z,
+            weights.w,
+        };
+
+        for (std::size_t influenceIndex = 0; influenceIndex < kJointInfluenceCount; ++influenceIndex) {
+            if (weightValues[influenceIndex] <= 0.0f) {
+                continue;
+            }
+
+            const int jointIndex = jointValues[influenceIndex];
+            auto [it, inserted] = boundsIndexByJoint.try_emplace(jointIndex, section.jointInfluenceBounds.size());
+            if (inserted) {
+                section.jointInfluenceBounds.push_back(JointInfluenceBounds{
+                    jointIndex,
+                    Bounds3{position, position},
+                });
+                continue;
+            }
+
+            JointInfluenceBounds& jointBounds = section.jointInfluenceBounds[it->second];
+            jointBounds.localBounds.min = glm::min(jointBounds.localBounds.min, position);
+            jointBounds.localBounds.max = glm::max(jointBounds.localBounds.max, position);
+        }
+    }
+}
 
 glm::mat4 composeNodeTransform(const NodeTransform& transform) {
     glm::mat4 matrix(1.0f);

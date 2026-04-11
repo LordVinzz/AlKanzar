@@ -105,6 +105,49 @@ bool computeSkinnedWorldBounds(
     return hasBounds;
 }
 
+bool computeConservativeSkinnedWorldBounds(
+    const AnimatedModelComponent& animated,
+    const SkinnedRenderableComponent& skinned,
+    const glm::mat4& modelMatrix,
+    render::Bounds3& outBounds
+) {
+    if (!animated.model ||
+        skinned.sectionIndex < 0 ||
+        skinned.sectionIndex >= static_cast<int>(animated.model->sections.size())) {
+        return false;
+    }
+
+    const render::GltfMeshSection& section = animated.model->sections[static_cast<std::size_t>(skinned.sectionIndex)];
+    if (section.jointInfluenceBounds.empty()) {
+        return false;
+    }
+
+    const std::vector<glm::mat4>* skinMatrices =
+        skinned.skinIndex >= 0 && skinned.skinIndex < static_cast<int>(animated.skinJointMatrices.size())
+            ? &animated.skinJointMatrices[static_cast<std::size_t>(skinned.skinIndex)]
+            : nullptr;
+    if (skinMatrices == nullptr || skinMatrices->empty()) {
+        return false;
+    }
+
+    bool hasBounds = false;
+    for (const render::JointInfluenceBounds& jointBounds : section.jointInfluenceBounds) {
+        if (jointBounds.jointIndex < 0 ||
+            jointBounds.jointIndex >= static_cast<int>(skinMatrices->size())) {
+            return false;
+        }
+
+        const render::Bounds3 transformedBounds = transformBounds(
+            jointBounds.localBounds,
+            modelMatrix * (*skinMatrices)[static_cast<std::size_t>(jointBounds.jointIndex)]
+        );
+        outBounds = hasBounds ? mergeBounds(outBounds, transformedBounds) : transformedBounds;
+        hasBounds = true;
+    }
+
+    return hasBounds;
+}
+
 bool resolveAnimatedSelectionBounds(
     const World& world,
     EntityId selected,
@@ -150,7 +193,8 @@ void applyAnimatedRenderableState(
         frameRenderable.modelMatrix = world.transformCache_[skinned->animationOwner.index].worldMatrix;
     }
 
-    if (!computeSkinnedWorldBounds(*animated, *skinned, frameRenderable.modelMatrix, frameRenderable.worldBounds) &&
+    if (!computeConservativeSkinnedWorldBounds(*animated, *skinned, frameRenderable.modelMatrix, frameRenderable.worldBounds) &&
+        !computeSkinnedWorldBounds(*animated, *skinned, frameRenderable.modelMatrix, frameRenderable.worldBounds) &&
         (entity.index >= world.transformCache_.size() || !world.transformCache_[entity.index].hasWorldBounds)) {
         // Fall back to the raw section bounds when skin data is unavailable.
         frameRenderable.worldBounds = transformBounds(frameRenderable.localBounds, frameRenderable.modelMatrix);

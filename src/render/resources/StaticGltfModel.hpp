@@ -8,6 +8,7 @@
 #include <glm/mat4x4.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "render/engine/RenderTypes.hpp"
 #include "Geometry.hpp"
 #include "Material.hpp"
 
@@ -61,6 +62,11 @@ struct SkinData {
     std::vector<int> skeletonJointIndices{};
 };
 
+struct JointInfluenceBounds {
+    int jointIndex{-1};
+    Bounds3 localBounds{};
+};
+
 struct GltfNode {
     std::string name{};
     int parentIndex{-1};
@@ -75,6 +81,7 @@ struct GltfMeshSection {
     int nodeIndex{-1};
     int skinIndex{-1};
     Mesh mesh{};
+    std::vector<JointInfluenceBounds> jointInfluenceBounds{};
     std::shared_ptr<Material> material{};
 
     [[nodiscard]] bool skinned() const {
@@ -101,6 +108,7 @@ glm::mat4 composeNodeTransform(const NodeTransform& transform);
 bool decomposeNodeTransform(const glm::mat4& matrix, NodeTransform& outTransform);
 void refreshModelBindPose(GltfModelData& model);
 int findDefaultAnimationClipIndex(const GltfModelData& model);
+void buildJointInfluenceBounds(GltfMeshSection& section);
 
 bool loadGltfModel(const std::string& path, GltfModelData& outModel);
 bool loadStaticGltfModel(const std::string& path, StaticModelData& outModel);

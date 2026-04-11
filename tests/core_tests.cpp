@@ -46,6 +46,61 @@ bool nearlyEqual(double lhs, double rhs, double epsilon = 0.001) {
     return std::abs(lhs - rhs) <= epsilon;
 }
 
+render::Bounds3 exactSkinnedWorldBounds(
+    const render::Mesh& mesh,
+    const std::vector<glm::mat4>& skinMatrices,
+    const glm::mat4& modelMatrix
+) {
+    render::Bounds3 outBounds{};
+    bool hasBounds = false;
+    for (std::size_t vertexIndex = 0; vertexIndex < mesh.positions.size(); ++vertexIndex) {
+        glm::vec4 skinnedPosition(mesh.positions[vertexIndex], 1.0f);
+        if (vertexIndex < mesh.jointIndices.size() && vertexIndex < mesh.jointWeights.size()) {
+            const glm::uvec4 joints = mesh.jointIndices[vertexIndex];
+            const glm::vec4 weights = mesh.jointWeights[vertexIndex];
+            const float totalWeight = weights.x + weights.y + weights.z + weights.w;
+            if (totalWeight > 0.0f) {
+                glm::mat4 skinMatrix(0.0f);
+                if (weights.x > 0.0f && joints.x < skinMatrices.size()) {
+                    skinMatrix += skinMatrices[joints.x] * weights.x;
+                }
+                if (weights.y > 0.0f && joints.y < skinMatrices.size()) {
+                    skinMatrix += skinMatrices[joints.y] * weights.y;
+                }
+                if (weights.z > 0.0f && joints.z < skinMatrices.size()) {
+                    skinMatrix += skinMatrices[joints.z] * weights.z;
+                }
+                if (weights.w > 0.0f && joints.w < skinMatrices.size()) {
+                    skinMatrix += skinMatrices[joints.w] * weights.w;
+                }
+                skinnedPosition = skinMatrix * skinnedPosition;
+            }
+        }
+
+        const glm::vec3 worldPosition = glm::vec3(modelMatrix * skinnedPosition);
+        if (!hasBounds) {
+            outBounds.min = worldPosition;
+            outBounds.max = worldPosition;
+            hasBounds = true;
+            continue;
+        }
+        outBounds.min = glm::min(outBounds.min, worldPosition);
+        outBounds.max = glm::max(outBounds.max, worldPosition);
+    }
+
+    assert(hasBounds);
+    return outBounds;
+}
+
+bool boundsContain(const render::Bounds3& outer, const render::Bounds3& inner, double epsilon = 0.0001) {
+    return outer.min.x <= inner.min.x + epsilon &&
+        outer.min.y <= inner.min.y + epsilon &&
+        outer.min.z <= inner.min.z + epsilon &&
+        outer.max.x >= inner.max.x - epsilon &&
+        outer.max.y >= inner.max.y - epsilon &&
+        outer.max.z >= inner.max.z - epsilon;
+}
+
 core::TaskScheduler makeScheduler(std::size_t workerCount = 2u) {
     return core::TaskScheduler(core::TaskSchedulerConfig{workerCount});
 }
@@ -757,6 +812,78 @@ void testRenderExtractionPopulatesSkinnedJointRangesAndSelectionOwner() {
     assert(*frame.selectionSkeleton.owner == root);
 }
 
+void testJointInfluenceBoundsBuildsSingleJointSection() {
+    render::GltfMeshSection section{};
+    section.skinIndex = 0;
+    section.mesh.positions = {
+        glm::vec3(-1.0f, -2.0f, 0.5f),
+        glm::vec3(3.0f, 4.0f, 1.5f),
+    };
+    section.mesh.jointIndices = {
+        glm::uvec4(3u, 0u, 0u, 0u),
+        glm::uvec4(3u, 1u, 0u, 0u),
+    };
+    section.mesh.jointWeights = {
+        glm::vec4(1.0f, 0.0f, 0.0f, 0.0f),
+        glm::vec4(1.0f, 0.0f, 0.0f, 0.0f),
+    };
+
+    render::buildJointInfluenceBounds(section);
+
+    assert(section.jointInfluenceBounds.size() == 1u);
+    assert(section.jointInfluenceBounds[0].jointIndex == 3);
+    assert(nearlyEqual(section.jointInfluenceBounds[0].localBounds.min.x, -1.0, 0.0001));
+    assert(nearlyEqual(section.jointInfluenceBounds[0].localBounds.min.y, -2.0, 0.0001));
+    assert(nearlyEqual(section.jointInfluenceBounds[0].localBounds.max.x, 3.0, 0.0001));
+    assert(nearlyEqual(section.jointInfluenceBounds[0].localBounds.max.y, 4.0, 0.0001));
+    assert(nearlyEqual(section.jointInfluenceBounds[0].localBounds.max.z, 1.5, 0.0001));
+}
+
+void testJointInfluenceBoundsBuildsMixedWeightSection() {
+    render::GltfMeshSection section{};
+    section.skinIndex = 0;
+    section.mesh.positions = {
+        glm::vec3(-1.0f, 0.0f, 0.0f),
+        glm::vec3(0.0f, 2.0f, 0.0f),
+        glm::vec3(3.0f, -1.0f, 1.0f),
+    };
+    section.mesh.jointIndices = {
+        glm::uvec4(0u, 0u, 0u, 0u),
+        glm::uvec4(0u, 2u, 0u, 0u),
+        glm::uvec4(2u, 0u, 0u, 0u),
+    };
+    section.mesh.jointWeights = {
+        glm::vec4(1.0f, 0.0f, 0.0f, 0.0f),
+        glm::vec4(0.25f, 0.75f, 0.0f, 0.0f),
+        glm::vec4(1.0f, 0.0f, 0.0f, 0.0f),
+    };
+
+    render::buildJointInfluenceBounds(section);
+
+    assert(section.jointInfluenceBounds.size() == 2u);
+    const auto joint0 = std::find_if(
+        section.jointInfluenceBounds.begin(),
+        section.jointInfluenceBounds.end(),
+        [](const render::JointInfluenceBounds& bounds) { return bounds.jointIndex == 0; }
+    );
+    const auto joint2 = std::find_if(
+        section.jointInfluenceBounds.begin(),
+        section.jointInfluenceBounds.end(),
+        [](const render::JointInfluenceBounds& bounds) { return bounds.jointIndex == 2; }
+    );
+    assert(joint0 != section.jointInfluenceBounds.end());
+    assert(joint2 != section.jointInfluenceBounds.end());
+
+    assert(nearlyEqual(joint0->localBounds.min.x, -1.0, 0.0001));
+    assert(nearlyEqual(joint0->localBounds.max.x, 0.0, 0.0001));
+    assert(nearlyEqual(joint0->localBounds.max.y, 2.0, 0.0001));
+    assert(nearlyEqual(joint2->localBounds.min.x, 0.0, 0.0001));
+    assert(nearlyEqual(joint2->localBounds.min.y, -1.0, 0.0001));
+    assert(nearlyEqual(joint2->localBounds.max.x, 3.0, 0.0001));
+    assert(nearlyEqual(joint2->localBounds.max.y, 2.0, 0.0001));
+    assert(nearlyEqual(joint2->localBounds.max.z, 1.0, 0.0001));
+}
+
 void testRenderExtractionAlignsSkinnedChildBoundsWithRenderedMesh() {
     auto model = std::make_shared<render::GltfModelData>();
     model->skins.emplace_back();
@@ -841,6 +968,74 @@ void testRenderExtractionAlignsSkinnedChildBoundsWithRenderedMesh() {
     assert(frame.selection.hasWorldBounds);
     assert(nearlyEqual(frame.selection.worldBounds.min.x, 4.0, 0.0001));
     assert(nearlyEqual(frame.selection.worldBounds.max.x, 8.0, 0.0001));
+}
+
+void testRenderExtractionConservativeSkinnedBoundsContainExactBounds() {
+    auto model = std::make_shared<render::GltfModelData>();
+    model->skins.emplace_back();
+
+    render::GltfMeshSection section{};
+    section.name = "Conservative Bounds Section";
+    section.nodeIndex = 0;
+    section.skinIndex = 0;
+    section.mesh.positions = {glm::vec3(0.0f, 0.0f, 0.0f)};
+    section.mesh.jointIndices = {glm::uvec4(0u, 1u, 0u, 0u)};
+    section.mesh.jointWeights = {glm::vec4(0.5f, 0.5f, 0.0f, 0.0f)};
+    render::buildJointInfluenceBounds(section);
+    model->sections.push_back(std::move(section));
+
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler();
+    core::MaterialLibrary materials;
+    core::SelectionModel selection;
+    core::TransformSystem transformSystem;
+    core::RenderExtractionSystem extraction;
+
+    auto material = std::make_shared<render::Material>();
+    const core::MaterialHandle materialHandle = materials.add(material);
+
+    const std::vector<glm::mat4> skinMatrices{
+        glm::translate(glm::mat4(1.0f), glm::vec3(-2.0f, 0.0f, 0.0f)),
+        glm::translate(glm::mat4(1.0f), glm::vec3(2.0f, 0.0f, 0.0f)),
+    };
+    const render::Bounds3 exactBounds = exactSkinnedWorldBounds(
+        model->sections[0].mesh,
+        skinMatrices,
+        glm::mat4(1.0f)
+    );
+
+    const core::EntityId root = world.createEntity();
+    world.transforms.emplace(root, core::TransformComponent{});
+    core::AnimatedModelComponent animated{model};
+    animated.skinJointMatrices = {skinMatrices};
+    world.animatedModels.emplace(root, std::move(animated));
+
+    const core::EntityId sectionEntity = world.createEntity();
+    world.parents.emplace(sectionEntity, core::ParentComponent{root});
+    world.transforms.emplace(sectionEntity, core::TransformComponent{});
+    world.bounds.emplace(sectionEntity, core::BoundsComponent{
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)}
+    });
+    world.visibilities.emplace(sectionEntity, core::VisibilityComponent{true});
+    world.renderables.emplace(sectionEntity, core::RenderableComponent{
+        render::MeshHandle{0},
+        materialHandle,
+        render::RenderLayer::Actors
+    });
+    world.skinnedRenderables.emplace(sectionEntity, core::SkinnedRenderableComponent{root, 0, 0, 0});
+    world.markTransformsDirty(root);
+    world.markTransformsDirty(sectionEntity);
+
+    transformSystem.update(world, scheduler, false);
+
+    core::FrameSceneData frame;
+    selection.set(sectionEntity);
+    extraction.extract(world, materials, selection, frame, scheduler, false);
+
+    assert(frame.renderables.size() == 1u);
+    assert(boundsContain(frame.renderables[0].worldBounds, exactBounds));
+    assert(frame.renderables[0].worldBounds.min.x < exactBounds.min.x - 0.0001);
+    assert(frame.renderables[0].worldBounds.max.x > exactBounds.max.x + 0.0001);
 }
 
 void testRenderExtractionFiltersHelperSkeletonBranches() {
@@ -1462,7 +1657,10 @@ int main() {
     testMaterialHandleSharingExtraction();
     testRenderExtractionPreservesOutputOrdering();
     testRenderExtractionPopulatesSkinnedJointRangesAndSelectionOwner();
+    testJointInfluenceBoundsBuildsSingleJointSection();
+    testJointInfluenceBoundsBuildsMixedWeightSection();
     testRenderExtractionAlignsSkinnedChildBoundsWithRenderedMesh();
+    testRenderExtractionConservativeSkinnedBoundsContainExactBounds();
     testRenderExtractionFiltersHelperSkeletonBranches();
     testRenderSceneViewBuildResolvesRenderableSelection();
     testRenderSceneViewBuildResolvesLightSelection();
