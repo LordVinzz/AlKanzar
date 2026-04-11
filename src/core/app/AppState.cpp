@@ -862,12 +862,44 @@ void drawProfilerMemoryGroup(const char* label, const std::vector<const Resource
     }
 }
 
-std::string buildProfilerWindowTitle(const std::shared_ptr<const ProfilerFrameSnapshot>& snapshot) {
-    if (!snapshot || snapshot->cpuFrameMs <= 0.0) {
+double profilerCadenceMs(
+    const std::vector<std::shared_ptr<const ProfilerFrameSnapshot>>& snapshots,
+    int frameIndex
+) {
+    if (frameIndex < 0 || frameIndex >= static_cast<int>(snapshots.size())) {
+        return 0.0;
+    }
+
+    const auto cadenceBetween = [](const std::shared_ptr<const ProfilerFrameSnapshot>& earlier,
+                                   const std::shared_ptr<const ProfilerFrameSnapshot>& later) {
+        if (!earlier || !later || earlier->sessionId != later->sessionId || later->startNs <= earlier->startNs) {
+            return 0.0;
+        }
+        return static_cast<double>(later->startNs - earlier->startNs) / 1'000'000.0;
+    };
+
+    if (frameIndex > 0) {
+        const double previousCadenceMs = cadenceBetween(snapshots[frameIndex - 1], snapshots[frameIndex]);
+        if (previousCadenceMs > 0.0) {
+            return previousCadenceMs;
+        }
+    }
+    if (frameIndex + 1 < static_cast<int>(snapshots.size())) {
+        return cadenceBetween(snapshots[frameIndex], snapshots[frameIndex + 1]);
+    }
+    return 0.0;
+}
+
+std::string buildProfilerWindowTitle(
+    const std::vector<std::shared_ptr<const ProfilerFrameSnapshot>>& snapshots,
+    int frameIndex
+) {
+    const double cadenceMs = profilerCadenceMs(snapshots, frameIndex);
+    if (cadenceMs <= 0.0) {
         return "Profiler###ProfilerWindow";
     }
 
-    const double fps = 1000.0 / snapshot->cpuFrameMs;
+    const double fps = 1000.0 / cadenceMs;
     char buffer[96];
     std::snprintf(buffer, sizeof(buffer), "Profiler (%.1f FPS)###ProfilerWindow", fps);
     return buffer;
@@ -880,15 +912,14 @@ void drawProfilerWindow(EngineServices& services) {
     }
 
     const auto snapshots = services.profiler.snapshots();
-    std::shared_ptr<const ProfilerFrameSnapshot> titleSnapshot{};
+    int titleFrameIndex = -1;
     if (!snapshots.empty()) {
-        int titleFrameIndex = services.editorSession.profilerSelectedFrame;
+        titleFrameIndex = services.editorSession.profilerSelectedFrame;
         if (services.editorSession.profilerFollowLatest ||
             titleFrameIndex < 0 ||
             titleFrameIndex >= static_cast<int>(snapshots.size())) {
             titleFrameIndex = static_cast<int>(snapshots.size()) - 1;
         }
-        titleSnapshot = snapshots[titleFrameIndex];
     }
 
     if (services.editorSession.profilerWindowFocusRequested) {
@@ -897,7 +928,7 @@ void drawProfilerWindow(EngineServices& services) {
     ImGui::SetNextWindowSize(ImVec2(860.0f, 720.0f), ImGuiCond_FirstUseEver);
     const bool wasOpen = services.editorSession.profilerWindowVisible;
     bool open = wasOpen;
-    const std::string profilerWindowTitle = buildProfilerWindowTitle(titleSnapshot);
+    const std::string profilerWindowTitle = buildProfilerWindowTitle(snapshots, titleFrameIndex);
     if (!ImGui::Begin(profilerWindowTitle.c_str(), &open)) {
         ImGui::End();
         services.editorSession.profilerWindowVisible = open;
@@ -1005,7 +1036,16 @@ void drawProfilerWindow(EngineServices& services) {
     }
 
     ImGui::PlotLines("CPU Frame (ms)", cpuTotals.data(), static_cast<int>(cpuTotals.size()), 0, nullptr, 0.0f, maxGraphValue, ImVec2(-1.0f, 80.0f));
-    ImGui::PlotLines("GPU Frame (ms)", gpuTotals.data(), static_cast<int>(gpuTotals.size()), 0, nullptr, 0.0f, maxGraphValue, ImVec2(-1.0f, 80.0f));
+    ImGui::PlotLines(
+        "GPU Timed Passes (ms)",
+        gpuTotals.data(),
+        static_cast<int>(gpuTotals.size()),
+        0,
+        nullptr,
+        0.0f,
+        maxGraphValue,
+        ImVec2(-1.0f, 80.0f)
+    );
 
     int selectedFrame = services.editorSession.profilerSelectedFrame;
     if (ImGui::SliderInt("Selected Frame", &selectedFrame, 0, static_cast<int>(snapshots.size()) - 1)) {
@@ -1022,7 +1062,7 @@ void drawProfilerWindow(EngineServices& services) {
     );
     if (selected->gpuComplete) {
         ImGui::SameLine();
-        ImGui::Text("GPU Total %.3f ms", selected->gpuFrameMs);
+        ImGui::Text("GPU Timed Total %.3f ms", selected->gpuFrameMs);
     } else {
         ImGui::SameLine();
         ImGui::TextUnformatted("GPU Pending/Unavailable");
@@ -1043,7 +1083,7 @@ void drawProfilerWindow(EngineServices& services) {
         ImGui::EndTable();
     }
 
-    ImGui::SeparatorText("GPU Passes");
+    ImGui::SeparatorText("GPU Timed Passes");
     if (ImGui::BeginTable(
             "ProfilerGpuPasses",
             3,

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cmath>
 
 #include <SDL.h>
@@ -26,6 +27,12 @@ constexpr float kSelectionBoundsAlpha = 0.95f;
 constexpr float kSelectionAxisViewportFactor = 0.08f;
 constexpr float kLightIconPixelSize = 34.0f;
 constexpr float kLightIconOpacity = 0.5f;
+
+struct LightIconInstanceGpu {
+    glm::vec4 clipCenter{0.0f};
+    float opacity{1.0f};
+    glm::vec3 padding{0.0f};
+};
 
 struct Vertex {
     glm::vec3 position{0.0f};
@@ -304,9 +311,122 @@ GLuint uploadOverlayTexture(const std::shared_ptr<render::Texture>& texture) {
     return handle;
 }
 
+render::detail::OverlayWork makeEmptyOverlayWork() {
+    render::detail::OverlayWork work{};
+    work.iconBatches[0].kind = render::detail::OverlayIconBatchKind::UnselectedPoint;
+    work.iconBatches[0].type = render::LightType::Point;
+    work.iconBatches[0].selected = false;
+    work.iconBatches[0].opacity = kLightIconOpacity;
+
+    work.iconBatches[1].kind = render::detail::OverlayIconBatchKind::UnselectedSpot;
+    work.iconBatches[1].type = render::LightType::Spot;
+    work.iconBatches[1].selected = false;
+    work.iconBatches[1].opacity = kLightIconOpacity;
+
+    work.iconBatches[2].kind = render::detail::OverlayIconBatchKind::SelectedPoint;
+    work.iconBatches[2].type = render::LightType::Point;
+    work.iconBatches[2].selected = true;
+    work.iconBatches[2].opacity = 1.0f;
+
+    work.iconBatches[3].kind = render::detail::OverlayIconBatchKind::SelectedSpot;
+    work.iconBatches[3].type = render::LightType::Spot;
+    work.iconBatches[3].selected = true;
+    work.iconBatches[3].opacity = 1.0f;
+    return work;
+}
+
+std::size_t lightIconBatchIndex(render::LightType type, bool selected) {
+    if (type == render::LightType::Spot) {
+        return selected ? 3u : 1u;
+    }
+    return selected ? 2u : 0u;
+}
+
+bool clipCenterVisible(const glm::vec4& clipCenter) {
+    if (clipCenter.w <= 0.0f) {
+        return false;
+    }
+
+    const glm::vec3 ndc = glm::vec3(clipCenter) / clipCenter.w;
+    return ndc.x >= -1.0f && ndc.x <= 1.0f &&
+        ndc.y >= -1.0f && ndc.y <= 1.0f &&
+        ndc.z >= -1.0f && ndc.z <= 1.0f;
+}
+
 }  // namespace
 
 namespace render {
+
+namespace detail {
+
+bool OverlayWork::hasWork() const {
+    return drawSelection || drawSkeleton || drawDirectionalMarker || !debugLightIndices.empty() ||
+        std::any_of(iconBatches.begin(), iconBatches.end(), [](const OverlayIconBatch& batch) {
+            return !batch.empty();
+        });
+}
+
+OverlayWork buildOverlayWork(
+    const RenderSceneView& scene,
+    const RenderLightPipeline::FrameState& lights,
+    const CameraMatrices& camera,
+    const RenderFrameOptions& options
+) {
+    OverlayWork work = makeEmptyOverlayWork();
+
+    if (options.editorEnabled) {
+        work.drawSkeleton = scene.selectionSkeleton.showOverlay &&
+            !scene.selectionSkeleton.jointWorldPositions.empty() &&
+            !scene.selectionSkeleton.parentIndices.empty();
+
+        work.drawSelection = scene.selection.kind != RenderSelectionKind::None &&
+            scene.selection.kind != RenderSelectionKind::Light &&
+            scene.selection.hasWorldBounds;
+        if (work.drawSelection &&
+            scene.selection.kind == RenderSelectionKind::Renderable &&
+            (scene.selection.index < 0 || scene.selection.index >= static_cast<int>(scene.objects.size()))) {
+            work.drawSelection = false;
+        }
+        if (work.drawSelection) {
+            work.selectionCenter = (scene.selection.worldBounds.min + scene.selection.worldBounds.max) * 0.5f;
+            work.selectionExtents = glm::max((scene.selection.worldBounds.max - scene.selection.worldBounds.min) * 0.5f, glm::vec3(0.01f));
+            work.selectionAxisScale = selectionAxisScaleFromCamera(camera.projection);
+        }
+
+        const glm::mat4 viewProjection = camera.projection * camera.view;
+        const int selectedLightIndex = scene.selection.kind == RenderSelectionKind::Light ? scene.selection.index : -1;
+        for (std::size_t lightIndex = 0; lightIndex < scene.lights.size(); ++lightIndex) {
+            const core::FrameLight& light = scene.lights[lightIndex];
+            const glm::vec4 clipCenter = viewProjection * glm::vec4(light.position, 1.0f);
+            if (!clipCenterVisible(clipCenter)) {
+                continue;
+            }
+
+            const bool selected = static_cast<int>(lightIndex) == selectedLightIndex;
+            work.iconBatches[lightIconBatchIndex(light.type, selected)].clipCenters.push_back(clipCenter);
+        }
+    }
+
+    const int selectedLightIndex = scene.selection.kind == RenderSelectionKind::Light ? scene.selection.index : -1;
+    const bool drawLightDebug = options.showLightDebug || (options.editorEnabled && selectedLightIndex >= 0);
+    if (drawLightDebug) {
+        for (int lightIndex : lights.activeLightIndices) {
+            if (lightIndex < 0 || lightIndex >= static_cast<int>(lights.debugLights.size())) {
+                continue;
+            }
+            const bool selected = lightIndex == selectedLightIndex;
+            if (!options.showLightDebug && !selected) {
+                continue;
+            }
+            work.debugLightIndices.push_back(lightIndex);
+        }
+        work.drawDirectionalMarker = options.showLightDebug;
+    }
+
+    return work;
+}
+
+}  // namespace detail
 
 SceneOverlayRenderer::~SceneOverlayRenderer() {
     destroy();
@@ -331,6 +451,10 @@ void SceneOverlayRenderer::destroy() {
         glDeleteTextures(1, &spotLightIconTexture_);
         spotLightIconTexture_ = 0;
     }
+    if (lightIconInstanceVbo_ != 0) {
+        glDeleteBuffers(1, &lightIconInstanceVbo_);
+        lightIconInstanceVbo_ = 0;
+    }
     if (skeletonLineVbo_ != 0) {
         glDeleteBuffers(1, &skeletonLineVbo_);
         skeletonLineVbo_ = 0;
@@ -341,9 +465,7 @@ void SceneOverlayRenderer::destroy() {
     }
     debugMvpLocation_ = -1;
     debugColorLocation_ = -1;
-    lightIconClipCenterLocation_ = -1;
     lightIconSizeLocation_ = -1;
-    lightIconOpacityLocation_ = -1;
 }
 
 bool SceneOverlayRenderer::buildVolumeMeshes() {
@@ -399,9 +521,7 @@ bool SceneOverlayRenderer::buildLightIconResources(const std::string& shaderRoot
         return false;
     }
 
-    lightIconClipCenterLocation_ = lightIconShader_.uniformLocation("uClipCenter");
     lightIconSizeLocation_ = lightIconShader_.uniformLocation("uSizeNdc");
-    lightIconOpacityLocation_ = lightIconShader_.uniformLocation("uOpacity");
 
     Mesh iconQuad{};
     addQuad(
@@ -416,7 +536,43 @@ bool SceneOverlayRenderer::buildLightIconResources(const std::string& shaderRoot
 
     lightIconShader_.use();
     glUniform1i(lightIconShader_.uniformLocation("uIconTexture"), 0);
-    return lightIconQuad_.upload(iconQuad) && loadLightIconTextures();
+    if (!lightIconQuad_.upload(iconQuad) || !loadLightIconTextures()) {
+        return false;
+    }
+
+    if (lightIconInstanceVbo_ == 0) {
+        glGenBuffers(1, &lightIconInstanceVbo_);
+    }
+    if (lightIconInstanceVbo_ == 0) {
+        return false;
+    }
+
+    lightIconQuad_.bind();
+    glBindBuffer(GL_ARRAY_BUFFER, lightIconInstanceVbo_);
+    glBufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(8);
+    glVertexAttribPointer(
+        8,
+        4,
+        GL_FLOAT,
+        GL_FALSE,
+        static_cast<GLsizei>(sizeof(LightIconInstanceGpu)),
+        reinterpret_cast<void*>(offsetof(LightIconInstanceGpu, clipCenter))
+    );
+    glVertexAttribDivisor(8, 1);
+    glEnableVertexAttribArray(9);
+    glVertexAttribPointer(
+        9,
+        1,
+        GL_FLOAT,
+        GL_FALSE,
+        static_cast<GLsizei>(sizeof(LightIconInstanceGpu)),
+        reinterpret_cast<void*>(offsetof(LightIconInstanceGpu, opacity))
+    );
+    glVertexAttribDivisor(9, 1);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    MeshBuffer::unbind();
+    return true;
 }
 
 bool SceneOverlayRenderer::loadLightIconTextures() {
@@ -460,16 +616,36 @@ void SceneOverlayRenderer::drawDebugMesh(
     }
 }
 
-void SceneOverlayRenderer::drawLightIcon(
-    const glm::vec4& clipCenter,
+void SceneOverlayRenderer::drawLightIconBatch(
+    const detail::OverlayIconBatch& batch,
     GLuint textureHandle,
-    float opacity,
     int width,
     int height
 ) const {
-    if (lightIconShader_.id() == 0 || !lightIconQuad_.valid() || textureHandle == 0 || width <= 0 || height <= 0) {
+    if (batch.empty() ||
+        lightIconShader_.id() == 0 ||
+        !lightIconQuad_.valid() ||
+        lightIconInstanceVbo_ == 0 ||
+        textureHandle == 0 ||
+        width <= 0 ||
+        height <= 0) {
         return;
     }
+
+    std::vector<LightIconInstanceGpu> instances{};
+    instances.reserve(batch.clipCenters.size());
+    for (const glm::vec4& clipCenter : batch.clipCenters) {
+        instances.push_back(LightIconInstanceGpu{clipCenter, batch.opacity});
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, lightIconInstanceVbo_);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(instances.size() * sizeof(LightIconInstanceGpu)),
+        instances.data(),
+        GL_DYNAMIC_DRAW
+    );
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     const glm::vec2 sizeNdc(
         (kLightIconPixelSize * 2.0f) / static_cast<float>(width),
@@ -477,12 +653,10 @@ void SceneOverlayRenderer::drawLightIcon(
     );
 
     lightIconShader_.use();
-    glUniform4fv(lightIconClipCenterLocation_, 1, glm::value_ptr(clipCenter));
     glUniform2fv(lightIconSizeLocation_, 1, glm::value_ptr(sizeNdc));
-    glUniform1f(lightIconOpacityLocation_, opacity);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, textureHandle);
-    lightIconQuad_.draw();
+    lightIconQuad_.drawInstanced(static_cast<GLsizei>(instances.size()));
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
@@ -541,43 +715,31 @@ void SceneOverlayRenderer::drawSkeletonLines(
     glBindVertexArray(0);
 }
 
-void SceneOverlayRenderer::renderSelectionOverlay(
+void SceneOverlayRenderer::renderOverlays(
     const RenderSceneView& scene,
+    const RenderLightPipeline::FrameState& lights,
     const CameraMatrices& camera,
     const RenderFrameOptions& options,
     int width,
-    int height
+    int height,
+    const glm::vec3& directionalLightDirection
 ) const {
-    if (!options.editorEnabled || debugColorShader_.id() == 0) {
+    const detail::OverlayWork work = detail::buildOverlayWork(scene, lights, camera, options);
+    if (!work.hasWork()) {
         return;
     }
 
-    const bool drawSkeleton = scene.selectionSkeleton.showOverlay &&
-        !scene.selectionSkeleton.jointWorldPositions.empty() &&
-        !scene.selectionSkeleton.parentIndices.empty();
-
-    bool drawSelection = scene.selection.kind != RenderSelectionKind::None &&
-        scene.selection.kind != RenderSelectionKind::Light &&
-        scene.selection.hasWorldBounds &&
-        axisGizmo_.valid() &&
-        selectionBox_.valid();
-    if (drawSelection &&
-        scene.selection.kind == RenderSelectionKind::Renderable &&
-        (scene.selection.index < 0 || scene.selection.index >= static_cast<int>(scene.objects.size()))) {
-        drawSelection = false;
-    }
-    if (!drawSelection && !drawSkeleton) {
+    const bool drawSelection = work.drawSelection && options.editorEnabled && debugColorShader_.id() != 0 &&
+        axisGizmo_.valid() && selectionBox_.valid();
+    const bool drawSkeleton = work.drawSkeleton && options.editorEnabled && debugColorShader_.id() != 0;
+    const bool drawIcons = options.editorEnabled && lightIconShader_.id() != 0 && lightIconQuad_.valid() && lightIconInstanceVbo_ != 0 &&
+        std::any_of(work.iconBatches.begin(), work.iconBatches.end(), [](const detail::OverlayIconBatch& batch) {
+            return !batch.empty();
+        });
+    const bool drawLightDebug = debugColorShader_.id() != 0 && axisGizmo_.valid() &&
+        (!work.debugLightIndices.empty() || work.drawDirectionalMarker);
+    if (!drawSelection && !drawSkeleton && !drawIcons && !drawLightDebug) {
         return;
-    }
-
-    Bounds3 worldBounds{};
-    glm::vec3 center(0.0f);
-    glm::vec3 extents(0.01f);
-    const float axisScale = selectionAxisScaleFromCamera(camera.projection);
-    if (drawSelection) {
-        worldBounds = scene.selection.worldBounds;
-        center = (worldBounds.min + worldBounds.max) * 0.5f;
-        extents = glm::max((worldBounds.max - worldBounds.min) * 0.5f, glm::vec3(0.01f));
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -588,15 +750,14 @@ void SceneOverlayRenderer::renderSelectionOverlay(
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_CULL_FACE);
 
-    debugColorShader_.use();
-
     if (drawSelection) {
-        const glm::mat4 axisModel = makeUnscaledSelectionAxisModel(scene.selection.transformMatrix, axisScale);
+        debugColorShader_.use();
+        const glm::mat4 axisModel = makeUnscaledSelectionAxisModel(scene.selection.transformMatrix, work.selectionAxisScale);
         drawDebugMesh(axisGizmo_, camera.projection, camera.view, axisModel, glm::vec4(1.0f), false);
 
         glm::mat4 boxModel(1.0f);
-        boxModel = glm::translate(boxModel, center);
-        boxModel = glm::scale(boxModel, extents);
+        boxModel = glm::translate(boxModel, work.selectionCenter);
+        boxModel = glm::scale(boxModel, work.selectionExtents);
         drawDebugMesh(
             selectionBox_,
             camera.projection,
@@ -614,77 +775,17 @@ void SceneOverlayRenderer::renderSelectionOverlay(
             camera.view
         );
     }
-
-    glDisable(GL_BLEND);
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
-    glDepthMask(GL_TRUE);
-}
-
-void SceneOverlayRenderer::renderLightDebugOverlay(
-    const RenderSceneView& scene,
-    const RenderLightPipeline::FrameState& lights,
-    const CameraMatrices& camera,
-    const RenderFrameOptions& options,
-    int width,
-    int height,
-    const glm::vec3& directionalLightDirection
-) const {
-    int selectedLightIndex = -1;
-    if (scene.selection.kind == RenderSelectionKind::Light) {
-        selectedLightIndex = scene.selection.index;
+    if (drawIcons) {
+        for (const detail::OverlayIconBatch& batch : work.iconBatches) {
+            const GLuint textureHandle = batch.type == LightType::Spot ? spotLightIconTexture_ : pointLightIconTexture_;
+            drawLightIconBatch(batch, textureHandle, width, height);
+        }
     }
-
-    if (!options.editorEnabled && !options.showLightDebug) {
-        return;
-    }
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, width, height);
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDisable(GL_CULL_FACE);
-
-    if (options.editorEnabled && lightIconShader_.id() != 0 && lightIconQuad_.valid()) {
-        const glm::mat4 viewProjection = camera.projection * camera.view;
-        auto drawIconPass = [&](bool selectedPass) {
-            for (std::size_t lightIndex = 0; lightIndex < scene.lights.size(); ++lightIndex) {
-                const bool selected = static_cast<int>(lightIndex) == selectedLightIndex;
-                if (selected != selectedPass) {
-                    continue;
-                }
-
-                const core::FrameLight& light = scene.lights[lightIndex];
-                const glm::vec4 clipCenter = viewProjection * glm::vec4(light.position, 1.0f);
-                if (clipCenter.w <= 0.0f) {
-                    continue;
-                }
-
-                const float ndcZ = clipCenter.z / clipCenter.w;
-                if (ndcZ < -1.0f || ndcZ > 1.0f) {
-                    continue;
-                }
-
-                const GLuint textureHandle = light.type == LightType::Spot ? spotLightIconTexture_ : pointLightIconTexture_;
-                drawLightIcon(clipCenter, textureHandle, selected ? 1.0f : kLightIconOpacity, width, height);
-            }
-        };
-
-        drawIconPass(false);
-        drawIconPass(true);
-    }
-
-    if ((options.showLightDebug || selectedLightIndex >= 0) && debugColorShader_.id() != 0 && axisGizmo_.valid()) {
+    if (drawLightDebug) {
+        const int selectedLightIndex = scene.selection.kind == RenderSelectionKind::Light ? scene.selection.index : -1;
         debugColorShader_.use();
-        for (int lightIndex : lights.activeLightIndices) {
+        for (int lightIndex : work.debugLightIndices) {
             const bool selected = lightIndex == selectedLightIndex;
-            if (!options.showLightDebug && !selected) {
-                continue;
-            }
-
             const ActiveLightDebug& light = lights.debugLights[lightIndex];
             glm::mat4 axisModel(1.0f);
             axisModel = glm::translate(axisModel, light.position);
@@ -730,8 +831,8 @@ void SceneOverlayRenderer::renderLightDebugOverlay(
                 );
             }
         }
-        if (options.showLightDebug) {
-            const glm::vec3 dir = glm::normalize(directionalLightDirection);
+        if (work.drawDirectionalMarker) {
+            const glm::vec3 dir = normalizeOr(directionalLightDirection, glm::vec3(0.0f, 0.0f, -1.0f));
             glm::mat4 directionalModel(1.0f);
             directionalModel = glm::translate(directionalModel, -dir * kDirectionalDebugAnchorDistance);
             directionalModel *= makeOrientationFromDirection(dir);

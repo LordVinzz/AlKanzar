@@ -119,7 +119,6 @@ void RenderEngine::renderImGui() {
 
     if (profiler_) {
         ALKANZAR_PROFILE_SCOPE(*profiler_, "ImGui Draw");
-        ALKANZAR_PROFILE_GPU_SCOPE(*profiler_, "ImGui Draw");
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         return;

@@ -30,15 +30,7 @@ void RenderPathBase::render(const RenderPathContext& context) {
 
     if (context.profiler) {
         ALKANZAR_PROFILE_SCOPE(*context.profiler, "Overlay Pass");
-        ALKANZAR_PROFILE_GPU_SCOPE(*context.profiler, "Overlay Pass");
-        context.overlayRenderer.renderSelectionOverlay(
-            context.scene,
-            context.camera,
-            context.options,
-            context.width,
-            context.height
-        );
-        context.overlayRenderer.renderLightDebugOverlay(
+        context.overlayRenderer.renderOverlays(
             context.scene,
             context.lights,
             context.camera,
@@ -48,14 +40,7 @@ void RenderPathBase::render(const RenderPathContext& context) {
             context.directionalLightDirection
         );
     } else {
-        context.overlayRenderer.renderSelectionOverlay(
-            context.scene,
-            context.camera,
-            context.options,
-            context.width,
-            context.height
-        );
-        context.overlayRenderer.renderLightDebugOverlay(
+        context.overlayRenderer.renderOverlays(
             context.scene,
             context.lights,
             context.camera,

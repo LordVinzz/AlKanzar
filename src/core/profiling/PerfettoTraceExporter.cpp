@@ -386,7 +386,7 @@ bool exportProfilerTraceCaptureToPerfetto(
             encodeTrackDescriptor(TrackDescriptorSpec{
                 gpuFrameTrackUuid,
                 gpuRootTrackUuid,
-                "GPU Frame",
+                "GPU Timed Passes",
                 true,
                 CounterUnit::TimeNs
             }),

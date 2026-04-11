@@ -128,8 +128,19 @@ void MeshBuffer::draw() const {
     if (!valid()) {
         return;
     }
-    glBindVertexArray(vao_);
+    bind();
     glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
+    unbind();
+}
+
+void MeshBuffer::bind() const {
+    if (!valid()) {
+        return;
+    }
+    glBindVertexArray(vao_);
+}
+
+void MeshBuffer::unbind() {
     glBindVertexArray(0);
 }
 
@@ -137,9 +148,9 @@ void MeshBuffer::drawInstanced(GLsizei instanceCount) const {
     if (!valid() || instanceCount <= 0) {
         return;
     }
-    glBindVertexArray(vao_);
+    bind();
     glDrawElementsInstanced(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr, instanceCount);
-    glBindVertexArray(0);
+    unbind();
 }
 
 }  // namespace render

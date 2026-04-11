@@ -178,6 +178,8 @@ ProfilerFrameSnapshot ProfilerService::buildSnapshot(const RawFrameData& rawFram
     ProfilerFrameSnapshot snapshot{};
     snapshot.sessionId = rawFrame.sessionId;
     snapshot.frameNumber = rawFrame.frameNumber;
+    snapshot.startNs = rawFrame.startNs;
+    snapshot.endNs = rawFrame.endNs;
     const std::uint64_t frameDurationNs = rawFrame.endNs > rawFrame.startNs ? rawFrame.endNs - rawFrame.startNs : 0u;
     snapshot.cpuFrameMs = std::max(nsToMs(frameDurationNs) - rawFrame.profilerUiMs, 0.0);
     snapshot.profilerUiMs = rawFrame.profilerUiMs;

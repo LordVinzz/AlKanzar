@@ -16,7 +16,7 @@
 namespace core {
 
 struct ProfilerConfig {
-    std::size_t maxFrames{180u};
+    std::size_t maxFrames{1800u};
     std::size_t maxCpuScopesPerFrame{512u};
     std::size_t maxGpuScopesPerFrame{32u};
     std::size_t maxPendingGpuFrames{24u};
@@ -59,6 +59,8 @@ struct ResourceMemoryEntry {
 struct ProfilerFrameSnapshot {
     std::uint64_t sessionId{0};
     std::uint64_t frameNumber{0};
+    std::uint64_t startNs{0};
+    std::uint64_t endNs{0};
     double cpuFrameMs{0.0};
     double gpuFrameMs{0.0};
     double profilerUiMs{0.0};

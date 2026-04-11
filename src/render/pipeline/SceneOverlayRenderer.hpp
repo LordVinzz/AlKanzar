@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,47 @@
 
 namespace render {
 
+namespace detail {
+
+enum class OverlayIconBatchKind {
+    UnselectedPoint = 0,
+    UnselectedSpot,
+    SelectedPoint,
+    SelectedSpot,
+};
+
+struct OverlayIconBatch {
+    OverlayIconBatchKind kind{OverlayIconBatchKind::UnselectedPoint};
+    LightType type{LightType::Point};
+    bool selected{false};
+    float opacity{1.0f};
+    std::vector<glm::vec4> clipCenters{};
+
+    [[nodiscard]] bool empty() const { return clipCenters.empty(); }
+};
+
+struct OverlayWork {
+    bool drawSelection{false};
+    glm::vec3 selectionCenter{0.0f};
+    glm::vec3 selectionExtents{0.01f};
+    float selectionAxisScale{1.0f};
+    bool drawSkeleton{false};
+    std::array<OverlayIconBatch, 4> iconBatches{};
+    std::vector<int> debugLightIndices{};
+    bool drawDirectionalMarker{false};
+
+    [[nodiscard]] bool hasWork() const;
+};
+
+[[nodiscard]] OverlayWork buildOverlayWork(
+    const RenderSceneView& scene,
+    const RenderLightPipeline::FrameState& lights,
+    const CameraMatrices& camera,
+    const RenderFrameOptions& options
+);
+
+}  // namespace detail
+
 class SceneOverlayRenderer {
 public:
     ~SceneOverlayRenderer();
@@ -21,15 +63,7 @@ public:
     bool init(const std::string& shaderRoot);
     void destroy();
 
-    void renderSelectionOverlay(
-        const RenderSceneView& scene,
-        const CameraMatrices& camera,
-        const RenderFrameOptions& options,
-        int width,
-        int height
-    ) const;
-
-    void renderLightDebugOverlay(
+    void renderOverlays(
         const RenderSceneView& scene,
         const RenderLightPipeline::FrameState& lights,
         const CameraMatrices& camera,
@@ -52,10 +86,9 @@ private:
         const glm::vec4& color,
         bool wireframe
     ) const;
-    void drawLightIcon(
-        const glm::vec4& clipCenter,
+    void drawLightIconBatch(
+        const detail::OverlayIconBatch& batch,
         GLuint textureHandle,
-        float opacity,
         int width,
         int height
     ) const;
@@ -75,11 +108,10 @@ private:
     MeshBuffer lightIconQuad_{};
     GLint debugMvpLocation_{-1};
     GLint debugColorLocation_{-1};
-    GLint lightIconClipCenterLocation_{-1};
     GLint lightIconSizeLocation_{-1};
-    GLint lightIconOpacityLocation_{-1};
     GLuint pointLightIconTexture_{0};
     GLuint spotLightIconTexture_{0};
+    mutable GLuint lightIconInstanceVbo_{0};
     mutable GLuint skeletonLineVao_{0};
     mutable GLuint skeletonLineVbo_{0};
 };

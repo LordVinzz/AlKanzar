@@ -37,6 +37,7 @@
 #include "core/ecs/World.hpp"
 #include "render/resources/Profiling.hpp"
 #include "render/resources/StaticGltfModel.hpp"
+#include "render/pipeline/SceneOverlayRenderer.hpp"
 #include "render/pipeline/RenderLightPipeline.hpp"
 #include "render/engine/RenderSceneView.hpp"
 
@@ -1317,6 +1318,95 @@ void testPickingSystemCanIgnoreLights() {
     assert(withoutLights->index == 1u);
 }
 
+void testOverlayWorkSkipsAllOverlayWorkWhenDisabled() {
+    render::RenderSceneView scene{};
+    scene.selection.kind = render::RenderSelectionKind::Renderable;
+    scene.selection.hasWorldBounds = true;
+    scene.selection.worldBounds = render::Bounds3{glm::vec3(-1.0f), glm::vec3(1.0f)};
+    scene.selectionSkeleton.showOverlay = true;
+    scene.selectionSkeleton.parentIndices = {-1, 0};
+    scene.selectionSkeleton.jointWorldPositions = {glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f)};
+    scene.lights.push_back(core::FrameLight{core::EntityId{1, 1}, render::LightType::Point, glm::vec3(0.0f, 0.0f, -2.0f)});
+    scene.selection.index = 0;
+
+    render::RenderLightPipeline::FrameState lights{};
+    lights.activeLightIndices = {0};
+    lights.debugLights.push_back(render::ActiveLightDebug{glm::vec3(0.0f), 1.0f, glm::vec3(1.0f), 0.0f, glm::vec3(0.0f, 0.0f, -1.0f), render::LightType::Point});
+
+    render::CameraMatrices camera{};
+    camera.projection = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, 10.0f);
+    camera.invProjection = glm::inverse(camera.projection);
+    camera.view = glm::mat4(1.0f);
+
+    const render::RenderFrameOptions options{render::DebugView::Final, 0, false, false};
+    const render::detail::OverlayWork work = render::detail::buildOverlayWork(scene, lights, camera, options);
+
+    assert(!work.hasWork());
+}
+
+void testOverlayWorkCullsIconsAndBatchesSelectedLights() {
+    render::RenderSceneView scene{};
+    scene.selection.kind = render::RenderSelectionKind::Light;
+    scene.selection.index = 1;
+    scene.lights = {
+        core::FrameLight{core::EntityId{1, 1}, render::LightType::Point, glm::vec3(0.0f, 0.0f, -2.0f)},
+        core::FrameLight{core::EntityId{2, 1}, render::LightType::Spot, glm::vec3(0.3f, 0.0f, -2.0f)},
+        core::FrameLight{core::EntityId{3, 1}, render::LightType::Point, glm::vec3(5.0f, 0.0f, -2.0f)},
+        core::FrameLight{core::EntityId{4, 1}, render::LightType::Spot, glm::vec3(0.0f, 0.0f, 2.0f)},
+    };
+
+    render::RenderLightPipeline::FrameState lights{};
+    render::CameraMatrices camera{};
+    camera.projection = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, 10.0f);
+    camera.invProjection = glm::inverse(camera.projection);
+    camera.view = glm::mat4(1.0f);
+
+    const render::RenderFrameOptions options{render::DebugView::Final, 0, false, true};
+    const render::detail::OverlayWork work = render::detail::buildOverlayWork(scene, lights, camera, options);
+
+    assert(work.hasWork());
+    assert(work.iconBatches[0].kind == render::detail::OverlayIconBatchKind::UnselectedPoint);
+    assert(work.iconBatches[0].clipCenters.size() == 1u);
+    assert(nearlyEqual(work.iconBatches[0].opacity, 0.5));
+    assert(work.iconBatches[1].kind == render::detail::OverlayIconBatchKind::UnselectedSpot);
+    assert(work.iconBatches[1].clipCenters.empty());
+    assert(work.iconBatches[2].kind == render::detail::OverlayIconBatchKind::SelectedPoint);
+    assert(work.iconBatches[2].clipCenters.empty());
+    assert(work.iconBatches[3].kind == render::detail::OverlayIconBatchKind::SelectedSpot);
+    assert(work.iconBatches[3].clipCenters.size() == 1u);
+    assert(nearlyEqual(work.iconBatches[3].opacity, 1.0));
+}
+
+void testOverlayWorkKeepsSelectedLightDebugWhenLightDebugIsOff() {
+    render::RenderSceneView scene{};
+    scene.selection.kind = render::RenderSelectionKind::Light;
+    scene.selection.index = 1;
+    scene.lights = {
+        core::FrameLight{core::EntityId{1, 1}, render::LightType::Point, glm::vec3(0.0f, 0.0f, -2.0f)},
+        core::FrameLight{core::EntityId{2, 1}, render::LightType::Spot, glm::vec3(0.0f, 0.0f, -3.0f)},
+    };
+
+    render::RenderLightPipeline::FrameState lights{};
+    lights.activeLightIndices = {0, 1};
+    lights.debugLights = {
+        render::ActiveLightDebug{glm::vec3(0.0f), 1.0f, glm::vec3(1.0f), 0.0f, glm::vec3(0.0f, 0.0f, -1.0f), render::LightType::Point},
+        render::ActiveLightDebug{glm::vec3(1.0f), 2.0f, glm::vec3(1.0f), 25.0f, glm::vec3(0.0f, 0.0f, -1.0f), render::LightType::Spot},
+    };
+
+    render::CameraMatrices camera{};
+    camera.projection = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, 10.0f);
+    camera.invProjection = glm::inverse(camera.projection);
+    camera.view = glm::mat4(1.0f);
+
+    const render::RenderFrameOptions options{render::DebugView::Final, 0, false, true};
+    const render::detail::OverlayWork work = render::detail::buildOverlayWork(scene, lights, camera, options);
+
+    assert(work.hasWork());
+    assert(work.debugLightIndices.size() == 1u);
+    assert(work.debugLightIndices[0] == 1);
+    assert(!work.drawDirectionalMarker);
+}
+
 void testProfilerScopeTreeAggregatesNestedScopes() {
     const std::uint64_t mainThreadId = 77u;
     const std::vector<core::ProfilerRecordedScope> scopes{
@@ -1371,6 +1461,10 @@ void testProfilerServiceStartStopAndFrameRingBuffer() {
     assert(snapshots.size() == 2u);
     assert(snapshots.front()->frameNumber == 2u);
     assert(snapshots.back()->frameNumber == 3u);
+    assert(snapshots.front()->startNs > 0u);
+    assert(snapshots.front()->endNs >= snapshots.front()->startNs);
+    assert(snapshots.back()->startNs > snapshots.front()->startNs);
+    assert(snapshots.back()->endNs >= snapshots.back()->startNs);
 
     profiler.stopCapture();
     profiler.beginFrame();
@@ -1532,7 +1626,7 @@ void testPerfettoTraceExporterWritesTrackEventsAndCounters() {
     assert(bytes.find("Frames") != std::string::npos);
     assert(bytes.find("Main") != std::string::npos);
     assert(bytes.find("T88") != std::string::npos);
-    assert(bytes.find("GPU Frame") != std::string::npos);
+    assert(bytes.find("GPU Timed Passes") != std::string::npos);
     assert(bytes.find("Texture: Shadow Atlas (GPU)") != std::string::npos);
     assert(bytes.find("CPU: Mesh Cache (RAM)") != std::string::npos);
 
@@ -1669,6 +1763,9 @@ int main() {
     testFramePreparationRemainsStableWithMultipleWorkers();
     testActiveLightSelectionDeduplicatesAcrossVolumes();
     testPickingSystemCanIgnoreLights();
+    testOverlayWorkSkipsAllOverlayWorkWhenDisabled();
+    testOverlayWorkCullsIconsAndBatchesSelectedLights();
+    testOverlayWorkKeepsSelectedLightDebugWhenLightDebugIsOff();
     testProfilerScopeTreeAggregatesNestedScopes();
     testProfilerServiceStartStopAndFrameRingBuffer();
     testProfilerServiceDropsExcessCpuScopes();

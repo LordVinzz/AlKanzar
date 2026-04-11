@@ -42,6 +42,14 @@ public:
      */
     void draw() const;
     /**
+     * Binds the mesh VAO for custom attribute setup or external draw orchestration.
+     */
+    void bind() const;
+    /**
+     * Unbinds the current mesh VAO.
+     */
+    static void unbind();
+    /**
      * Draws the indexed mesh with instancing if valid and count > 0.
      * @param instanceCount Number of instances to render.
      */
