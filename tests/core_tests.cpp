@@ -17,10 +17,12 @@
 
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
+#include <imgui.h>
 
 #include "core/animation/AnimationSystem.hpp"
 #include "core/editor/CommandHistory.hpp"
 #include "core/editor/EditorSession.hpp"
+#include "core/editor/EditorSessionImGuiSettings.hpp"
 #include "core/ecs/ComponentStore.hpp"
 #include "core/events/EventBus.hpp"
 #include "core/events/Events.hpp"
@@ -280,6 +282,47 @@ void testEditorSessionWindowVisibilityHelpers() {
     assert(!session.sceneHierarchyVisible);
     assert(session.inspectorWindowVisible);
     assert(!session.profilerWindowVisible);
+}
+
+void testEditorSessionImGuiSettingsRoundTrip() {
+    core::EditorSession session;
+    session.sceneHierarchyVisible = false;
+    session.inspectorWindowVisible = false;
+    session.profilerWindowVisible = true;
+    session.profilerFollowLatest = false;
+
+    ImGui::CreateContext();
+    ImGui::GetIO().IniFilename = nullptr;
+    core::registerEditorSessionImGuiSettings(session);
+    core::markEditorSessionImGuiSettingsDirty();
+
+    std::size_t iniSize = 0u;
+    const char* iniData = ImGui::SaveIniSettingsToMemory(&iniSize);
+    assert(iniData != nullptr);
+
+    const std::string ini(iniData, iniSize);
+    assert(ini.find("[AlKanzar][EditorSession]") != std::string::npos);
+    assert(ini.find("SceneHierarchyVisible=0") != std::string::npos);
+    assert(ini.find("InspectorWindowVisible=0") != std::string::npos);
+    assert(ini.find("ProfilerWindowVisible=1") != std::string::npos);
+    assert(ini.find("ProfilerFollowLatest=0") != std::string::npos);
+    ImGui::DestroyContext();
+
+    core::EditorSession restored;
+    restored.sceneHierarchyVisible = true;
+    restored.inspectorWindowVisible = true;
+    restored.profilerWindowVisible = false;
+    restored.profilerFollowLatest = true;
+
+    ImGui::CreateContext();
+    ImGui::GetIO().IniFilename = nullptr;
+    core::registerEditorSessionImGuiSettings(restored);
+    ImGui::LoadIniSettingsFromMemory(ini.c_str(), ini.size());
+    assert(!restored.sceneHierarchyVisible);
+    assert(!restored.inspectorWindowVisible);
+    assert(restored.profilerWindowVisible);
+    assert(!restored.profilerFollowLatest);
+    ImGui::DestroyContext();
 }
 
 void testTaskSchedulerParallelForCoversFullRange() {
@@ -1406,6 +1449,7 @@ int main() {
     testEventBusOrderingAndUnsubscribe();
     testCommandHistoryUndoRedoAndMerge();
     testEditorSessionWindowVisibilityHelpers();
+    testEditorSessionImGuiSettingsRoundTrip();
     testTaskSchedulerParallelForCoversFullRange();
     testTaskSchedulerWaitCompletesScheduledGroup();
     testTaskSchedulerAsyncHandleDeliversResult();

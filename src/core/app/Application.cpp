@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <string_view>
 
+#include "core/editor/EditorSessionImGuiSettings.hpp"
 #include "core/scene/Camera.hpp"
 #include <spdlog/spdlog.h>
 
@@ -505,17 +506,26 @@ void Application::translateSdlEvent(const SDL_Event& event) {
                 if (currentMode_ == AppMode::Editor) {
                     switch (event.key.keysym.sym) {
                         case SDLK_i:
-                            services_.editorSession.inspectorWindowVisible = !services_.editorSession.inspectorWindowVisible;
+                            setPersistedEditorSessionFlag(
+                                services_.editorSession.inspectorWindowVisible,
+                                !services_.editorSession.inspectorWindowVisible
+                            );
                             services_.editorSession.inspectorWindowFocusRequested =
                                 services_.editorSession.inspectorWindowVisible;
                             break;
                         case SDLK_p:
-                            services_.editorSession.profilerWindowVisible = !services_.editorSession.profilerWindowVisible;
+                            setPersistedEditorSessionFlag(
+                                services_.editorSession.profilerWindowVisible,
+                                !services_.editorSession.profilerWindowVisible
+                            );
                             services_.editorSession.profilerWindowFocusRequested =
                                 services_.editorSession.profilerWindowVisible;
                             break;
                         case SDLK_s:
-                            services_.editorSession.sceneHierarchyVisible = !services_.editorSession.sceneHierarchyVisible;
+                            setPersistedEditorSessionFlag(
+                                services_.editorSession.sceneHierarchyVisible,
+                                !services_.editorSession.sceneHierarchyVisible
+                            );
                             services_.editorSession.sceneHierarchyFocusRequested =
                                 services_.editorSession.sceneHierarchyVisible;
                             break;

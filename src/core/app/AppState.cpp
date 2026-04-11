@@ -19,6 +19,7 @@
 #include <spdlog/spdlog.h>
 
 #include "core/editor/Command.hpp"
+#include "core/editor/EditorSessionImGuiSettings.hpp"
 #include "EngineServices.hpp"
 #include "render/resources/StaticGltfModel.hpp"
 
@@ -636,7 +637,8 @@ void drawSceneHierarchyWindow(EngineServices& services) {
     }
     ImGui::SetNextWindowSize(ImVec2(360.0f, 420.0f), ImGuiCond_FirstUseEver);
 
-    bool open = services.editorSession.sceneHierarchyVisible;
+    const bool wasOpen = services.editorSession.sceneHierarchyVisible;
+    bool open = wasOpen;
     if (ImGui::Begin("Scene Hierarchy", &open)) {
         const SceneHierarchyData hierarchy = buildSceneHierarchy(services);
         if (hierarchy.roots.empty()) {
@@ -654,6 +656,9 @@ void drawSceneHierarchyWindow(EngineServices& services) {
     ImGui::End();
 
     services.editorSession.sceneHierarchyVisible = open;
+    if (wasOpen != open) {
+        markEditorSessionImGuiSettingsDirty();
+    }
     services.editorSession.sceneHierarchyFocusRequested = false;
 }
 
@@ -675,7 +680,7 @@ void drawEditorMainWindow(EngineServices& services) {
 
         bool sceneHierarchyVisible = services.editorSession.sceneHierarchyVisible;
         if (ImGui::Checkbox("Scene Hierarchy", &sceneHierarchyVisible)) {
-            services.editorSession.sceneHierarchyVisible = sceneHierarchyVisible;
+            setPersistedEditorSessionFlag(services.editorSession.sceneHierarchyVisible, sceneHierarchyVisible);
             if (!sceneHierarchyVisible) {
                 services.editorSession.sceneHierarchyFocusRequested = false;
             }
@@ -685,7 +690,7 @@ void drawEditorMainWindow(EngineServices& services) {
 
         bool inspectorVisible = services.editorSession.inspectorWindowVisible;
         if (ImGui::Checkbox("Inspector", &inspectorVisible)) {
-            services.editorSession.inspectorWindowVisible = inspectorVisible;
+            setPersistedEditorSessionFlag(services.editorSession.inspectorWindowVisible, inspectorVisible);
             if (!inspectorVisible) {
                 services.editorSession.inspectorWindowFocusRequested = false;
             }
@@ -695,7 +700,7 @@ void drawEditorMainWindow(EngineServices& services) {
 
         bool profilerVisible = services.editorSession.profilerWindowVisible;
         if (ImGui::Checkbox("Profiler", &profilerVisible)) {
-            services.editorSession.profilerWindowVisible = profilerVisible;
+            setPersistedEditorSessionFlag(services.editorSession.profilerWindowVisible, profilerVisible);
             if (!profilerVisible) {
                 services.editorSession.profilerWindowFocusRequested = false;
             }
@@ -705,11 +710,27 @@ void drawEditorMainWindow(EngineServices& services) {
 
         ImGui::Separator();
         if (ImGui::Button("Show All")) {
+            const bool wasSceneHierarchyVisible = services.editorSession.sceneHierarchyVisible;
+            const bool wasInspectorVisible = services.editorSession.inspectorWindowVisible;
+            const bool wasProfilerVisible = services.editorSession.profilerWindowVisible;
             services.editorSession.setToolWindowsVisible(true);
+            if (wasSceneHierarchyVisible != services.editorSession.sceneHierarchyVisible ||
+                wasInspectorVisible != services.editorSession.inspectorWindowVisible ||
+                wasProfilerVisible != services.editorSession.profilerWindowVisible) {
+                markEditorSessionImGuiSettingsDirty();
+            }
         }
         ImGui::SameLine();
         if (ImGui::Button("Hide All")) {
+            const bool wasSceneHierarchyVisible = services.editorSession.sceneHierarchyVisible;
+            const bool wasInspectorVisible = services.editorSession.inspectorWindowVisible;
+            const bool wasProfilerVisible = services.editorSession.profilerWindowVisible;
             services.editorSession.setToolWindowsVisible(false);
+            if (wasSceneHierarchyVisible != services.editorSession.sceneHierarchyVisible ||
+                wasInspectorVisible != services.editorSession.inspectorWindowVisible ||
+                wasProfilerVisible != services.editorSession.profilerWindowVisible) {
+                markEditorSessionImGuiSettingsDirty();
+            }
         }
 
         ImGui::Separator();
@@ -851,10 +872,14 @@ void drawProfilerWindow(EngineServices& services) {
         ImGui::SetNextWindowFocus();
     }
     ImGui::SetNextWindowSize(ImVec2(860.0f, 720.0f), ImGuiCond_FirstUseEver);
-    bool open = services.editorSession.profilerWindowVisible;
+    const bool wasOpen = services.editorSession.profilerWindowVisible;
+    bool open = wasOpen;
     if (!ImGui::Begin("Profiler", &open)) {
         ImGui::End();
         services.editorSession.profilerWindowVisible = open;
+        if (wasOpen != open) {
+            markEditorSessionImGuiSettingsDirty();
+        }
         services.editorSession.profilerWindowFocusRequested = false;
         return;
     }
@@ -864,7 +889,7 @@ void drawProfilerWindow(EngineServices& services) {
     ImGui::BeginDisabled(stats.capturing || stats.startPending);
     if (ImGui::Button("Start Profiling")) {
         services.profiler.startCapture();
-        services.editorSession.profilerFollowLatest = true;
+        setPersistedEditorSessionFlag(services.editorSession.profilerFollowLatest, true);
         services.editorSession.profilerExportStatus.clear();
         services.editorSession.profilerExportStatusIsError = false;
     }
@@ -922,6 +947,11 @@ void drawProfilerWindow(EngineServices& services) {
         ImGui::SeparatorText("Frames");
         ImGui::TextUnformatted("No captured frames available yet.");
         ImGui::End();
+        services.editorSession.profilerWindowVisible = open;
+        if (wasOpen != open) {
+            markEditorSessionImGuiSettingsDirty();
+        }
+        services.editorSession.profilerWindowFocusRequested = false;
         return;
     }
 
@@ -934,7 +964,7 @@ void drawProfilerWindow(EngineServices& services) {
     ImGui::SeparatorText("Frame History");
     bool followLatest = services.editorSession.profilerFollowLatest;
     if (ImGui::Checkbox("Follow Latest", &followLatest)) {
-        services.editorSession.profilerFollowLatest = followLatest;
+        setPersistedEditorSessionFlag(services.editorSession.profilerFollowLatest, followLatest);
         if (followLatest) {
             services.editorSession.profilerSelectedFrame = static_cast<int>(snapshots.size()) - 1;
         }
@@ -957,7 +987,7 @@ void drawProfilerWindow(EngineServices& services) {
     int selectedFrame = services.editorSession.profilerSelectedFrame;
     if (ImGui::SliderInt("Selected Frame", &selectedFrame, 0, static_cast<int>(snapshots.size()) - 1)) {
         services.editorSession.profilerSelectedFrame = selectedFrame;
-        services.editorSession.profilerFollowLatest = false;
+        setPersistedEditorSessionFlag(services.editorSession.profilerFollowLatest, false);
     }
 
     const std::shared_ptr<const ProfilerFrameSnapshot>& selected = snapshots[services.editorSession.profilerSelectedFrame];
@@ -1040,6 +1070,9 @@ void drawProfilerWindow(EngineServices& services) {
 
     ImGui::End();
     services.editorSession.profilerWindowVisible = open;
+    if (wasOpen != open) {
+        markEditorSessionImGuiSettingsDirty();
+    }
     services.editorSession.profilerWindowFocusRequested = false;
 }
 
@@ -1405,10 +1438,14 @@ void drawInspectorWindow(EngineServices& services) {
     }
     inspectorTitle += "###Inspector";
 
-    bool open = services.editorSession.inspectorWindowVisible;
+    const bool wasOpen = services.editorSession.inspectorWindowVisible;
+    bool open = wasOpen;
     if (!ImGui::Begin(inspectorTitle.c_str(), &open)) {
         ImGui::End();
         services.editorSession.inspectorWindowVisible = open;
+        if (wasOpen != open) {
+            markEditorSessionImGuiSettingsDirty();
+        }
         services.editorSession.inspectorWindowFocusRequested = false;
         services.editorSession.textureBrowserFocusRequested = false;
         return;
@@ -1418,6 +1455,9 @@ void drawInspectorWindow(EngineServices& services) {
         ImGui::TextUnformatted("Click an object or light to inspect it.");
         ImGui::End();
         services.editorSession.inspectorWindowVisible = open;
+        if (wasOpen != open) {
+            markEditorSessionImGuiSettingsDirty();
+        }
         services.editorSession.inspectorWindowFocusRequested = false;
         services.editorSession.textureBrowserFocusRequested = false;
         return;
@@ -1673,6 +1713,9 @@ void drawInspectorWindow(EngineServices& services) {
 
     ImGui::End();
     services.editorSession.inspectorWindowVisible = open;
+    if (wasOpen != open) {
+        markEditorSessionImGuiSettingsDirty();
+    }
     services.editorSession.inspectorWindowFocusRequested = false;
     services.editorSession.textureBrowserFocusRequested = false;
 }
@@ -1684,6 +1727,7 @@ void BootstrapState::onEnter(EngineServices& services) {
         services.requestedMode = AppMode::Shutdown;
         return;
     }
+    registerEditorSessionImGuiSettings(services.editorSession);
     services.sceneLoaded = services.sceneFactory.buildScene(
         services.sceneRegistry.defaultScene(),
         services.world,
