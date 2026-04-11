@@ -862,10 +862,33 @@ void drawProfilerMemoryGroup(const char* label, const std::vector<const Resource
     }
 }
 
+std::string buildProfilerWindowTitle(const std::shared_ptr<const ProfilerFrameSnapshot>& snapshot) {
+    if (!snapshot || snapshot->cpuFrameMs <= 0.0) {
+        return "Profiler###ProfilerWindow";
+    }
+
+    const double fps = 1000.0 / snapshot->cpuFrameMs;
+    char buffer[96];
+    std::snprintf(buffer, sizeof(buffer), "Profiler (%.1f FPS)###ProfilerWindow", fps);
+    return buffer;
+}
+
 void drawProfilerWindow(EngineServices& services) {
     if (!services.editorSession.profilerWindowVisible) {
         services.editorSession.profilerWindowFocusRequested = false;
         return;
+    }
+
+    const auto snapshots = services.profiler.snapshots();
+    std::shared_ptr<const ProfilerFrameSnapshot> titleSnapshot{};
+    if (!snapshots.empty()) {
+        int titleFrameIndex = services.editorSession.profilerSelectedFrame;
+        if (services.editorSession.profilerFollowLatest ||
+            titleFrameIndex < 0 ||
+            titleFrameIndex >= static_cast<int>(snapshots.size())) {
+            titleFrameIndex = static_cast<int>(snapshots.size()) - 1;
+        }
+        titleSnapshot = snapshots[titleFrameIndex];
     }
 
     if (services.editorSession.profilerWindowFocusRequested) {
@@ -874,7 +897,8 @@ void drawProfilerWindow(EngineServices& services) {
     ImGui::SetNextWindowSize(ImVec2(860.0f, 720.0f), ImGuiCond_FirstUseEver);
     const bool wasOpen = services.editorSession.profilerWindowVisible;
     bool open = wasOpen;
-    if (!ImGui::Begin("Profiler", &open)) {
+    const std::string profilerWindowTitle = buildProfilerWindowTitle(titleSnapshot);
+    if (!ImGui::Begin(profilerWindowTitle.c_str(), &open)) {
         ImGui::End();
         services.editorSession.profilerWindowVisible = open;
         if (wasOpen != open) {
@@ -942,7 +966,6 @@ void drawProfilerWindow(EngineServices& services) {
         static_cast<unsigned long long>(stats.droppedFrames)
     );
 
-    const auto snapshots = services.profiler.snapshots();
     if (snapshots.empty()) {
         ImGui::SeparatorText("Frames");
         ImGui::TextUnformatted("No captured frames available yet.");

@@ -13,6 +13,9 @@ namespace core {
 
 namespace {
 
+constexpr double kMaxFrameRateHz = 60.0;
+constexpr double kTargetFrameSeconds = 1.0 / kMaxFrameRateHz;
+
 struct FrameStageDiagnosticsConfig {
     bool enableParallelTransformUpdate{false};
     bool forceSequentialTransformUpdate{false};
@@ -113,6 +116,31 @@ void openEditorMainWindow(EditorSession& session) {
     session.openMainWindow();
 }
 
+double secondsBetween(Uint64 startCounter, Uint64 endCounter, Uint64 frequency) {
+    if (endCounter <= startCounter) {
+        return 0.0;
+    }
+
+    return static_cast<double>(endCounter - startCounter) / static_cast<double>(frequency);
+}
+
+void throttleFrameRate(Uint64 frameStartCounter, Uint64 performanceFrequency) {
+    double elapsedSeconds = secondsBetween(frameStartCounter, SDL_GetPerformanceCounter(), performanceFrequency);
+    if (elapsedSeconds >= kTargetFrameSeconds) {
+        return;
+    }
+
+    const double remainingSeconds = kTargetFrameSeconds - elapsedSeconds;
+    const Uint32 remainingMilliseconds = static_cast<Uint32>(remainingSeconds * 1000.0);
+    if (remainingMilliseconds > 1u) {
+        SDL_Delay(remainingMilliseconds - 1u);
+    }
+
+    while ((elapsedSeconds = secondsBetween(frameStartCounter, SDL_GetPerformanceCounter(), performanceFrequency)) <
+           kTargetFrameSeconds) {
+    }
+}
+
 }  // namespace
 
 Application::Application(int width, int height)
@@ -147,7 +175,9 @@ void Application::run() {
         diagnostics.logFrameStageLimit
     );
 
-    Uint32 previousTicks = SDL_GetTicks();
+    const Uint64 performanceFrequency = SDL_GetPerformanceFrequency();
+    const Uint64 startupCounter = SDL_GetPerformanceCounter();
+    Uint64 previousCounter = startupCounter;
     std::uint64_t frameIndex = 0u;
     while (services_.running) {
         if (!diagnostics.disableProfilerFrame) {
@@ -175,10 +205,10 @@ void Application::run() {
             services_.requestedMode.reset();
         }
 
-        const Uint32 currentTicks = SDL_GetTicks();
-        services_.time.deltaSeconds = static_cast<float>(currentTicks - previousTicks) * 0.001f;
-        services_.time.totalSeconds = static_cast<float>(currentTicks) * 0.001f;
-        previousTicks = currentTicks;
+        const Uint64 currentCounter = SDL_GetPerformanceCounter();
+        services_.time.deltaSeconds = static_cast<float>(secondsBetween(previousCounter, currentCounter, performanceFrequency));
+        services_.time.totalSeconds = static_cast<float>(secondsBetween(startupCounter, currentCounter, performanceFrequency));
+        previousCounter = currentCounter;
 
         if (diagnostics.shouldLogFrameStage(frameIndex)) {
             logFrameStageBoundary("begin", "Begin ImGui Frame", frameIndex, "main");
@@ -372,6 +402,7 @@ void Application::run() {
             services_.requestedMode.reset();
         }
 
+        throttleFrameRate(currentCounter, performanceFrequency);
         ++frameIndex;
     }
 }
