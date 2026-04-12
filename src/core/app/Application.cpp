@@ -15,7 +15,7 @@ namespace core {
 
 namespace {
 
-constexpr double kMaxFrameRateHz = 60.0;
+constexpr double kMaxFrameRateHz = 600.0;
 constexpr double kTargetFrameSeconds = 1.0 / kMaxFrameRateHz;
 
 struct FrameDiagnosticsConfig {
@@ -176,7 +176,10 @@ void Application::run() {
             }
         }
 
-        services_.events.dispatch();
+        {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Event Dispatch");
+            services_.events.dispatch();
+        }
         if (services_.requestedMode.has_value()) {
             transitionTo(*services_.requestedMode);
             services_.requestedMode.reset();
@@ -204,6 +207,10 @@ void Application::run() {
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary("end", "State Update", frameIndex, "main");
             }
+        }
+        {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Navigation Path Apply");
+            services_.navigationSystem.applyCompletedPathRequests(services_.world, services_.navigation);
         }
         {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Navigation Update");
@@ -379,6 +386,12 @@ void Application::run() {
                 std::make_move_iterator(runtimeCounters.begin()),
                 std::make_move_iterator(runtimeCounters.end())
             );
+            std::vector<render::FrameCounterRecord> navigationCounters = services_.navigationSystem.profilingCounters();
+            profilingCounters.insert(
+                profilingCounters.end(),
+                std::make_move_iterator(navigationCounters.begin()),
+                std::make_move_iterator(navigationCounters.end())
+            );
         }
         if (diagnostics.shouldLogFrameStage(frameIndex)) {
             logFrameStageBoundary("end", "Collect Profiling Resources", frameIndex, diagnostics.disableProfilerFrame ? "disabled" : "enabled");
@@ -492,6 +505,7 @@ void Application::bindEventHandlers() {
         services_.shadowDebugCascade = std::max(0, services_.shadowDebugCascade + event.delta);
     });
     services_.events.subscribe<ViewportClickedEvent>([this](const ViewportClickedEvent& event) {
+        ALKANZAR_PROFILE_SCOPE(services_.profiler, "Viewport Click");
         if (services_.renderer.wantsMouse()) {
             return;
         }
@@ -504,26 +518,35 @@ void Application::bindEventHandlers() {
             if (services_.world.navAgents.entities().empty()) {
                 return false;
             }
-            const std::optional<NavHitResult> hit = services_.navigationSystem.hitTest(
-                services_.navigation,
-                camera,
-                services_.renderer.width(),
-                services_.renderer.height(),
-                event.x,
-                event.y
-            );
+            std::optional<NavHitResult> hit{};
+            {
+                ALKANZAR_PROFILE_SCOPE(services_.profiler, "Navigation Hit Test");
+                hit = services_.navigationSystem.hitTest(
+                    services_.navigation,
+                    camera,
+                    services_.renderer.width(),
+                    services_.renderer.height(),
+                    event.x,
+                    event.y
+                );
+            }
             if (!hit.has_value()) {
                 return false;
             }
-            return services_.navigationSystem.setAgentDestination(
-                services_.world,
-                services_.navigation,
-                services_.world.navAgents.entities().front(),
-                hit->position
-            );
+            {
+                ALKANZAR_PROFILE_SCOPE(services_.profiler, "Navigation Path Request");
+                return services_.navigationSystem.requestAgentDestination(
+                    services_.world,
+                    services_.navigation,
+                    services_.scheduler,
+                    services_.world.navAgents.entities().front(),
+                    hit->position
+                );
+            }
         };
 
         if (currentMode_ == AppMode::Gameplay) {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Gameplay Click Move");
             moveControlledAgent();
             return;
         }
@@ -531,6 +554,7 @@ void Application::bindEventHandlers() {
             return;
         }
         if (services_.navigation.editor.polygonCaptureActive) {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Navigation Polygon Capture");
             services_.navigationSystem.capturePolygonClick(
                 services_.navigation,
                 camera,
@@ -542,19 +566,23 @@ void Application::bindEventHandlers() {
             return;
         }
         if (services_.navigation.editor.testMoveMode) {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Editor Test Move");
             moveControlledAgent();
             return;
         }
 
-        services_.selection.set(services_.pickingSystem.pick(
-            services_.frame,
-            camera,
-            services_.renderer.width(),
-            services_.renderer.height(),
-            event.x,
-            event.y,
-            false
-        ));
+        {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Viewport Selection");
+            services_.selection.set(services_.pickingSystem.pick(
+                services_.frame,
+                camera,
+                services_.renderer.width(),
+                services_.renderer.height(),
+                event.x,
+                event.y,
+                false
+            ));
+        }
     });
 }
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -18,6 +19,7 @@
 #include <SDL.h>
 #include <glm/geometric.hpp>
 
+#include "core/profiling/ProfilerService.hpp"
 #include "core/systems/PickingSystem.hpp"
 #include "render/resources/StaticGltfModel.hpp"
 
@@ -111,6 +113,17 @@ struct ParentPathData {
 struct SharedPortalResult {
     glm::vec2 a{0.0f};
     glm::vec2 b{0.0f};
+};
+
+struct NavigationSolveView {
+    const NavMeshAsset& asset;
+    const std::unordered_map<int, std::size_t>& polygonIndexById;
+    const std::vector<glm::vec2>& polygonCenters;
+    const std::vector<NavRuntimeCell>& bakedCells;
+    const std::vector<glm::vec2>& bakedCellCenters;
+    const std::vector<std::vector<std::size_t>>& polygonToCellIndices;
+    const std::vector<std::vector<std::size_t>>& cellToPolygonIndices;
+    const std::vector<std::vector<NavGraphEdge>>& graph;
 };
 
 float cross2(const glm::vec2& lhs, const glm::vec2& rhs) {
@@ -1296,7 +1309,33 @@ std::vector<NavRuntimeCell> bakeLayerRuntimeCells(
     return cells;
 }
 
-std::vector<std::size_t> findContainingCells(const NavigationRuntime& runtime, const glm::vec3& point) {
+NavigationSolveView makeSolveView(const NavigationRuntime& runtime) {
+    return NavigationSolveView{
+        runtime.asset,
+        runtime.polygonIndexById,
+        runtime.polygonCenters,
+        runtime.bakedCells,
+        runtime.bakedCellCenters,
+        runtime.polygonToCellIndices,
+        runtime.cellToPolygonIndices,
+        runtime.graph,
+    };
+}
+
+NavigationSolveView makeSolveView(const NavigationSolveSnapshot& snapshot) {
+    return NavigationSolveView{
+        snapshot.asset,
+        snapshot.polygonIndexById,
+        snapshot.polygonCenters,
+        snapshot.bakedCells,
+        snapshot.bakedCellCenters,
+        snapshot.polygonToCellIndices,
+        snapshot.cellToPolygonIndices,
+        snapshot.graph,
+    };
+}
+
+std::vector<std::size_t> findContainingCells(const NavigationSolveView& runtime, const glm::vec3& point) {
     std::vector<std::size_t> containing{};
     const glm::vec2 pointXZ(point.x, point.z);
     for (std::size_t index = 0; index < runtime.bakedCells.size(); ++index) {
@@ -1311,11 +1350,7 @@ std::vector<std::size_t> findContainingCells(const NavigationRuntime& runtime, c
     return containing;
 }
 
-bool containsCellIndex(const std::vector<std::size_t>& indices, std::size_t cellIndex) {
-    return std::find(indices.begin(), indices.end(), cellIndex) != indices.end();
-}
-
-std::optional<std::size_t> findNearestCell(const NavigationRuntime& runtime, const glm::vec3& point) {
+std::optional<std::size_t> findNearestCell(const NavigationSolveView& runtime, const glm::vec3& point) {
     std::optional<std::size_t> bestIndex{};
     float bestDistance = std::numeric_limits<float>::max();
     for (std::size_t index = 0; index < runtime.bakedCells.size(); ++index) {
@@ -1335,7 +1370,7 @@ std::optional<std::size_t> findNearestCell(const NavigationRuntime& runtime, con
 }
 
 std::vector<std::size_t> findLinkEndpointCells(
-    const NavigationRuntime& runtime,
+    const NavigationSolveView& runtime,
     std::size_t authoredPolygonIndex,
     const glm::vec3& point
 ) {
@@ -1361,7 +1396,7 @@ std::vector<std::size_t> findLinkEndpointCells(
 }
 
 std::optional<std::size_t> findNearestCandidateCell(
-    const NavigationRuntime& runtime,
+    const NavigationSolveView& runtime,
     const std::vector<std::size_t>& candidates,
     const glm::vec3& point
 ) {
@@ -1385,7 +1420,7 @@ std::optional<std::size_t> findNearestCandidateCell(
     return bestIndex;
 }
 
-bool pointInsideAuthoredWalkableSurface(const NavigationRuntime& runtime, const glm::vec3& point) {
+bool pointInsideAuthoredWalkableSurface(const NavigationSolveView& runtime, const glm::vec3& point) {
     const glm::vec2 pointXZ(point.x, point.z);
     for (const NavPolygon& polygon : runtime.asset.polygons) {
         if (std::abs(point.y - polygon.elevationY) > 1.0f) {
@@ -1399,7 +1434,7 @@ bool pointInsideAuthoredWalkableSurface(const NavigationRuntime& runtime, const 
 }
 
 bool segmentInsideAuthoredWalkableSurface(
-    const NavigationRuntime& runtime,
+    const NavigationSolveView& runtime,
     const glm::vec3& from,
     const glm::vec3& to
 ) {
@@ -1409,21 +1444,6 @@ bool segmentInsideAuthoredWalkableSurface(
         if (!pointInsideAuthoredWalkableSurface(runtime, from + t * (to - from))) {
             return false;
         }
-    }
-    return true;
-}
-
-bool pathInsideAuthoredWalkableSurface(
-    const NavigationRuntime& runtime,
-    const glm::vec3& start,
-    const std::vector<glm::vec3>& corners
-) {
-    glm::vec3 previous = start;
-    for (const glm::vec3& corner : corners) {
-        if (!segmentInsideAuthoredWalkableSurface(runtime, previous, corner)) {
-            return false;
-        }
-        previous = corner;
     }
     return true;
 }
@@ -1447,7 +1467,7 @@ bool segmentMatchesLink(
 }
 
 bool pathInsideWalkableSurfaceOrLinks(
-    const NavigationRuntime& runtime,
+    const NavigationSolveView& runtime,
     const glm::vec3& start,
     const std::vector<glm::vec3>& corners,
     const std::vector<const NavGraphEdge*>& edgePath,
@@ -1465,7 +1485,7 @@ bool pathInsideWalkableSurfaceOrLinks(
 }
 
 std::vector<glm::vec3> buildConservativeCellPathCorners(
-    const NavigationRuntime& runtime,
+    const NavigationSolveView& runtime,
     const glm::vec3& start,
     const glm::vec3& destination,
     const std::vector<std::size_t>& cellPath,
@@ -1505,7 +1525,7 @@ std::vector<glm::vec3> buildConservativeCellPathCorners(
 }
 
 bool segmentMatchesAnyNavLink(
-    const NavigationRuntime& runtime,
+    const NavigationSolveView& runtime,
     const glm::vec3& from,
     const glm::vec3& to,
     float epsilon
@@ -1529,7 +1549,7 @@ std::string quantizedVec3Key(const glm::vec3& value) {
 }
 
 std::optional<std::vector<glm::vec3>> findVisibilityPath(
-    const NavigationRuntime& runtime,
+    const NavigationSolveView& runtime,
     const glm::vec3& start,
     const glm::vec3& destination
 ) {
@@ -1698,12 +1718,16 @@ void setRuntimeStatus(NavigationRuntime& runtime, std::string message, bool isEr
     runtime.statusIsError = isError;
 }
 
-std::optional<std::size_t> findPolygonIndexById(const NavigationRuntime& runtime, int polygonId) {
+std::optional<std::size_t> findPolygonIndexById(const NavigationSolveView& runtime, int polygonId) {
     const auto it = runtime.polygonIndexById.find(polygonId);
     if (it == runtime.polygonIndexById.end()) {
         return std::nullopt;
     }
     return it->second;
+}
+
+std::optional<std::size_t> findPolygonIndexById(const NavigationRuntime& runtime, int polygonId) {
+    return findPolygonIndexById(makeSolveView(runtime), polygonId);
 }
 
 std::optional<std::size_t> findPolygonIndexById(const NavMeshAsset& asset, int polygonId) {
@@ -1715,12 +1739,227 @@ std::optional<std::size_t> findPolygonIndexById(const NavMeshAsset& asset, int p
     return std::nullopt;
 }
 
-glm::vec3 cellCenter3(const NavigationRuntime& runtime, std::size_t cellIndex) {
+glm::vec3 cellCenter3(const NavigationSolveView& runtime, std::size_t cellIndex) {
     const NavRuntimeCell& cell = runtime.bakedCells[cellIndex];
     const glm::vec2 center = cellIndex < runtime.bakedCellCenters.size()
         ? runtime.bakedCellCenters[cellIndex]
         : polygonCentroidXZ(cell.verticesXZ);
     return glm::vec3(center.x, cell.elevationY, center.y);
+}
+
+std::shared_ptr<const NavigationSolveSnapshot> buildSolveSnapshot(const NavigationRuntime& runtime) {
+    return std::make_shared<const NavigationSolveSnapshot>(NavigationSolveSnapshot{
+        runtime.asset,
+        runtime.polygonIndexById,
+        runtime.polygonCenters,
+        runtime.bakedCells,
+        runtime.bakedCellCenters,
+        runtime.polygonToCellIndices,
+        runtime.cellToPolygonIndices,
+        runtime.graph,
+    });
+}
+
+std::optional<std::vector<glm::vec3>> solvePathCorners(
+    const NavigationSolveView& runtime,
+    const glm::vec3& start,
+    const glm::vec3& destination,
+    float arrivalRadius
+) {
+    if (runtime.bakedCells.empty()) {
+        return std::nullopt;
+    }
+
+    std::vector<std::size_t> startCells = findContainingCells(runtime, start);
+    std::vector<std::size_t> targetCells = findContainingCells(runtime, destination);
+    if (!startCells.empty() && !targetCells.empty()) {
+        if (const auto visibilityPath = findVisibilityPath(runtime, start, destination); visibilityPath.has_value()) {
+            return visibilityPath;
+        }
+    }
+    if (startCells.empty()) {
+        if (const auto nearest = findNearestCell(runtime, start); nearest.has_value()) {
+            startCells.push_back(*nearest);
+        }
+    }
+    if (targetCells.empty()) {
+        if (const auto nearest = findNearestCell(runtime, destination); nearest.has_value()) {
+            targetCells.push_back(*nearest);
+        }
+    }
+    if (startCells.empty() || targetCells.empty()) {
+        return std::nullopt;
+    }
+
+    struct QueueItem {
+        float fScore{0.0f};
+        float gScore{0.0f};
+        std::size_t cellIndex{0u};
+
+        bool operator<(const QueueItem& other) const {
+            return fScore > other.fScore;
+        }
+    };
+
+    const std::size_t cellCount = runtime.bakedCells.size();
+    std::vector<float> gScores(cellCount, std::numeric_limits<float>::max());
+    std::vector<int> parents(cellCount, -1);
+    std::vector<int> parentEdgeIndices(cellCount, -1);
+    std::vector<std::uint8_t> isStartCell(cellCount, 0u);
+    std::vector<std::uint8_t> isTargetCell(cellCount, 0u);
+    std::priority_queue<QueueItem> open{};
+
+    for (std::size_t cellIndex : startCells) {
+        isStartCell[cellIndex] = 1u;
+    }
+    for (std::size_t cellIndex : targetCells) {
+        isTargetCell[cellIndex] = 1u;
+    }
+
+    const auto heuristicForCell = [&](std::size_t cellIndex) {
+        const glm::vec3 cellCenter = cellCenter3(runtime, cellIndex);
+        float bestDistance = std::numeric_limits<float>::max();
+        for (std::size_t targetCellIndex : targetCells) {
+            bestDistance = std::min(bestDistance, glm::distance(cellCenter, cellCenter3(runtime, targetCellIndex)));
+        }
+        return bestDistance == std::numeric_limits<float>::max() ? 0.0f : bestDistance;
+    };
+
+    for (std::size_t cellIndex : startCells) {
+        gScores[cellIndex] = 0.0f;
+        open.push(QueueItem{heuristicForCell(cellIndex), 0.0f, cellIndex});
+    }
+
+    std::optional<std::size_t> reachedTarget{};
+
+    while (!open.empty()) {
+        const QueueItem current = open.top();
+        open.pop();
+        if (current.gScore > gScores[current.cellIndex] + kPolygonEpsilon) {
+            continue;
+        }
+        if (isTargetCell[current.cellIndex] != 0u) {
+            reachedTarget = current.cellIndex;
+            break;
+        }
+
+        for (std::size_t edgeIndex = 0; edgeIndex < runtime.graph[current.cellIndex].size(); ++edgeIndex) {
+            const NavGraphEdge& edge = runtime.graph[current.cellIndex][edgeIndex];
+            const glm::vec3 fromCenter = cellCenter3(runtime, current.cellIndex);
+            const glm::vec3 toCenter = cellCenter3(runtime, edge.targetCellIndex);
+            const float stepCost = edge.viaLink
+                ? glm::distance(edge.linkStartPoint, edge.linkEndPoint)
+                : glm::distance(fromCenter, toCenter);
+            const float candidate = gScores[current.cellIndex] + stepCost;
+            if (candidate >= gScores[edge.targetCellIndex]) {
+                continue;
+            }
+            gScores[edge.targetCellIndex] = candidate;
+            parents[edge.targetCellIndex] = static_cast<int>(current.cellIndex);
+            parentEdgeIndices[edge.targetCellIndex] = static_cast<int>(edgeIndex);
+            const float heuristic = heuristicForCell(edge.targetCellIndex);
+            open.push(QueueItem{candidate + heuristic, candidate, edge.targetCellIndex});
+        }
+    }
+
+    if (!reachedTarget.has_value()) {
+        return std::nullopt;
+    }
+
+    std::vector<std::size_t> cellPath{};
+    std::vector<const NavGraphEdge*> edgePath{};
+    std::size_t currentCell = *reachedTarget;
+    cellPath.push_back(currentCell);
+    while (isStartCell[currentCell] == 0u) {
+        const int parentCell = parents[currentCell];
+        const int edgeIndex = parentEdgeIndices[currentCell];
+        if (parentCell < 0 || edgeIndex < 0) {
+            return std::nullopt;
+        }
+        const NavGraphEdge& edge = runtime.graph[static_cast<std::size_t>(parentCell)][static_cast<std::size_t>(edgeIndex)];
+        edgePath.push_back(&edge);
+        cellPath.push_back(static_cast<std::size_t>(parentCell));
+        currentCell = static_cast<std::size_t>(parentCell);
+    }
+    std::reverse(cellPath.begin(), cellPath.end());
+    std::reverse(edgePath.begin(), edgePath.end());
+
+    std::vector<glm::vec3> corners{};
+    glm::vec3 segmentStart = start;
+    std::vector<std::pair<glm::vec2, glm::vec2>> portals{};
+    float currentLayerY = runtime.bakedCells[cellPath.front()].elevationY;
+    for (std::size_t stepIndex = 0; stepIndex < edgePath.size(); ++stepIndex) {
+        const NavGraphEdge& edge = *edgePath[stepIndex];
+        const std::size_t fromCellIndex = cellPath[stepIndex];
+        const std::size_t toCellIndex = cellPath[stepIndex + 1u];
+        if (!edge.viaLink) {
+            const glm::vec2 left = orientPortalLeft(
+                runtime.bakedCellCenters[fromCellIndex],
+                runtime.bakedCellCenters[toCellIndex],
+                edge.portalA,
+                edge.portalB
+            );
+            const glm::vec2 right = orientPortalRight(
+                runtime.bakedCellCenters[fromCellIndex],
+                runtime.bakedCellCenters[toCellIndex],
+                edge.portalA,
+                edge.portalB
+            );
+            portals.emplace_back(left, right);
+            continue;
+        }
+
+        const std::vector<glm::vec2> pulled = stringPull(
+            glm::vec2(segmentStart.x, segmentStart.z),
+            portals,
+            glm::vec2(edge.linkStartPoint.x, edge.linkStartPoint.z)
+        );
+        for (std::size_t pointIndex = 1; pointIndex < pulled.size(); ++pointIndex) {
+            corners.push_back(glm::vec3(pulled[pointIndex].x, currentLayerY, pulled[pointIndex].y));
+        }
+        corners.push_back(edge.linkStartPoint);
+        corners.push_back(edge.linkEndPoint);
+        segmentStart = edge.linkEndPoint;
+        currentLayerY = runtime.bakedCells[toCellIndex].elevationY;
+        portals.clear();
+    }
+
+    const std::vector<glm::vec2> pulled = stringPull(
+        glm::vec2(segmentStart.x, segmentStart.z),
+        portals,
+        glm::vec2(destination.x, destination.z)
+    );
+    for (std::size_t pointIndex = 1; pointIndex < pulled.size(); ++pointIndex) {
+        corners.push_back(glm::vec3(pulled[pointIndex].x, currentLayerY, pulled[pointIndex].y));
+    }
+    if (corners.empty() || !nearlyEqualVec3(corners.back(), destination, arrivalRadius)) {
+        corners.push_back(destination);
+    }
+    if (!pathInsideWalkableSurfaceOrLinks(runtime, start, corners, edgePath, arrivalRadius)) {
+        corners = buildConservativeCellPathCorners(
+            runtime,
+            start,
+            destination,
+            cellPath,
+            edgePath,
+            arrivalRadius
+        );
+        if (!pathInsideWalkableSurfaceOrLinks(runtime, start, corners, edgePath, arrivalRadius)) {
+            return std::nullopt;
+        }
+    }
+
+    return corners;
+}
+
+void applyPathResult(NavAgentComponent& agent, const glm::vec3& destination, std::vector<glm::vec3> corners) {
+    agent.pathCorners = std::move(corners);
+    agent.destination = destination;
+    agent.moving = !agent.pathCorners.empty();
+}
+
+render::FrameCounterRecord makeNavigationCounter(const char* name, std::int64_t value) {
+    return render::FrameCounterRecord{name, value, "Navigation"};
 }
 
 void updateSourceOverride(
@@ -1982,6 +2221,8 @@ bool NavigationSystem::initializeScene(const SceneBlueprint& blueprint, World& w
 }
 
 bool NavigationSystem::loadAsset(NavigationRuntime& runtime) const {
+    invalidatePendingPathRequests();
+    runtime.solveSnapshot.reset();
     runtime.asset = NavMeshAsset{};
     if (runtime.assetPath.empty()) {
         setRuntimeStatus(runtime, "No navmesh asset configured.", true);
@@ -2046,6 +2287,9 @@ bool NavigationSystem::saveAsset(const NavigationRuntime& runtime, std::string* 
 }
 
 bool NavigationSystem::rebuildRuntime(NavigationRuntime& runtime, std::string* error) const {
+    invalidatePendingPathRequests();
+    runtime.solveSnapshot.reset();
+    ++runtime.solveRevision;
     runtime.polygonIndexById.clear();
     runtime.polygonCenters.clear();
     runtime.bakedCells.clear();
@@ -2156,22 +2400,23 @@ bool NavigationSystem::rebuildRuntime(NavigationRuntime& runtime, std::string* e
         }
     }
 
+    const NavigationSolveView solveView = makeSolveView(runtime);
     for (const NavLink& link : runtime.asset.links) {
         const auto fromIndex = findPolygonIndexById(runtime, link.fromPolygonId);
         const auto toIndex = findPolygonIndexById(runtime, link.toPolygonId);
         if (!fromIndex.has_value() || !toIndex.has_value()) {
             continue;
         }
-        std::vector<std::size_t> fromCells = findLinkEndpointCells(runtime, *fromIndex, link.fromPoint);
-        std::vector<std::size_t> toCells = findLinkEndpointCells(runtime, *toIndex, link.toPoint);
+        std::vector<std::size_t> fromCells = findLinkEndpointCells(solveView, *fromIndex, link.fromPoint);
+        std::vector<std::size_t> toCells = findLinkEndpointCells(solveView, *toIndex, link.toPoint);
         if (fromCells.empty()) {
-            if (const auto fallback = findNearestCandidateCell(runtime, runtime.polygonToCellIndices[*fromIndex], link.fromPoint);
+            if (const auto fallback = findNearestCandidateCell(solveView, runtime.polygonToCellIndices[*fromIndex], link.fromPoint);
                 fallback.has_value()) {
                 fromCells.push_back(*fallback);
             }
         }
         if (toCells.empty()) {
-            if (const auto fallback = findNearestCandidateCell(runtime, runtime.polygonToCellIndices[*toIndex], link.toPoint);
+            if (const auto fallback = findNearestCandidateCell(solveView, runtime.polygonToCellIndices[*toIndex], link.toPoint);
                 fallback.has_value()) {
                 toCells.push_back(*fallback);
             }
@@ -2201,6 +2446,7 @@ bool NavigationSystem::rebuildRuntime(NavigationRuntime& runtime, std::string* e
             }
         }
     }
+    runtime.solveSnapshot = buildSolveSnapshot(runtime);
     return true;
 }
 
@@ -2326,199 +2572,151 @@ bool NavigationSystem::setAgentDestination(
     EntityId agentEntity,
     const glm::vec3& destination
 ) const {
+    ProfilerService::CpuScopeHandle profileScope{};
+    if (profiler_ != nullptr) {
+        profileScope = profiler_->scopedCpu("Navigation Pathfind");
+    }
+
     NavAgentComponent* agent = world.navAgents.tryGet(agentEntity);
     TransformComponent* transform = world.transforms.tryGet(agentEntity);
-    if (agent == nullptr || transform == nullptr || runtime.bakedCells.empty()) {
+    const std::shared_ptr<const NavigationSolveSnapshot> snapshot = runtime.solveSnapshot;
+    if (agent == nullptr || transform == nullptr || snapshot == nullptr || snapshot->bakedCells.empty()) {
         return false;
     }
 
-    std::vector<std::size_t> startCells = findContainingCells(runtime, transform->position);
-    std::vector<std::size_t> targetCells = findContainingCells(runtime, destination);
-    if (!startCells.empty() && !targetCells.empty()) {
-        if (const auto visibilityPath = findVisibilityPath(runtime, transform->position, destination);
-            visibilityPath.has_value()) {
-            agent->pathCorners = *visibilityPath;
-            agent->destination = destination;
-            agent->moving = !agent->pathCorners.empty();
-            return true;
-        }
-    }
-    if (startCells.empty()) {
-        if (const auto nearest = findNearestCell(runtime, transform->position); nearest.has_value()) {
-            startCells.push_back(*nearest);
-        }
-    }
-    if (targetCells.empty()) {
-        if (const auto nearest = findNearestCell(runtime, destination); nearest.has_value()) {
-            targetCells.push_back(*nearest);
-        }
-    }
-    if (startCells.empty() || targetCells.empty()) {
+    const std::optional<std::vector<glm::vec3>> corners =
+        solvePathCorners(makeSolveView(*snapshot), transform->position, destination, agent->arrivalRadius);
+    if (!corners.has_value()) {
         return false;
     }
 
-    struct QueueItem {
-        float fScore{0.0f};
-        float gScore{0.0f};
-        std::size_t cellIndex{0u};
-
-        bool operator<(const QueueItem& other) const {
-            return fScore > other.fScore;
-        }
-    };
-
-    const std::size_t cellCount = runtime.bakedCells.size();
-    std::vector<float> gScores(cellCount, std::numeric_limits<float>::max());
-    std::vector<int> parents(cellCount, -1);
-    std::vector<int> parentEdgeIndices(cellCount, -1);
-    std::vector<std::uint8_t> isStartCell(cellCount, 0u);
-    std::vector<std::uint8_t> isTargetCell(cellCount, 0u);
-    std::priority_queue<QueueItem> open{};
-
-    for (std::size_t cellIndex : startCells) {
-        isStartCell[cellIndex] = 1u;
-    }
-    for (std::size_t cellIndex : targetCells) {
-        isTargetCell[cellIndex] = 1u;
-    }
-
-    const auto heuristicForCell = [&](std::size_t cellIndex) {
-        const glm::vec3 cellCenter = cellCenter3(runtime, cellIndex);
-        float bestDistance = std::numeric_limits<float>::max();
-        for (std::size_t targetCellIndex : targetCells) {
-            bestDistance = std::min(bestDistance, glm::distance(cellCenter, cellCenter3(runtime, targetCellIndex)));
-        }
-        return bestDistance == std::numeric_limits<float>::max() ? 0.0f : bestDistance;
-    };
-
-    for (std::size_t cellIndex : startCells) {
-        gScores[cellIndex] = 0.0f;
-        open.push(QueueItem{heuristicForCell(cellIndex), 0.0f, cellIndex});
-    }
-
-    std::optional<std::size_t> reachedTarget{};
-
-    while (!open.empty()) {
-        const QueueItem current = open.top();
-        open.pop();
-        if (current.gScore > gScores[current.cellIndex] + kPolygonEpsilon) {
-            continue;
-        }
-        if (isTargetCell[current.cellIndex] != 0u) {
-            reachedTarget = current.cellIndex;
-            break;
-        }
-
-        for (std::size_t edgeIndex = 0; edgeIndex < runtime.graph[current.cellIndex].size(); ++edgeIndex) {
-            const NavGraphEdge& edge = runtime.graph[current.cellIndex][edgeIndex];
-            const glm::vec3 fromCenter = cellCenter3(runtime, current.cellIndex);
-            const glm::vec3 toCenter = cellCenter3(runtime, edge.targetCellIndex);
-            const float stepCost = edge.viaLink
-                ? glm::distance(edge.linkStartPoint, edge.linkEndPoint)
-                : glm::distance(fromCenter, toCenter);
-            const float candidate = gScores[current.cellIndex] + stepCost;
-            if (candidate >= gScores[edge.targetCellIndex]) {
-                continue;
-            }
-            gScores[edge.targetCellIndex] = candidate;
-            parents[edge.targetCellIndex] = static_cast<int>(current.cellIndex);
-            parentEdgeIndices[edge.targetCellIndex] = static_cast<int>(edgeIndex);
-            const float heuristic = heuristicForCell(edge.targetCellIndex);
-            open.push(QueueItem{candidate + heuristic, candidate, edge.targetCellIndex});
-        }
-    }
-
-    if (!reachedTarget.has_value()) {
-        return false;
-    }
-
-    std::vector<std::size_t> cellPath{};
-    std::vector<const NavGraphEdge*> edgePath{};
-    std::size_t currentCell = *reachedTarget;
-    cellPath.push_back(currentCell);
-    while (isStartCell[currentCell] == 0u) {
-        const int parentCell = parents[currentCell];
-        const int edgeIndex = parentEdgeIndices[currentCell];
-        if (parentCell < 0 || edgeIndex < 0) {
-            return false;
-        }
-        const NavGraphEdge& edge = runtime.graph[static_cast<std::size_t>(parentCell)][static_cast<std::size_t>(edgeIndex)];
-        edgePath.push_back(&edge);
-        cellPath.push_back(static_cast<std::size_t>(parentCell));
-        currentCell = static_cast<std::size_t>(parentCell);
-    }
-    std::reverse(cellPath.begin(), cellPath.end());
-    std::reverse(edgePath.begin(), edgePath.end());
-
-    std::vector<glm::vec3> corners{};
-    glm::vec3 segmentStart = transform->position;
-    std::vector<std::pair<glm::vec2, glm::vec2>> portals{};
-    float currentLayerY = runtime.bakedCells[cellPath.front()].elevationY;
-    for (std::size_t stepIndex = 0; stepIndex < edgePath.size(); ++stepIndex) {
-        const NavGraphEdge& edge = *edgePath[stepIndex];
-        const std::size_t fromCellIndex = cellPath[stepIndex];
-        const std::size_t toCellIndex = cellPath[stepIndex + 1u];
-        if (!edge.viaLink) {
-            const glm::vec2 left = orientPortalLeft(
-                runtime.bakedCellCenters[fromCellIndex],
-                runtime.bakedCellCenters[toCellIndex],
-                edge.portalA,
-                edge.portalB
-            );
-            const glm::vec2 right = orientPortalRight(
-                runtime.bakedCellCenters[fromCellIndex],
-                runtime.bakedCellCenters[toCellIndex],
-                edge.portalA,
-                edge.portalB
-            );
-            portals.emplace_back(left, right);
-            continue;
-        }
-
-        const std::vector<glm::vec2> pulled = stringPull(
-            glm::vec2(segmentStart.x, segmentStart.z),
-            portals,
-            glm::vec2(edge.linkStartPoint.x, edge.linkStartPoint.z)
-        );
-        for (std::size_t pointIndex = 1; pointIndex < pulled.size(); ++pointIndex) {
-            corners.push_back(glm::vec3(pulled[pointIndex].x, currentLayerY, pulled[pointIndex].y));
-        }
-        corners.push_back(edge.linkStartPoint);
-        corners.push_back(edge.linkEndPoint);
-        segmentStart = edge.linkEndPoint;
-        currentLayerY = runtime.bakedCells[toCellIndex].elevationY;
-        portals.clear();
-    }
-
-    const std::vector<glm::vec2> pulled = stringPull(
-        glm::vec2(segmentStart.x, segmentStart.z),
-        portals,
-        glm::vec2(destination.x, destination.z)
-    );
-    for (std::size_t pointIndex = 1; pointIndex < pulled.size(); ++pointIndex) {
-        corners.push_back(glm::vec3(pulled[pointIndex].x, currentLayerY, pulled[pointIndex].y));
-    }
-    if (corners.empty() || !nearlyEqualVec3(corners.back(), destination, agent->arrivalRadius)) {
-        corners.push_back(destination);
-    }
-    if (!pathInsideWalkableSurfaceOrLinks(runtime, transform->position, corners, edgePath, agent->arrivalRadius)) {
-        corners = buildConservativeCellPathCorners(
-            runtime,
-            transform->position,
-            destination,
-            cellPath,
-            edgePath,
-            agent->arrivalRadius
-        );
-        if (!pathInsideWalkableSurfaceOrLinks(runtime, transform->position, corners, edgePath, agent->arrivalRadius)) {
-            return false;
-        }
-    }
-
-    agent->pathCorners = std::move(corners);
-    agent->destination = destination;
-    agent->moving = !agent->pathCorners.empty();
+    discardPendingPathRequest(agentEntity);
+    applyPathResult(*agent, destination, *corners);
     return true;
+}
+
+bool NavigationSystem::requestAgentDestination(
+    World& world,
+    const NavigationRuntime& runtime,
+    TaskScheduler& scheduler,
+    EntityId agentEntity,
+    const glm::vec3& destination
+) const {
+    NavAgentComponent* agent = world.navAgents.tryGet(agentEntity);
+    TransformComponent* transform = world.transforms.tryGet(agentEntity);
+    const std::shared_ptr<const NavigationSolveSnapshot> snapshot = runtime.solveSnapshot;
+    if (agent == nullptr || transform == nullptr || snapshot == nullptr || snapshot->bakedCells.empty()) {
+        return false;
+    }
+
+    const glm::vec3 startPosition = transform->position;
+    const float arrivalRadius = agent->arrivalRadius;
+    const std::uint64_t requestId = nextPathRequestId_++;
+    const std::uint64_t solveRevision = runtime.solveRevision;
+
+    discardPendingPathRequest(agentEntity);
+    pendingPathRequests_[agentEntity] = PendingPathRequest{
+        requestId,
+        solveRevision,
+        startPosition,
+        destination,
+        scheduler.submitAsync("Navigation Pathfind", [snapshot, agentEntity, requestId, solveRevision, startPosition, destination, arrivalRadius]() {
+            const auto startedAt = std::chrono::steady_clock::now();
+            PathSolveResult result{};
+            result.agentEntity = agentEntity;
+            result.requestId = requestId;
+            result.solveRevision = solveRevision;
+            result.startPosition = startPosition;
+            result.destination = destination;
+            result.pathCorners = solvePathCorners(makeSolveView(*snapshot), startPosition, destination, arrivalRadius);
+            result.durationUs = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - startedAt).count()
+            );
+            return result;
+        })
+    };
+    return true;
+}
+
+void NavigationSystem::applyCompletedPathRequests(World& world, const NavigationRuntime& runtime) const {
+    for (auto it = pendingPathRequests_.begin(); it != pendingPathRequests_.end();) {
+        PendingPathRequest& pending = it->second;
+        if (!pending.handle.valid()) {
+            it = pendingPathRequests_.erase(it);
+            continue;
+        }
+        if (!pending.handle.ready()) {
+            ++it;
+            continue;
+        }
+
+        std::optional<PathSolveResult> result{};
+        try {
+            result = pending.handle.take();
+        } catch (...) {
+            ++failedPathRequests_;
+            it = pendingPathRequests_.erase(it);
+            continue;
+        }
+        if (!result.has_value()) {
+            it = pendingPathRequests_.erase(it);
+            continue;
+        }
+
+        lastAsyncPathfindUs_ = result->durationUs;
+
+        const bool stale =
+            pending.requestId != result->requestId ||
+            pending.solveRevision != result->solveRevision ||
+            runtime.solveSnapshot == nullptr ||
+            result->solveRevision != runtime.solveRevision ||
+            !world.isAlive(result->agentEntity);
+        if (stale) {
+            ++stalePathResults_;
+            it = pendingPathRequests_.erase(it);
+            continue;
+        }
+
+        NavAgentComponent* agent = world.navAgents.tryGet(result->agentEntity);
+        TransformComponent* transform = world.transforms.tryGet(result->agentEntity);
+        if (agent == nullptr || transform == nullptr) {
+            ++stalePathResults_;
+            it = pendingPathRequests_.erase(it);
+            continue;
+        }
+
+        if (!result->pathCorners.has_value()) {
+            ++failedPathRequests_;
+            it = pendingPathRequests_.erase(it);
+            continue;
+        }
+
+        applyPathResult(*agent, result->destination, *result->pathCorners);
+        it = pendingPathRequests_.erase(it);
+    }
+}
+
+std::vector<render::FrameCounterRecord> NavigationSystem::profilingCounters() const {
+    return {
+        makeNavigationCounter("Pending Path Requests", static_cast<std::int64_t>(pendingPathRequests_.size())),
+        makeNavigationCounter("Last Async Pathfind Us", static_cast<std::int64_t>(lastAsyncPathfindUs_)),
+        makeNavigationCounter("Failed Path Requests", static_cast<std::int64_t>(failedPathRequests_)),
+        makeNavigationCounter("Stale Path Results", static_cast<std::int64_t>(stalePathResults_)),
+    };
+}
+
+void NavigationSystem::discardPendingPathRequest(EntityId entity) const {
+    const auto it = pendingPathRequests_.find(entity);
+    if (it == pendingPathRequests_.end()) {
+        return;
+    }
+    ++stalePathResults_;
+    pendingPathRequests_.erase(it);
+}
+
+void NavigationSystem::invalidatePendingPathRequests() const {
+    stalePathResults_ += pendingPathRequests_.size();
+    pendingPathRequests_.clear();
 }
 
 void NavigationSystem::updateAgents(World& world, const NavigationRuntime&, const TimeContext& time) const {

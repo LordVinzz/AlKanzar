@@ -40,6 +40,7 @@ struct EngineServices {
           events(512u) {
         renderer.setProfiler(&profiler);
         scheduler.setProfiler(&profiler);
+        navigationSystem.setProfiler(&profiler);
     }
 
     render::RenderEngine renderer;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -12,9 +14,13 @@
 #include "core/app/TimeContext.hpp"
 #include "core/ecs/World.hpp"
 #include "core/scene/SceneBlueprint.hpp"
+#include "core/systems/TaskScheduler.hpp"
 #include "render/engine/RenderTypes.hpp"
+#include "render/resources/Profiling.hpp"
 
 namespace core {
+
+class ProfilerService;
 
 struct NavSourceTagOverride {
     std::string stableId{};
@@ -64,6 +70,17 @@ struct NavGraphEdge {
     glm::vec3 linkEndPoint{0.0f};
 };
 
+struct NavigationSolveSnapshot {
+    NavMeshAsset asset{};
+    std::unordered_map<int, std::size_t> polygonIndexById{};
+    std::vector<glm::vec2> polygonCenters{};
+    std::vector<NavRuntimeCell> bakedCells{};
+    std::vector<glm::vec2> bakedCellCenters{};
+    std::vector<std::vector<std::size_t>> polygonToCellIndices{};
+    std::vector<std::vector<std::size_t>> cellToPolygonIndices{};
+    std::vector<std::vector<NavGraphEdge>> graph{};
+};
+
 struct NavigationEditorState {
     bool testMoveMode{false};
     bool polygonCaptureActive{false};
@@ -86,6 +103,8 @@ struct NavigationRuntime {
     std::vector<std::vector<std::size_t>> polygonToCellIndices{};
     std::vector<std::vector<std::size_t>> cellToPolygonIndices{};
     std::vector<std::vector<NavGraphEdge>> graph{};
+    std::shared_ptr<const NavigationSolveSnapshot> solveSnapshot{};
+    std::uint64_t solveRevision{0u};
     std::string statusMessage{};
     bool statusIsError{false};
     NavigationEditorState editor{};
@@ -98,6 +117,8 @@ bool parseNavMeshAsset(const std::string& text, NavMeshAsset& outAsset, std::str
 
 class NavigationSystem {
 public:
+    void setProfiler(ProfilerService* profiler) { profiler_ = profiler; }
+
     bool initializeScene(const SceneBlueprint& blueprint, World& world, NavigationRuntime& runtime) const;
     bool loadAsset(NavigationRuntime& runtime) const;
     bool reloadAsset(NavigationRuntime& runtime) const;
@@ -120,6 +141,15 @@ public:
         EntityId agentEntity,
         const glm::vec3& destination
     ) const;
+    bool requestAgentDestination(
+        World& world,
+        const NavigationRuntime& runtime,
+        TaskScheduler& scheduler,
+        EntityId agentEntity,
+        const glm::vec3& destination
+    ) const;
+    void applyCompletedPathRequests(World& world, const NavigationRuntime& runtime) const;
+    [[nodiscard]] std::vector<render::FrameCounterRecord> profilingCounters() const;
 
     void updateAgents(World& world, const NavigationRuntime& runtime, const TimeContext& time) const;
     void syncFrame(const World& world, const NavigationRuntime& runtime, FrameSceneData& frame) const;
@@ -138,6 +168,35 @@ public:
     void clearCapturedPolygon(NavigationRuntime& runtime) const;
     bool seedPendingLink(NavigationRuntime& runtime, int fromPolygonId, int toPolygonId, std::string* error = nullptr) const;
     bool commitPendingLink(NavigationRuntime& runtime, std::string* error = nullptr) const;
+
+private:
+    struct PathSolveResult {
+        EntityId agentEntity{};
+        std::uint64_t requestId{0u};
+        std::uint64_t solveRevision{0u};
+        glm::vec3 startPosition{0.0f};
+        glm::vec3 destination{0.0f};
+        std::optional<std::vector<glm::vec3>> pathCorners{};
+        std::uint64_t durationUs{0u};
+    };
+
+    struct PendingPathRequest {
+        std::uint64_t requestId{0u};
+        std::uint64_t solveRevision{0u};
+        glm::vec3 startPosition{0.0f};
+        glm::vec3 destination{0.0f};
+        AsyncTaskHandle<PathSolveResult> handle{};
+    };
+
+    void discardPendingPathRequest(EntityId entity) const;
+    void invalidatePendingPathRequests() const;
+
+    ProfilerService* profiler_{nullptr};
+    mutable std::unordered_map<EntityId, PendingPathRequest> pendingPathRequests_{};
+    mutable std::uint64_t nextPathRequestId_{1u};
+    mutable std::uint64_t lastAsyncPathfindUs_{0u};
+    mutable std::uint64_t failedPathRequests_{0u};
+    mutable std::uint64_t stalePathResults_{0u};
 };
 
 }  // namespace core

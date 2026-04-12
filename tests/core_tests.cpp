@@ -194,6 +194,50 @@ bool containsPoint3(const std::vector<glm::vec3>& points, const glm::vec3& needl
     });
 }
 
+bool nearlyEqualVec3(const glm::vec3& lhs, const glm::vec3& rhs, double epsilon = 0.001) {
+    return nearlyEqual(lhs.x, rhs.x, epsilon) &&
+        nearlyEqual(lhs.y, rhs.y, epsilon) &&
+        nearlyEqual(lhs.z, rhs.z, epsilon);
+}
+
+bool pathsEqual(const std::vector<glm::vec3>& lhs, const std::vector<glm::vec3>& rhs, double epsilon = 0.001) {
+    if (lhs.size() != rhs.size()) {
+        return false;
+    }
+    for (std::size_t index = 0; index < lhs.size(); ++index) {
+        if (!nearlyEqualVec3(lhs[index], rhs[index], epsilon)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::vector<core::NavPolygon> makeLinearNavPolygons(
+    std::size_t polygonCount,
+    float startX = 0.0f,
+    float elevationY = 0.0f,
+    float minZ = -1.0f,
+    float maxZ = 1.0f
+) {
+    std::vector<core::NavPolygon> polygons{};
+    polygons.reserve(polygonCount);
+    for (std::size_t index = 0; index < polygonCount; ++index) {
+        const float minX = startX + static_cast<float>(index);
+        const float maxX = minX + 1.0f;
+        polygons.push_back(core::NavPolygon{
+            static_cast<int>(index + 1u),
+            elevationY,
+            {
+                glm::vec2(minX, minZ),
+                glm::vec2(maxX, minZ),
+                glm::vec2(maxX, maxZ),
+                glm::vec2(minX, maxZ),
+            }
+        });
+    }
+    return polygons;
+}
+
 float cross2(const glm::vec2& lhs, const glm::vec2& rhs) {
     return lhs.x * rhs.y - lhs.y * rhs.x;
 }
@@ -254,6 +298,52 @@ bool containsNonMainThreadScope(const std::vector<core::ProfilerScopeNode>& scop
         }
     }
     return false;
+}
+
+bool containsRecordedScopeNamed(const std::vector<core::ProfilerRecordedScope>& scopes, std::string_view name) {
+    return std::any_of(scopes.begin(), scopes.end(), [name](const core::ProfilerRecordedScope& scope) {
+        return scope.name == name;
+    });
+}
+
+std::optional<std::uint64_t> findRecordedScopeDurationNs(
+    const std::vector<core::ProfilerRecordedScope>& scopes,
+    std::string_view name
+) {
+    const auto it = std::find_if(scopes.begin(), scopes.end(), [name](const core::ProfilerRecordedScope& scope) {
+        return scope.name == name;
+    });
+    if (it == scopes.end() || it->endNs < it->startNs) {
+        return std::nullopt;
+    }
+    return it->endNs - it->startNs;
+}
+
+std::int64_t requireCounterValue(
+    const std::vector<render::FrameCounterRecord>& counters,
+    std::string_view name,
+    std::string_view group
+) {
+    const std::optional<std::int64_t> value = findCounterValue(counters, name, group);
+    assert(value.has_value());
+    return *value;
+}
+
+void waitForNavigationRequestsToDrain(
+    core::NavigationSystem& navigation,
+    core::World& world,
+    const core::NavigationRuntime& runtime,
+    int maxAttempts = 2000
+) {
+    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
+        navigation.applyCompletedPathRequests(world, runtime);
+        const auto counters = navigation.profilingCounters();
+        if (requireCounterValue(counters, "Pending Path Requests", "Navigation") == 0) {
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    assert(false && "Timed out waiting for navigation path requests to complete");
 }
 
 bool readVarint(std::string_view data, std::size_t& offset, std::uint64_t& value) {
@@ -2361,6 +2451,269 @@ void testProfilerServiceCapturesWorkerThreadScopes() {
     assert(containsNonMainThreadScope(snapshots[0]->cpuScopes));
 }
 
+void testNavigationPathfindingEmitsProfilerScope() {
+    core::ProfilerConfig config{};
+    config.maxFrames = 4u;
+    config.maxCpuScopesPerFrame = 32u;
+    core::ProfilerService profiler(config);
+
+    core::NavigationSystem navigation;
+    navigation.setProfiler(&profiler);
+
+    core::NavigationRuntime runtime{};
+    constexpr std::size_t kPolygonCount = 32u;
+    runtime.asset.polygons = makeLinearNavPolygons(kPolygonCount);
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId agentEntity = world.createEntity();
+    world.transforms.emplace(agentEntity, core::TransformComponent{glm::vec3(0.25f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.navAgents.emplace(agentEntity, core::NavAgentComponent{});
+
+    profiler.startCapture();
+    profiler.beginFrame();
+    assert(navigation.setAgentDestination(
+        world,
+        runtime,
+        agentEntity,
+        glm::vec3(static_cast<float>(kPolygonCount) - 0.25f, 0.0f, 0.0f)
+    ));
+    profiler.endFrame({});
+    profiler.waitForWorkerIdle();
+
+    const core::ProfilerTraceCapture capture = profiler.rawCapture();
+    assert(capture.frames.size() == 1u);
+    assert(containsRecordedScopeNamed(capture.frames[0].cpuScopes, "Navigation Pathfind"));
+    const std::optional<std::uint64_t> durationNs = findRecordedScopeDurationNs(
+        capture.frames[0].cpuScopes,
+        "Navigation Pathfind"
+    );
+    assert(durationNs.has_value());
+    assert(*durationNs >= 5'000u);
+}
+
+void testNavigationAsyncRequestKeepsCurrentPathUntilReady() {
+    core::TaskScheduler scheduler = makeScheduler();
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = makeLinearNavPolygons(24u);
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId agentEntity = world.createEntity();
+    world.transforms.emplace(agentEntity, core::TransformComponent{glm::vec3(0.25f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.navAgents.emplace(agentEntity, core::NavAgentComponent{});
+
+    const glm::vec3 initialDestination(5.75f, 0.0f, 0.0f);
+    const glm::vec3 requestedDestination(23.75f, 0.0f, 0.0f);
+    assert(navigation.setAgentDestination(world, runtime, agentEntity, initialDestination));
+    const std::vector<glm::vec3> originalPath = world.navAgents.get(agentEntity).pathCorners;
+    assert(!originalPath.empty());
+
+    assert(navigation.requestAgentDestination(world, runtime, scheduler, agentEntity, requestedDestination));
+    const auto countersWhilePending = navigation.profilingCounters();
+    assert(requireCounterValue(countersWhilePending, "Pending Path Requests", "Navigation") == 1);
+    assert(requireCounterValue(countersWhilePending, "Failed Path Requests", "Navigation") == 0);
+    assert(requireCounterValue(countersWhilePending, "Stale Path Results", "Navigation") == 0);
+
+    const core::NavAgentComponent& pendingAgent = world.navAgents.get(agentEntity);
+    assert(pendingAgent.destination.has_value());
+    assert(nearlyEqualVec3(*pendingAgent.destination, initialDestination));
+    assert(pathsEqual(pendingAgent.pathCorners, originalPath));
+
+    waitForNavigationRequestsToDrain(navigation, world, runtime);
+
+    const core::NavAgentComponent& updatedAgent = world.navAgents.get(agentEntity);
+    assert(updatedAgent.destination.has_value());
+    assert(nearlyEqualVec3(*updatedAgent.destination, requestedDestination));
+    assert(!updatedAgent.pathCorners.empty());
+    assert(nearlyEqualVec3(updatedAgent.pathCorners.back(), requestedDestination));
+
+    const auto countersAfterApply = navigation.profilingCounters();
+    assert(requireCounterValue(countersAfterApply, "Pending Path Requests", "Navigation") == 0);
+    assert(requireCounterValue(countersAfterApply, "Last Async Pathfind Us", "Navigation") > 0);
+}
+
+void testNavigationAsyncLatestClickWinsAndCountsStaleResults() {
+    core::TaskScheduler scheduler = makeScheduler();
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = makeLinearNavPolygons(24u);
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId agentEntity = world.createEntity();
+    world.transforms.emplace(agentEntity, core::TransformComponent{glm::vec3(0.25f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.navAgents.emplace(agentEntity, core::NavAgentComponent{});
+
+    const glm::vec3 firstDestination(11.75f, 0.0f, 0.0f);
+    const glm::vec3 secondDestination(23.75f, 0.0f, 0.0f);
+    assert(navigation.requestAgentDestination(world, runtime, scheduler, agentEntity, firstDestination));
+    assert(navigation.requestAgentDestination(world, runtime, scheduler, agentEntity, secondDestination));
+
+    const auto countersWhilePending = navigation.profilingCounters();
+    assert(requireCounterValue(countersWhilePending, "Pending Path Requests", "Navigation") == 1);
+    assert(requireCounterValue(countersWhilePending, "Stale Path Results", "Navigation") == 1);
+
+    waitForNavigationRequestsToDrain(navigation, world, runtime);
+
+    const core::NavAgentComponent& agent = world.navAgents.get(agentEntity);
+    assert(agent.destination.has_value());
+    assert(nearlyEqualVec3(*agent.destination, secondDestination));
+    assert(!agent.pathCorners.empty());
+    assert(nearlyEqualVec3(agent.pathCorners.back(), secondDestination));
+
+    const auto countersAfterApply = navigation.profilingCounters();
+    assert(requireCounterValue(countersAfterApply, "Pending Path Requests", "Navigation") == 0);
+    assert(requireCounterValue(countersAfterApply, "Stale Path Results", "Navigation") == 1);
+}
+
+void testNavigationAsyncRebuildInvalidatesPendingRequests() {
+    core::TaskScheduler scheduler = makeScheduler();
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = makeLinearNavPolygons(24u);
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId agentEntity = world.createEntity();
+    world.transforms.emplace(agentEntity, core::TransformComponent{glm::vec3(0.25f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.navAgents.emplace(agentEntity, core::NavAgentComponent{});
+
+    const glm::vec3 originalDestination(5.75f, 0.0f, 0.0f);
+    assert(navigation.setAgentDestination(world, runtime, agentEntity, originalDestination));
+    const std::vector<glm::vec3> originalPath = world.navAgents.get(agentEntity).pathCorners;
+
+    assert(navigation.requestAgentDestination(world, runtime, scheduler, agentEntity, glm::vec3(23.75f, 0.0f, 0.0f)));
+    assert(requireCounterValue(navigation.profilingCounters(), "Pending Path Requests", "Navigation") == 1);
+
+    assert(navigation.rebuildRuntime(runtime));
+    navigation.applyCompletedPathRequests(world, runtime);
+
+    const core::NavAgentComponent& agent = world.navAgents.get(agentEntity);
+    assert(agent.destination.has_value());
+    assert(nearlyEqualVec3(*agent.destination, originalDestination));
+    assert(pathsEqual(agent.pathCorners, originalPath));
+
+    const auto countersAfterRebuild = navigation.profilingCounters();
+    assert(requireCounterValue(countersAfterRebuild, "Pending Path Requests", "Navigation") == 0);
+    assert(requireCounterValue(countersAfterRebuild, "Stale Path Results", "Navigation") == 1);
+}
+
+void testNavigationAsyncFailurePreservesCurrentPathAndCountsFailures() {
+    core::TaskScheduler scheduler = makeScheduler();
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {glm::vec2(0.0f, -1.0f), glm::vec2(1.0f, -1.0f), glm::vec2(1.0f, 1.0f), glm::vec2(0.0f, 1.0f)}},
+        core::NavPolygon{2, 0.0f, {glm::vec2(4.0f, -1.0f), glm::vec2(5.0f, -1.0f), glm::vec2(5.0f, 1.0f), glm::vec2(4.0f, 1.0f)}},
+    };
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId agentEntity = world.createEntity();
+    world.transforms.emplace(agentEntity, core::TransformComponent{glm::vec3(0.25f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.navAgents.emplace(agentEntity, core::NavAgentComponent{});
+
+    const glm::vec3 originalDestination(0.75f, 0.0f, 0.0f);
+    assert(navigation.setAgentDestination(world, runtime, agentEntity, originalDestination));
+    const std::vector<glm::vec3> originalPath = world.navAgents.get(agentEntity).pathCorners;
+
+    assert(navigation.requestAgentDestination(world, runtime, scheduler, agentEntity, glm::vec3(4.75f, 0.0f, 0.0f)));
+    waitForNavigationRequestsToDrain(navigation, world, runtime);
+
+    const core::NavAgentComponent& agent = world.navAgents.get(agentEntity);
+    assert(agent.destination.has_value());
+    assert(nearlyEqualVec3(*agent.destination, originalDestination));
+    assert(pathsEqual(agent.pathCorners, originalPath));
+
+    const auto counters = navigation.profilingCounters();
+    assert(requireCounterValue(counters, "Pending Path Requests", "Navigation") == 0);
+    assert(requireCounterValue(counters, "Failed Path Requests", "Navigation") == 1);
+    assert(requireCounterValue(counters, "Stale Path Results", "Navigation") == 0);
+}
+
+void testNavigationAsyncProfilerCaptureIncludesClickScopesAndCounters() {
+    core::ProfilerConfig config{};
+    config.maxFrames = 4u;
+    config.maxCpuScopesPerFrame = 128u;
+    core::ProfilerService profiler(config);
+
+    core::TaskScheduler scheduler = makeScheduler();
+    scheduler.setProfiler(&profiler);
+
+    core::NavigationSystem navigation;
+    navigation.setProfiler(&profiler);
+
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = makeLinearNavPolygons(24u, -4.0f);
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId agentEntity = world.createEntity();
+    world.transforms.emplace(agentEntity, core::TransformComponent{glm::vec3(-3.75f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.navAgents.emplace(agentEntity, core::NavAgentComponent{});
+
+    const render::CameraMatrices camera = core::computeCameraMatrices(core::CameraState{}, 100, 100);
+    const glm::vec3 requestedDestination(19.75f, 0.0f, 0.0f);
+
+    profiler.startCapture();
+    profiler.beginFrame();
+    {
+        auto eventDispatch = profiler.scopedCpu("Event Dispatch");
+        (void)eventDispatch;
+        auto viewportClick = profiler.scopedCpu("Viewport Click");
+        (void)viewportClick;
+        auto gameplayClickMove = profiler.scopedCpu("Gameplay Click Move");
+        (void)gameplayClickMove;
+
+        std::optional<core::NavHitResult> hit{};
+        {
+            auto hitScope = profiler.scopedCpu("Navigation Hit Test");
+            (void)hitScope;
+            hit = navigation.hitTest(runtime, camera, 100, 100, 50, 50);
+        }
+        assert(hit.has_value());
+
+        {
+            auto requestScope = profiler.scopedCpu("Navigation Path Request");
+            (void)requestScope;
+            assert(navigation.requestAgentDestination(world, runtime, scheduler, agentEntity, requestedDestination));
+        }
+    }
+
+    for (int attempt = 0; attempt < 200; ++attempt) {
+        {
+            auto applyScope = profiler.scopedCpu("Navigation Path Apply");
+            (void)applyScope;
+            navigation.applyCompletedPathRequests(world, runtime);
+        }
+        if (requireCounterValue(navigation.profilingCounters(), "Pending Path Requests", "Navigation") == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    const auto counters = navigation.profilingCounters();
+    assert(requireCounterValue(counters, "Pending Path Requests", "Navigation") == 0);
+    assert(requireCounterValue(counters, "Last Async Pathfind Us", "Navigation") > 0);
+    profiler.endFrame({}, counters);
+    profiler.waitForWorkerIdle();
+
+    const core::ProfilerTraceCapture capture = profiler.rawCapture();
+    assert(capture.frames.size() == 1u);
+    assert(containsRecordedScopeNamed(capture.frames[0].cpuScopes, "Event Dispatch"));
+    assert(containsRecordedScopeNamed(capture.frames[0].cpuScopes, "Viewport Click"));
+    assert(containsRecordedScopeNamed(capture.frames[0].cpuScopes, "Gameplay Click Move"));
+    assert(containsRecordedScopeNamed(capture.frames[0].cpuScopes, "Navigation Hit Test"));
+    assert(containsRecordedScopeNamed(capture.frames[0].cpuScopes, "Navigation Path Request"));
+    assert(containsRecordedScopeNamed(capture.frames[0].cpuScopes, "Navigation Path Apply"));
+    assert(requireCounterValue(capture.frames[0].counters, "Pending Path Requests", "Navigation") == 0);
+    assert(requireCounterValue(capture.frames[0].counters, "Last Async Pathfind Us", "Navigation") > 0);
+    assert(requireCounterValue(capture.frames[0].counters, "Failed Path Requests", "Navigation") == 0);
+    assert(requireCounterValue(capture.frames[0].counters, "Stale Path Results", "Navigation") == 0);
+}
+
 void testRuntimePolicyEnablesHeavyWorkloadsAndUsesHysteresis() {
     core::RuntimePolicy policy;
     core::RuntimePolicyFrameContext context{};
@@ -2721,6 +3074,12 @@ int main() {
     testProfilerServiceStartStopAndFrameRingBuffer();
     testProfilerServiceDropsExcessCpuScopes();
     testProfilerServiceCapturesWorkerThreadScopes();
+    testNavigationPathfindingEmitsProfilerScope();
+    testNavigationAsyncRequestKeepsCurrentPathUntilReady();
+    testNavigationAsyncLatestClickWinsAndCountsStaleResults();
+    testNavigationAsyncRebuildInvalidatesPendingRequests();
+    testNavigationAsyncFailurePreservesCurrentPathAndCountsFailures();
+    testNavigationAsyncProfilerCaptureIncludesClickScopesAndCounters();
     testRuntimePolicyEnablesHeavyWorkloadsAndUsesHysteresis();
     testRuntimePolicyDisablesParallelismWithoutEnoughWorkers();
     testProfilerServiceRetainsRawFramesForExport();
