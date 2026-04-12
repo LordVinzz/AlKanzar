@@ -92,6 +92,19 @@ private:
         int width,
         int height
     ) const;
+    void drawLineVertices(
+        const std::vector<glm::vec3>& vertices,
+        const glm::mat4& projection,
+        const glm::mat4& view,
+        const glm::vec4& color,
+        GLenum primitive
+    ) const;
+    void drawFilledPolygon(
+        const std::vector<glm::vec3>& vertices,
+        const glm::mat4& projection,
+        const glm::mat4& view,
+        const glm::vec4& color
+    ) const;
     void drawSkeletonLines(
         const std::vector<glm::vec3>& jointWorldPositions,
         const std::vector<int>& parentIndices,

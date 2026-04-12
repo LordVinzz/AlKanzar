@@ -12,6 +12,7 @@
 #include "FrameData.hpp"
 #include "core/lighting/LightSystem.hpp"
 #include "core/lighting/MaterialLibrary.hpp"
+#include "core/navigation/Navigation.hpp"
 #include "core/systems/PickingSystem.hpp"
 #include "core/profiling/ProfilerService.hpp"
 #include "core/systems/RenderExtractionSystem.hpp"
@@ -49,6 +50,7 @@ struct EngineServices {
     SelectionModel selection;
     SceneRegistry sceneRegistry;
     SceneFactory sceneFactory;
+    SceneBlueprint currentScene{};
     MaterialLibrary materials;
     World world;
     TimeContext time;
@@ -58,6 +60,8 @@ struct EngineServices {
     AnimationSystem animationSystem;
     TransformSystem transformSystem;
     LightSystem lightSystem;
+    NavigationRuntime navigation;
+    NavigationSystem navigationSystem;
     RenderExtractionSystem renderExtractionSystem;
     PickingSystem pickingSystem;
     InputSession input;

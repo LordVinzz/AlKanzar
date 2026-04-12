@@ -686,6 +686,20 @@ void SceneOverlayRenderer::drawSkeletonLines(
         return;
     }
 
+    drawLineVertices(lineVertices, projection, view, glm::vec4(0.35f, 0.95f, 0.85f, 1.0f), GL_LINES);
+}
+
+void SceneOverlayRenderer::drawLineVertices(
+    const std::vector<glm::vec3>& vertices,
+    const glm::mat4& projection,
+    const glm::mat4& view,
+    const glm::vec4& color,
+    GLenum primitive
+) const {
+    if (vertices.empty() || debugColorShader_.id() == 0) {
+        return;
+    }
+
     if (skeletonLineVao_ == 0) {
         glGenVertexArrays(1, &skeletonLineVao_);
     }
@@ -697,8 +711,8 @@ void SceneOverlayRenderer::drawSkeletonLines(
     glBindBuffer(GL_ARRAY_BUFFER, skeletonLineVbo_);
     glBufferData(
         GL_ARRAY_BUFFER,
-        static_cast<GLsizeiptr>(lineVertices.size() * sizeof(glm::vec3)),
-        lineVertices.data(),
+        static_cast<GLsizeiptr>(vertices.size() * sizeof(glm::vec3)),
+        vertices.data(),
         GL_DYNAMIC_DRAW
     );
     glEnableVertexAttribArray(0);
@@ -709,10 +723,30 @@ void SceneOverlayRenderer::drawSkeletonLines(
     const glm::mat4 mvp = projection * view;
     debugColorShader_.use();
     glUniformMatrix4fv(debugMvpLocation_, 1, GL_FALSE, glm::value_ptr(mvp));
-    glUniform4f(debugColorLocation_, 0.35f, 0.95f, 0.85f, 1.0f);
-    glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(lineVertices.size()));
+    glUniform4fv(debugColorLocation_, 1, glm::value_ptr(color));
+    glDrawArrays(primitive, 0, static_cast<GLsizei>(vertices.size()));
 
     glBindVertexArray(0);
+}
+
+void SceneOverlayRenderer::drawFilledPolygon(
+    const std::vector<glm::vec3>& vertices,
+    const glm::mat4& projection,
+    const glm::mat4& view,
+    const glm::vec4& color
+) const {
+    if (vertices.size() < 3u) {
+        return;
+    }
+
+    std::vector<glm::vec3> triangleVertices{};
+    triangleVertices.reserve((vertices.size() - 2u) * 3u);
+    for (std::size_t index = 1; index + 1u < vertices.size(); ++index) {
+        triangleVertices.push_back(vertices[0]);
+        triangleVertices.push_back(vertices[index]);
+        triangleVertices.push_back(vertices[index + 1u]);
+    }
+    drawLineVertices(triangleVertices, projection, view, color, GL_TRIANGLES);
 }
 
 void SceneOverlayRenderer::renderOverlays(
@@ -725,7 +759,13 @@ void SceneOverlayRenderer::renderOverlays(
     const glm::vec3& directionalLightDirection
 ) const {
     const detail::OverlayWork work = detail::buildOverlayWork(scene, lights, camera, options);
-    if (!work.hasWork()) {
+    const bool drawNavigation = options.showNavMeshOverlay &&
+        (!scene.navigation.polygons.empty() ||
+         !scene.navigation.links.empty() ||
+         !scene.navigation.path.empty() ||
+         scene.navigation.destination.has_value() ||
+         !scene.navigation.captureVertices.empty());
+    if (!work.hasWork() && !drawNavigation) {
         return;
     }
 
@@ -738,7 +778,7 @@ void SceneOverlayRenderer::renderOverlays(
         });
     const bool drawLightDebug = debugColorShader_.id() != 0 && axisGizmo_.valid() &&
         (!work.debugLightIndices.empty() || work.drawDirectionalMarker);
-    if (!drawSelection && !drawSkeleton && !drawIcons && !drawLightDebug) {
+    if (!drawSelection && !drawSkeleton && !drawIcons && !drawLightDebug && !drawNavigation) {
         return;
     }
 
@@ -838,6 +878,49 @@ void SceneOverlayRenderer::renderOverlays(
             directionalModel *= makeOrientationFromDirection(dir);
             directionalModel = glm::scale(directionalModel, glm::vec3(1.1f));
             drawDebugMesh(axisGizmo_, camera.projection, camera.view, directionalModel, glm::vec4(1.0f), false);
+        }
+    }
+    if (drawNavigation) {
+        for (const RenderNavPolygonView& polygon : scene.navigation.polygons) {
+            drawFilledPolygon(polygon.vertices, camera.projection, camera.view, polygon.color);
+        }
+        for (const RenderNavLinkView& link : scene.navigation.links) {
+            drawLineVertices(
+                std::vector<glm::vec3>{link.fromPoint, link.toPoint},
+                camera.projection,
+                camera.view,
+                glm::vec4(1.0f, 0.45f, 0.15f, 0.95f),
+                GL_LINES
+            );
+            if (link.bidirectional) {
+                const glm::vec3 mid = (link.fromPoint + link.toPoint) * 0.5f;
+                drawDebugMesh(
+                    axisGizmo_,
+                    camera.projection,
+                    camera.view,
+                    glm::scale(glm::translate(glm::mat4(1.0f), mid), glm::vec3(0.12f)),
+                    glm::vec4(1.0f, 0.45f, 0.15f, 0.75f),
+                    false
+                );
+            }
+        }
+        if (!scene.navigation.path.empty()) {
+            std::vector<glm::vec3> pathVertices = scene.navigation.path;
+            drawLineVertices(pathVertices, camera.projection, camera.view, glm::vec4(0.98f, 0.92f, 0.18f, 0.98f), GL_LINE_STRIP);
+        }
+        if (!scene.navigation.captureVertices.empty()) {
+            std::vector<glm::vec3> captureLoop = scene.navigation.captureVertices;
+            drawLineVertices(captureLoop, camera.projection, camera.view, glm::vec4(0.75f, 1.0f, 0.50f, 0.95f), GL_LINE_STRIP);
+        }
+        if (scene.navigation.destination.has_value()) {
+            drawDebugMesh(
+                selectionBox_,
+                camera.projection,
+                camera.view,
+                glm::scale(glm::translate(glm::mat4(1.0f), *scene.navigation.destination), glm::vec3(0.12f)),
+                glm::vec4(0.98f, 0.20f, 0.22f, 0.95f),
+                true
+            );
         }
     }
 

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <glm/mat4x4.hpp>
+#include <glm/vec4.hpp>
 
 #include "core/app/FrameData.hpp"
 #include "render/resources/MeshBuffer.hpp"
@@ -84,12 +85,36 @@ struct RenderSelectionSkeletonView {
     std::vector<glm::vec3> jointWorldPositions{};
 };
 
+struct RenderNavPolygonView {
+    int id{-1};
+    float elevationY{0.0f};
+    std::vector<glm::vec3> vertices{};
+    glm::vec4 color{1.0f};
+};
+
+struct RenderNavLinkView {
+    int id{-1};
+    glm::vec3 fromPoint{0.0f};
+    glm::vec3 toPoint{0.0f};
+    bool bidirectional{true};
+};
+
+struct RenderNavigationView {
+    std::vector<RenderNavPolygonView> polygons{};
+    std::vector<RenderNavLinkView> links{};
+    std::vector<glm::vec3> path{};
+    std::optional<glm::vec3> destination{};
+    std::vector<glm::vec3> captureVertices{};
+    float captureElevationY{0.0f};
+};
+
 struct RenderSceneView {
     std::vector<RenderSceneObjectView> objects{};
     std::vector<core::FrameLight> lights{};
     std::vector<core::FrameLightVolume> lightVolumes{};
     RenderSelectionView selection{};
     RenderSelectionSkeletonView selectionSkeleton{};
+    RenderNavigationView navigation{};
     FrustumCullStats frustumCullStats{};
     OcclusionCullStats occlusionCullStats{};
 };

@@ -106,6 +106,28 @@ RenderSceneView buildRenderSceneView(
     scene.selectionSkeleton.showOverlay = frame.selectionSkeleton.showOverlay;
     scene.selectionSkeleton.parentIndices = frame.selectionSkeleton.parentIndices;
     scene.selectionSkeleton.jointWorldPositions = frame.selectionSkeleton.jointWorldPositions;
+    scene.navigation.path = frame.navigation.path;
+    scene.navigation.destination = frame.navigation.destination;
+    scene.navigation.captureVertices = frame.navigation.captureVertices;
+    scene.navigation.captureElevationY = frame.navigation.captureElevationY;
+    scene.navigation.polygons.reserve(frame.navigation.polygons.size());
+    scene.navigation.links.reserve(frame.navigation.links.size());
+    for (const core::FrameNavDebugPolygon& polygon : frame.navigation.polygons) {
+        scene.navigation.polygons.push_back(RenderNavPolygonView{
+            polygon.id,
+            polygon.elevationY,
+            polygon.vertices,
+            polygon.color
+        });
+    }
+    for (const core::FrameNavDebugLink& link : frame.navigation.links) {
+        scene.navigation.links.push_back(RenderNavLinkView{
+            link.id,
+            link.fromPoint,
+            link.toPoint,
+            link.bidirectional
+        });
+    }
 
     if (!useParallel) {
         scene.objects.reserve(frame.renderables.size());

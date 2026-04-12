@@ -59,6 +59,7 @@ struct RenderFrameOptions {
     int shadowDebugCascade{0};
     bool showLightDebug{false};
     bool editorEnabled{false};
+    bool showNavMeshOverlay{false};
 };
 
 }  // namespace render

@@ -6,6 +6,7 @@
 
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 
 #include "core/ecs/Entity.hpp"
 #include "core/lighting/MaterialLibrary.hpp"
@@ -81,6 +82,38 @@ struct FrameSkeletonDebug {
     }
 };
 
+struct FrameNavDebugPolygon {
+    int id{-1};
+    float elevationY{0.0f};
+    std::vector<glm::vec3> vertices{};
+    glm::vec4 color{1.0f};
+};
+
+struct FrameNavDebugLink {
+    int id{-1};
+    glm::vec3 fromPoint{0.0f};
+    glm::vec3 toPoint{0.0f};
+    bool bidirectional{true};
+};
+
+struct FrameNavigationDebug {
+    std::vector<FrameNavDebugPolygon> polygons{};
+    std::vector<FrameNavDebugLink> links{};
+    std::vector<glm::vec3> path{};
+    std::optional<glm::vec3> destination{};
+    std::vector<glm::vec3> captureVertices{};
+    float captureElevationY{0.0f};
+
+    void clear() {
+        polygons.clear();
+        links.clear();
+        path.clear();
+        destination.reset();
+        captureVertices.clear();
+        captureElevationY = 0.0f;
+    }
+};
+
 struct FrameSceneData {
     std::vector<FrameRenderable> renderables{};
     std::vector<FrameLight> lights{};
@@ -88,6 +121,7 @@ struct FrameSceneData {
     std::vector<glm::mat4> jointMatrices{};
     FrameSelection selection{};
     FrameSkeletonDebug selectionSkeleton{};
+    FrameNavigationDebug navigation{};
 
     void reserve(std::size_t renderableCount, std::size_t lightCount, std::size_t volumeCount) {
         renderables.reserve(renderableCount);
@@ -103,6 +137,7 @@ struct FrameSceneData {
         jointMatrices.clear();
         selection = FrameSelection{};
         selectionSkeleton.clear();
+        navigation.clear();
     }
 };
 

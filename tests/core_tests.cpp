@@ -30,6 +30,8 @@
 #include "core/events/Events.hpp"
 #include "core/lighting/LightSystem.hpp"
 #include "core/lighting/MaterialLibrary.hpp"
+#include "core/navigation/Navigation.hpp"
+#include "core/scene/Camera.hpp"
 #include "core/systems/PickingSystem.hpp"
 #include "core/profiling/ProfilerService.hpp"
 #include "core/systems/RenderExtractionSystem.hpp"
@@ -121,6 +123,111 @@ render::CameraMatrices makeOrthoCamera(
     camera.invProjection = glm::inverse(camera.projection);
     camera.view = glm::mat4(1.0f);
     return camera;
+}
+
+render::Mesh makeHorizontalQuadMesh(float minX, float maxX, float minZ, float maxZ, float y) {
+    render::Mesh mesh{};
+    mesh.uvSets.resize(2);
+    mesh.positions = {
+        glm::vec3(minX, y, minZ),
+        glm::vec3(minX, y, maxZ),
+        glm::vec3(maxX, y, maxZ),
+        glm::vec3(maxX, y, minZ),
+    };
+    mesh.normals = std::vector<glm::vec3>(4u, glm::vec3(0.0f, 1.0f, 0.0f));
+    mesh.colors = std::vector<glm::vec4>(4u, glm::vec4(1.0f));
+    mesh.uvSets[0] = {
+        glm::vec2(0.0f, 0.0f),
+        glm::vec2(0.0f, 1.0f),
+        glm::vec2(1.0f, 1.0f),
+        glm::vec2(1.0f, 0.0f),
+    };
+    mesh.uvSets[1] = std::vector<glm::vec2>(4u, glm::vec2(0.0f));
+    mesh.indices = {0u, 1u, 2u, 0u, 2u, 3u};
+    return mesh;
+}
+
+render::Mesh makeBoxVertexMesh(const glm::vec3& minPoint, const glm::vec3& maxPoint) {
+    render::Mesh mesh{};
+    mesh.positions = {
+        glm::vec3(minPoint.x, minPoint.y, minPoint.z),
+        glm::vec3(maxPoint.x, minPoint.y, minPoint.z),
+        glm::vec3(minPoint.x, maxPoint.y, minPoint.z),
+        glm::vec3(maxPoint.x, maxPoint.y, minPoint.z),
+        glm::vec3(minPoint.x, minPoint.y, maxPoint.z),
+        glm::vec3(maxPoint.x, minPoint.y, maxPoint.z),
+        glm::vec3(minPoint.x, maxPoint.y, maxPoint.z),
+        glm::vec3(maxPoint.x, maxPoint.y, maxPoint.z),
+    };
+    return mesh;
+}
+
+render::Mesh makeSlopedTriangleMesh() {
+    render::Mesh mesh{};
+    mesh.uvSets.resize(2);
+    mesh.positions = {
+        glm::vec3(-1.0f, 0.0f, 0.0f),
+        glm::vec3(1.0f, 1.0f, 0.0f),
+        glm::vec3(0.0f, 0.0f, 1.0f),
+    };
+    mesh.normals = std::vector<glm::vec3>(3u, glm::normalize(glm::cross(mesh.positions[1] - mesh.positions[0], mesh.positions[2] - mesh.positions[0])));
+    mesh.colors = std::vector<glm::vec4>(3u, glm::vec4(1.0f));
+    mesh.uvSets[0] = std::vector<glm::vec2>(3u, glm::vec2(0.0f));
+    mesh.uvSets[1] = std::vector<glm::vec2>(3u, glm::vec2(0.0f));
+    mesh.indices = {0u, 1u, 2u};
+    return mesh;
+}
+
+glm::vec2 polygonCenterXZ(const core::NavPolygon& polygon) {
+    glm::vec2 center(0.0f);
+    for (const glm::vec2& vertex : polygon.verticesXZ) {
+        center += vertex;
+    }
+    return center / static_cast<float>(polygon.verticesXZ.size());
+}
+
+bool containsPoint3(const std::vector<glm::vec3>& points, const glm::vec3& needle, double epsilon = 0.001) {
+    return std::any_of(points.begin(), points.end(), [&](const glm::vec3& point) {
+        return nearlyEqual(point.x, needle.x, epsilon) &&
+            nearlyEqual(point.y, needle.y, epsilon) &&
+            nearlyEqual(point.z, needle.z, epsilon);
+    });
+}
+
+float cross2(const glm::vec2& lhs, const glm::vec2& rhs) {
+    return lhs.x * rhs.y - lhs.y * rhs.x;
+}
+
+bool pointOnSegmentXZ(const glm::vec2& point, const glm::vec2& a, const glm::vec2& b, double epsilon = 0.001) {
+    const glm::vec2 ab = b - a;
+    const glm::vec2 ap = point - a;
+    if (std::abs(cross2(ab, ap)) > epsilon) {
+        return false;
+    }
+    return glm::dot(point - a, point - b) <= epsilon;
+}
+
+bool pointInPolygonXZ(const glm::vec2& point, const std::vector<glm::vec2>& polygon) {
+    bool inside = false;
+    for (std::size_t i = 0, j = polygon.size() - 1u; i < polygon.size(); j = i++) {
+        const glm::vec2& a = polygon[i];
+        const glm::vec2& b = polygon[j];
+        const bool intersect = ((a.y > point.y) != (b.y > point.y)) &&
+            (point.x < ((b.x - a.x) * (point.y - a.y) / ((b.y - a.y) + 1.0e-5f) + a.x));
+        if (intersect) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+bool pointInOrOnPolygonXZ(const glm::vec2& point, const std::vector<glm::vec2>& polygon) {
+    for (std::size_t index = 0; index < polygon.size(); ++index) {
+        if (pointOnSegmentXZ(point, polygon[index], polygon[(index + 1u) % polygon.size()])) {
+            return true;
+        }
+    }
+    return pointInPolygonXZ(point, polygon);
 }
 
 std::optional<std::int64_t> findCounterValue(
@@ -330,6 +437,7 @@ void testEditorSessionWindowVisibilityHelpers() {
     assert(session.sceneHierarchyVisible);
     assert(session.inspectorWindowVisible);
     assert(session.profilerWindowVisible);
+    assert(session.navMeshWindowVisible);
 
     session.showAllWindows();
     assert(session.mainWindowVisible);
@@ -337,9 +445,11 @@ void testEditorSessionWindowVisibilityHelpers() {
     assert(session.sceneHierarchyVisible);
     assert(session.inspectorWindowVisible);
     assert(session.profilerWindowVisible);
+    assert(session.navMeshWindowVisible);
     assert(!session.sceneHierarchyFocusRequested);
     assert(!session.inspectorWindowFocusRequested);
     assert(!session.profilerWindowFocusRequested);
+    assert(!session.navMeshWindowFocusRequested);
 
     session.setToolWindowsVisible(false);
     assert(!session.anyToolWindowVisible());
@@ -349,10 +459,12 @@ void testEditorSessionWindowVisibilityHelpers() {
     assert(session.sceneHierarchyVisible);
     assert(session.inspectorWindowVisible);
     assert(session.profilerWindowVisible);
+    assert(session.navMeshWindowVisible);
 
     session.sceneHierarchyVisible = false;
     session.inspectorWindowVisible = true;
     session.profilerWindowVisible = false;
+    session.navMeshWindowVisible = false;
     session.suspendEditorUi();
     assert(!session.mainWindowVisible);
     assert(!session.sceneHierarchyVisible);
@@ -362,6 +474,7 @@ void testEditorSessionWindowVisibilityHelpers() {
     assert(!session.sceneHierarchyFocusRequested);
     assert(!session.inspectorWindowFocusRequested);
     assert(!session.profilerWindowFocusRequested);
+    assert(!session.navMeshWindowFocusRequested);
     assert(!session.textureBrowserFocusRequested);
 
     session.openMainWindow();
@@ -369,6 +482,7 @@ void testEditorSessionWindowVisibilityHelpers() {
     assert(!session.sceneHierarchyVisible);
     assert(session.inspectorWindowVisible);
     assert(!session.profilerWindowVisible);
+    assert(!session.navMeshWindowVisible);
 }
 
 void testEditorSessionImGuiSettingsRoundTrip() {
@@ -376,6 +490,8 @@ void testEditorSessionImGuiSettingsRoundTrip() {
     session.sceneHierarchyVisible = false;
     session.inspectorWindowVisible = false;
     session.profilerWindowVisible = true;
+    session.navMeshWindowVisible = false;
+    session.navMeshOverlayVisible = false;
     session.profilerFollowLatest = false;
 
     ImGui::CreateContext();
@@ -392,6 +508,8 @@ void testEditorSessionImGuiSettingsRoundTrip() {
     assert(ini.find("SceneHierarchyVisible=0") != std::string::npos);
     assert(ini.find("InspectorWindowVisible=0") != std::string::npos);
     assert(ini.find("ProfilerWindowVisible=1") != std::string::npos);
+    assert(ini.find("NavMeshWindowVisible=0") != std::string::npos);
+    assert(ini.find("NavMeshOverlayVisible=0") != std::string::npos);
     assert(ini.find("ProfilerFollowLatest=0") != std::string::npos);
     ImGui::DestroyContext();
 
@@ -399,6 +517,8 @@ void testEditorSessionImGuiSettingsRoundTrip() {
     restored.sceneHierarchyVisible = true;
     restored.inspectorWindowVisible = true;
     restored.profilerWindowVisible = false;
+    restored.navMeshWindowVisible = true;
+    restored.navMeshOverlayVisible = true;
     restored.profilerFollowLatest = true;
 
     ImGui::CreateContext();
@@ -408,8 +528,442 @@ void testEditorSessionImGuiSettingsRoundTrip() {
     assert(!restored.sceneHierarchyVisible);
     assert(!restored.inspectorWindowVisible);
     assert(restored.profilerWindowVisible);
+    assert(!restored.navMeshWindowVisible);
+    assert(!restored.navMeshOverlayVisible);
     assert(!restored.profilerFollowLatest);
     ImGui::DestroyContext();
+}
+
+void testNavigationAssetRoundTrip() {
+    core::NavMeshAsset asset{};
+    asset.sourceTagOverrides.push_back(core::NavSourceTagOverride{"Root/Ground", core::NavSourceTag::Walkable});
+    asset.polygons.push_back(core::NavPolygon{
+        1,
+        0.0f,
+        {
+            glm::vec2(-1.0f, -1.0f),
+            glm::vec2(1.0f, -1.0f),
+            glm::vec2(1.0f, 1.0f),
+            glm::vec2(-1.0f, 1.0f),
+        }
+    });
+    asset.links.push_back(core::NavLink{
+        7,
+        1,
+        2,
+        glm::vec3(0.0f, 0.0f, 0.0f),
+        glm::vec3(0.0f, 3.0f, 0.0f),
+        true
+    });
+
+    const std::string serialized = core::serializeNavMeshAsset(asset);
+    core::NavMeshAsset parsed{};
+    std::string error{};
+    assert(core::parseNavMeshAsset(serialized, parsed, &error));
+    assert(error.empty());
+    assert(parsed.version == 1);
+    assert(parsed.sourceTagOverrides.size() == 1u);
+    assert(parsed.sourceTagOverrides[0].stableId == "Root/Ground");
+    assert(parsed.sourceTagOverrides[0].tag == core::NavSourceTag::Walkable);
+    assert(parsed.polygons.size() == 1u);
+    assert(parsed.polygons[0].id == 1);
+    assert(parsed.polygons[0].verticesXZ.size() == 4u);
+    assert(parsed.links.size() == 1u);
+    assert(parsed.links[0].id == 7);
+    assert(parsed.links[0].bidirectional);
+}
+
+void testNavigationBakeBuildsMultiLevelPolygonsAndBlocksOnlyOverlappingLayers() {
+    core::World world;
+    core::TransformSystem transformSystem;
+    core::TaskScheduler scheduler = makeScheduler();
+
+    const core::EntityId ground = world.createEntity();
+    world.transforms.emplace(ground, core::TransformComponent{});
+    world.navSources.emplace(ground, core::NavSourceComponent{"Ground", core::NavSourceTag::Walkable, core::NavSourceTag::Walkable});
+    world.navSourceGeometry.emplace(ground, core::NavSourceGeometryComponent{std::make_shared<render::Mesh>(makeHorizontalQuadMesh(-5.0f, 5.0f, -5.0f, 5.0f, 0.0f))});
+    world.markTransformsDirty(ground);
+
+    const core::EntityId blocker = world.createEntity();
+    world.transforms.emplace(blocker, core::TransformComponent{});
+    world.navSources.emplace(blocker, core::NavSourceComponent{"Blocker", core::NavSourceTag::Blocking, core::NavSourceTag::Blocking});
+    world.navSourceGeometry.emplace(blocker, core::NavSourceGeometryComponent{std::make_shared<render::Mesh>(makeBoxVertexMesh(glm::vec3(-1.0f, 0.0f, -1.0f), glm::vec3(1.0f, 1.5f, 1.0f)))});
+    world.markTransformsDirty(blocker);
+
+    const core::EntityId upper = world.createEntity();
+    world.transforms.emplace(upper, core::TransformComponent{});
+    world.navSources.emplace(upper, core::NavSourceComponent{"Upper", core::NavSourceTag::Walkable, core::NavSourceTag::Walkable});
+    world.navSourceGeometry.emplace(upper, core::NavSourceGeometryComponent{std::make_shared<render::Mesh>(makeHorizontalQuadMesh(-1.0f, 1.0f, -1.0f, 1.0f, 3.0f))});
+    world.markTransformsDirty(upper);
+
+    const core::EntityId sloped = world.createEntity();
+    world.transforms.emplace(sloped, core::TransformComponent{});
+    world.navSources.emplace(sloped, core::NavSourceComponent{"Slope", core::NavSourceTag::Walkable, core::NavSourceTag::Walkable});
+    world.navSourceGeometry.emplace(sloped, core::NavSourceGeometryComponent{std::make_shared<render::Mesh>(makeSlopedTriangleMesh())});
+    world.markTransformsDirty(sloped);
+
+    transformSystem.update(world, scheduler, false);
+
+    core::NavigationRuntime runtime{};
+    core::NavigationSystem navigation;
+    std::string error{};
+    assert(navigation.generateFromTags(world, runtime, &error));
+    assert(error.empty());
+    assert(!runtime.asset.polygons.empty());
+
+    bool hasGroundLayer = false;
+    bool hasUpperLayer = false;
+    bool groundInsideBlocker = false;
+    bool upperInsideBlocker = false;
+    bool foundSlopeLayer = false;
+    for (const core::NavPolygon& polygon : runtime.asset.polygons) {
+        const glm::vec2 center = polygonCenterXZ(polygon);
+        if (nearlyEqual(polygon.elevationY, 0.0f, 0.15)) {
+            hasGroundLayer = true;
+            if (center.x > -1.0f && center.x < 1.0f && center.y > -1.0f && center.y < 1.0f) {
+                groundInsideBlocker = true;
+            }
+        }
+        if (nearlyEqual(polygon.elevationY, 3.0f, 0.15)) {
+            hasUpperLayer = true;
+            if (center.x > -1.0f && center.x < 1.0f && center.y > -1.0f && center.y < 1.0f) {
+                upperInsideBlocker = true;
+            }
+        }
+        if (polygon.elevationY > 0.2f && polygon.elevationY < 2.0f) {
+            foundSlopeLayer = true;
+        }
+    }
+
+    assert(hasGroundLayer);
+    assert(hasUpperLayer);
+    assert(!groundInsideBlocker);
+    assert(upperInsideBlocker);
+    assert(!foundSlopeLayer);
+}
+
+void testNavigationPathfindingUsesSameLayerFunnelAndExplicitLinks() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {glm::vec2(-1.0f, -1.0f), glm::vec2(0.0f, -1.0f), glm::vec2(0.0f, 1.0f), glm::vec2(-1.0f, 1.0f)}},
+        core::NavPolygon{2, 0.0f, {glm::vec2(0.0f, -1.0f), glm::vec2(1.0f, -1.0f), glm::vec2(1.0f, 1.0f), glm::vec2(0.0f, 1.0f)}},
+        core::NavPolygon{3, 0.0f, {glm::vec2(1.0f, -1.0f), glm::vec2(2.0f, -1.0f), glm::vec2(2.0f, 1.0f), glm::vec2(1.0f, 1.0f)}},
+    };
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId agentEntity = world.createEntity();
+    world.transforms.emplace(agentEntity, core::TransformComponent{glm::vec3(-0.75f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.navAgents.emplace(agentEntity, core::NavAgentComponent{});
+
+    assert(navigation.setAgentDestination(world, runtime, agentEntity, glm::vec3(1.75f, 0.0f, 0.0f)));
+    const core::NavAgentComponent& straightAgent = world.navAgents.get(agentEntity);
+    assert(straightAgent.pathCorners.size() == 1u);
+    assert(nearlyEqual(straightAgent.pathCorners.back().x, 1.75, 0.001));
+
+    runtime.asset.polygons = {
+        core::NavPolygon{4, 0.0f, {glm::vec2(0.0f, 0.0f), glm::vec2(2.0f, 0.0f), glm::vec2(2.0f, 2.0f), glm::vec2(0.0f, 2.0f)}},
+        core::NavPolygon{5, 0.0f, {glm::vec2(1.0f, 0.0f), glm::vec2(3.0f, 0.0f), glm::vec2(3.0f, 2.0f), glm::vec2(1.0f, 2.0f)}},
+    };
+    runtime.asset.links.clear();
+    assert(navigation.rebuildRuntime(runtime));
+    assert(!runtime.bakedCells.empty());
+
+    core::NavAgentComponent& overlapAgent = world.navAgents.get(agentEntity);
+    overlapAgent.pathCorners.clear();
+    overlapAgent.destination.reset();
+    overlapAgent.moving = false;
+    world.transforms.get(agentEntity).position = glm::vec3(2.5f, 0.0f, 1.0f);
+
+    assert(navigation.setAgentDestination(world, runtime, agentEntity, glm::vec3(1.5f, 0.0f, 1.0f)));
+    assert(!overlapAgent.pathCorners.empty());
+    assert(nearlyEqual(overlapAgent.pathCorners.back().x, 1.5, 0.001));
+    assert(nearlyEqual(overlapAgent.pathCorners.back().z, 1.0, 0.001));
+
+    runtime.asset.polygons = {
+        core::NavPolygon{6, 0.0f, {glm::vec2(1.0f, 0.0f), glm::vec2(3.0f, 0.0f), glm::vec2(3.0f, 2.0f), glm::vec2(1.0f, 2.0f)}},
+        core::NavPolygon{7, 0.0f, {glm::vec2(0.0f, 0.0f), glm::vec2(2.0f, 0.0f), glm::vec2(2.0f, 2.0f), glm::vec2(0.0f, 2.0f)}},
+    };
+    assert(navigation.rebuildRuntime(runtime));
+    overlapAgent.pathCorners.clear();
+    overlapAgent.destination.reset();
+    overlapAgent.moving = false;
+    world.transforms.get(agentEntity).position = glm::vec3(0.25f, 0.0f, 1.0f);
+
+    assert(navigation.setAgentDestination(world, runtime, agentEntity, glm::vec3(1.5f, 0.0f, 1.0f)));
+    assert(overlapAgent.pathCorners.size() == 1u);
+    assert(nearlyEqual(overlapAgent.pathCorners.front().x, 1.5, 0.001));
+    assert(nearlyEqual(overlapAgent.pathCorners.front().z, 1.0, 0.001));
+
+    overlapAgent.pathCorners.clear();
+    overlapAgent.destination.reset();
+    overlapAgent.moving = false;
+    world.transforms.get(agentEntity).position = glm::vec3(0.25f, 0.0f, 1.0f);
+    assert(navigation.setAgentDestination(world, runtime, agentEntity, glm::vec3(2.75f, 0.0f, 1.0f)));
+    assert(overlapAgent.pathCorners.size() == 1u);
+    assert(nearlyEqual(overlapAgent.pathCorners.front().x, 2.75, 0.001));
+    assert(nearlyEqual(overlapAgent.pathCorners.front().z, 1.0, 0.001));
+
+    runtime.asset.polygons = {
+        core::NavPolygon{10, 0.0f, {glm::vec2(0.0f, 0.0f), glm::vec2(1.0f, 0.0f), glm::vec2(1.0f, 1.0f), glm::vec2(0.0f, 1.0f)}},
+        core::NavPolygon{11, 3.0f, {glm::vec2(0.0f, 0.0f), glm::vec2(1.0f, 0.0f), glm::vec2(1.0f, 1.0f), glm::vec2(0.0f, 1.0f)}},
+    };
+    runtime.asset.links = {
+        core::NavLink{3, 10, 11, glm::vec3(0.5f, 0.0f, 0.5f), glm::vec3(0.5f, 3.0f, 0.5f), true}
+    };
+    assert(navigation.rebuildRuntime(runtime));
+    assert(!runtime.bakedCells.empty());
+
+    core::NavAgentComponent& linkedAgent = world.navAgents.get(agentEntity);
+    linkedAgent.pathCorners.clear();
+    linkedAgent.destination.reset();
+    linkedAgent.moving = false;
+    world.transforms.get(agentEntity).position = glm::vec3(0.25f, 0.0f, 0.25f);
+
+    assert(navigation.setAgentDestination(world, runtime, agentEntity, glm::vec3(0.75f, 3.0f, 0.75f)));
+    assert(linkedAgent.pathCorners.size() >= 3u);
+    assert(containsPoint3(linkedAgent.pathCorners, glm::vec3(0.5f, 0.0f, 0.5f)));
+    assert(containsPoint3(linkedAgent.pathCorners, glm::vec3(0.5f, 3.0f, 0.5f)));
+}
+
+bool pointInsideWalkableUnion(
+    const glm::vec3& point,
+    const std::vector<core::NavPolygon>& polygons
+) {
+    const glm::vec2 pointXZ(point.x, point.z);
+    for (const core::NavPolygon& polygon : polygons) {
+        if (std::abs(point.y - polygon.elevationY) > 0.1f) {
+            continue;
+        }
+        if (pointInOrOnPolygonXZ(pointXZ, polygon.verticesXZ)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool segmentInsidePolygons(
+    const glm::vec3& from,
+    const glm::vec3& to,
+    const std::vector<core::NavPolygon>& polygons
+) {
+    constexpr int kSamples = 20;
+    for (int i = 0; i <= kSamples; ++i) {
+        const float t = static_cast<float>(i) / static_cast<float>(kSamples);
+        const glm::vec3 point = from + t * (to - from);
+        if (!pointInsideWalkableUnion(point, polygons)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+double pathLength(const glm::vec3& start, const std::vector<glm::vec3>& corners) {
+    double total = 0.0;
+    glm::vec3 previous = start;
+    for (const glm::vec3& corner : corners) {
+        total += glm::distance(previous, corner);
+        previous = corner;
+    }
+    return total;
+}
+
+void testNavigationOverlapCorridorConstraint() {
+    // Two polygons form an L-shape connected only through a small overlap.
+    // A = tall rectangle on the left, B = wide rectangle on the top-right.
+    // The straight line from bottom-A to right-B would exit the walkable area,
+    // so the funnel must route through the overlap region.
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {glm::vec2(0.0f, 0.0f), glm::vec2(2.0f, 0.0f), glm::vec2(2.0f, 4.0f), glm::vec2(0.0f, 4.0f)}},
+        core::NavPolygon{2, 0.0f, {glm::vec2(1.0f, 3.0f), glm::vec2(5.0f, 3.0f), glm::vec2(5.0f, 5.0f), glm::vec2(1.0f, 5.0f)}},
+    };
+    assert(navigation.rebuildRuntime(runtime));
+    assert(!runtime.bakedCells.empty());
+
+    core::World world;
+    const core::EntityId agentEntity = world.createEntity();
+    world.transforms.emplace(agentEntity, core::TransformComponent{glm::vec3(0.5f, 0.0f, 0.5f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.navAgents.emplace(agentEntity, core::NavAgentComponent{});
+
+    assert(navigation.setAgentDestination(world, runtime, agentEntity, glm::vec3(4.0f, 0.0f, 4.0f)));
+    const core::NavAgentComponent& agent = world.navAgents.get(agentEntity);
+    assert(!agent.pathCorners.empty());
+
+    // Verify every path segment stays inside at least one polygon.
+    glm::vec3 previous = glm::vec3(0.5f, 0.0f, 0.5f);
+    for (const glm::vec3& corner : agent.pathCorners) {
+        assert(segmentInsidePolygons(previous, corner, runtime.asset.polygons));
+        previous = corner;
+    }
+}
+
+void testNavigationConcavePolygonStaysInsideWalkableSurface() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{
+            1,
+            0.0f,
+            {
+                glm::vec2(0.0f, 0.0f),
+                glm::vec2(4.0f, 0.0f),
+                glm::vec2(4.0f, 1.0f),
+                glm::vec2(1.0f, 1.0f),
+                glm::vec2(1.0f, 4.0f),
+                glm::vec2(0.0f, 4.0f),
+            }
+        }
+    };
+    assert(navigation.rebuildRuntime(runtime));
+    assert(runtime.bakedCells.size() > 1u);
+
+    core::World world;
+    const core::EntityId agentEntity = world.createEntity();
+    const glm::vec3 start(0.5f, 0.0f, 3.5f);
+    const glm::vec3 destination(3.5f, 0.0f, 0.5f);
+    world.transforms.emplace(agentEntity, core::TransformComponent{start, glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.navAgents.emplace(agentEntity, core::NavAgentComponent{});
+
+    assert(navigation.setAgentDestination(world, runtime, agentEntity, destination));
+    const core::NavAgentComponent& agent = world.navAgents.get(agentEntity);
+    assert(agent.pathCorners.size() >= 2u);
+
+    glm::vec3 previous = start;
+    for (const glm::vec3& corner : agent.pathCorners) {
+        assert(segmentInsidePolygons(previous, corner, runtime.asset.polygons));
+        previous = corner;
+    }
+}
+
+void testNavigationOverlapPrefersShortestStraightCorridor() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {glm::vec2(0.0f, 0.0f), glm::vec2(4.0f, 0.0f), glm::vec2(4.0f, 2.0f), glm::vec2(0.0f, 2.0f)}},
+        core::NavPolygon{2, 0.0f, {glm::vec2(2.0f, -1.0f), glm::vec2(6.0f, -1.0f), glm::vec2(6.0f, 1.0f), glm::vec2(2.0f, 1.0f)}},
+    };
+    assert(navigation.rebuildRuntime(runtime));
+    assert(!runtime.bakedCells.empty());
+
+    core::World world;
+    const core::EntityId agentEntity = world.createEntity();
+    const glm::vec3 start(0.5f, 0.0f, 1.5f);
+    const glm::vec3 destination(5.5f, 0.0f, -0.5f);
+    world.transforms.emplace(agentEntity, core::TransformComponent{start, glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.navAgents.emplace(agentEntity, core::NavAgentComponent{});
+
+    assert(navigation.setAgentDestination(world, runtime, agentEntity, destination));
+    const core::NavAgentComponent& agent = world.navAgents.get(agentEntity);
+    assert(agent.pathCorners.size() == 1u);
+    assert(segmentInsidePolygons(start, agent.pathCorners.front(), runtime.asset.polygons));
+    assert(nearlyEqual(pathLength(start, agent.pathCorners), glm::distance(start, destination), 0.001));
+}
+
+void testNavigationOverlapCandidateSelectionUsesMultiplyCoveredStartCell() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {glm::vec2(0.0f, 0.0f), glm::vec2(4.0f, 0.0f), glm::vec2(4.0f, 2.0f), glm::vec2(0.0f, 2.0f)}},
+        core::NavPolygon{2, 0.0f, {glm::vec2(2.0f, 0.0f), glm::vec2(6.0f, 0.0f), glm::vec2(6.0f, 2.0f), glm::vec2(2.0f, 2.0f)}},
+        core::NavPolygon{3, 0.0f, {glm::vec2(0.0f, 2.0f), glm::vec2(4.0f, 2.0f), glm::vec2(4.0f, 4.0f), glm::vec2(0.0f, 4.0f)}},
+    };
+    assert(navigation.rebuildRuntime(runtime));
+    assert(!runtime.bakedCells.empty());
+
+    core::World world;
+    const core::EntityId agentEntity = world.createEntity();
+    const glm::vec3 start(3.0f, 0.0f, 1.0f);
+    const glm::vec3 destination(1.0f, 0.0f, 3.0f);
+    world.transforms.emplace(agentEntity, core::TransformComponent{start, glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.navAgents.emplace(agentEntity, core::NavAgentComponent{});
+
+    assert(navigation.setAgentDestination(world, runtime, agentEntity, destination));
+    const core::NavAgentComponent& agent = world.navAgents.get(agentEntity);
+    assert(agent.pathCorners.size() == 1u);
+    assert(segmentInsidePolygons(start, agent.pathCorners.front(), runtime.asset.polygons));
+    assert(nearlyEqual(pathLength(start, agent.pathCorners), glm::distance(start, destination), 0.001));
+}
+
+void testNavigationRejectsSelfIntersectingPolygon() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{
+            1,
+            0.0f,
+            {
+                glm::vec2(0.0f, 0.0f),
+                glm::vec2(2.0f, 2.0f),
+                glm::vec2(0.0f, 2.0f),
+                glm::vec2(2.0f, 0.0f),
+            }
+        }
+    };
+
+    std::string error{};
+    assert(!navigation.rebuildRuntime(runtime, &error));
+    assert(error.find("Self-intersecting polygon geometry") != std::string::npos);
+}
+
+void testNavigationHitTestFindsProjectedNavPolygon() {
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {glm::vec2(-2.0f, -2.0f), glm::vec2(2.0f, -2.0f), glm::vec2(2.0f, 2.0f), glm::vec2(-2.0f, 2.0f)}}
+    };
+    core::NavigationSystem navigation;
+    assert(navigation.rebuildRuntime(runtime));
+
+    const render::CameraMatrices camera = core::computeCameraMatrices(core::CameraState{}, 100, 100);
+    const std::optional<core::NavHitResult> hit = navigation.hitTest(runtime, camera, 100, 100, 50, 50);
+    assert(hit.has_value());
+    assert(hit->polygonId == 1);
+    assert(nearlyEqual(hit->position.y, 0.0, 0.01));
+    assert(std::abs(hit->position.x) < 0.25f);
+    assert(std::abs(hit->position.z) < 0.25f);
+}
+
+void testNavigationAgentMovementRotatesAndRequestsWalkThenIdle() {
+    auto model = std::make_shared<render::GltfModelData>();
+    assert(render::loadGltfModel(assetPath("src/render/models/Adventurer.glb").string(), *model));
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    world.transforms.emplace(entity, core::TransformComponent{glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.animatedModels.emplace(entity, core::AnimatedModelComponent{model});
+    world.navAgents.emplace(entity, core::NavAgentComponent{2.0f, 360.0f, 0.05f});
+    world.locomotion.emplace(entity, core::LocomotionComponent{
+        render::findDefaultAnimationClipIndex(*model),
+        findClipIndexContaining(*model, "Walk")
+    });
+
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {glm::vec2(-2.0f, -2.0f), glm::vec2(4.0f, -2.0f), glm::vec2(4.0f, 2.0f), glm::vec2(-2.0f, 2.0f)}}
+    };
+    core::NavigationSystem navigation;
+    assert(navigation.rebuildRuntime(runtime));
+    assert(navigation.setAgentDestination(world, runtime, entity, glm::vec3(2.0f, 0.0f, 0.0f)));
+
+    navigation.updateAgents(world, runtime, core::TimeContext{0.0f, 0.25f});
+    const core::TransformComponent& movedTransform = world.transforms.get(entity);
+    const core::AnimatedModelComponent& movedAnimation = world.animatedModels.get(entity);
+    assert(movedTransform.position.x > 0.0f);
+    assert(std::abs(movedTransform.rotationDeg.y) > 0.1f);
+    assert(movedAnimation.requestedClip == world.locomotion.get(entity).walkClip);
+
+    for (int step = 0; step < 12; ++step) {
+        navigation.updateAgents(world, runtime, core::TimeContext{0.0f, 0.25f});
+    }
+    navigation.updateAgents(world, runtime, core::TimeContext{0.0f, 0.1f});
+
+    const core::NavAgentComponent& finalAgent = world.navAgents.get(entity);
+    const core::AnimatedModelComponent& finalAnimation = world.animatedModels.get(entity);
+    assert(!finalAgent.moving);
+    assert(!finalAgent.destination.has_value());
+    assert(finalAnimation.requestedClip == world.locomotion.get(entity).idleClip);
 }
 
 void testTaskSchedulerParallelForCoversFullRange() {
@@ -2121,6 +2675,16 @@ int main() {
     testCommandHistoryUndoRedoAndMerge();
     testEditorSessionWindowVisibilityHelpers();
     testEditorSessionImGuiSettingsRoundTrip();
+    testNavigationAssetRoundTrip();
+    testNavigationBakeBuildsMultiLevelPolygonsAndBlocksOnlyOverlappingLayers();
+    testNavigationPathfindingUsesSameLayerFunnelAndExplicitLinks();
+    testNavigationOverlapCorridorConstraint();
+    testNavigationConcavePolygonStaysInsideWalkableSurface();
+    testNavigationOverlapPrefersShortestStraightCorridor();
+    testNavigationOverlapCandidateSelectionUsesMultiplyCoveredStartCell();
+    testNavigationRejectsSelfIntersectingPolygon();
+    testNavigationHitTestFindsProjectedNavPolygon();
+    testNavigationAgentMovementRotatesAndRequestsWalkThenIdle();
     testTaskSchedulerParallelForCoversFullRange();
     testTaskSchedulerWaitCompletesScheduledGroup();
     testTaskSchedulerAsyncHandleDeliversResult();

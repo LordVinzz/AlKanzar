@@ -4,6 +4,7 @@ namespace core {
 
 SceneBlueprint SceneRegistry::defaultScene() const {
     SceneBlueprint blueprint{};
+    blueprint.navMeshAssetPath = "navmeshes/DefaultScene.navmesh";
     blueprint.models = {
         ModelInstanceBlueprint{
             "Character",

@@ -34,6 +34,10 @@ public:
         renderables.remove(entity);
         animatedModels.remove(entity);
         skinnedRenderables.remove(entity);
+        navSources.remove(entity);
+        navSourceGeometry.remove(entity);
+        navAgents.remove(entity);
+        locomotion.remove(entity);
         pointLights.remove(entity);
         spotLights.remove(entity);
         if (entity.index < transformCache_.size()) {
@@ -61,6 +65,10 @@ public:
         renderables.clear();
         animatedModels.clear();
         skinnedRenderables.clear();
+        navSources.clear();
+        navSourceGeometry.clear();
+        navAgents.clear();
+        locomotion.clear();
         pointLights.clear();
         spotLights.clear();
         transformCache_.clear();
@@ -190,6 +198,10 @@ public:
     ComponentStore<RenderableComponent> renderables{};
     ComponentStore<AnimatedModelComponent> animatedModels{};
     ComponentStore<SkinnedRenderableComponent> skinnedRenderables{};
+    ComponentStore<NavSourceComponent> navSources{};
+    ComponentStore<NavSourceGeometryComponent> navSourceGeometry{};
+    ComponentStore<NavAgentComponent> navAgents{};
+    ComponentStore<LocomotionComponent> locomotion{};
     ComponentStore<PointLightComponent> pointLights{};
     ComponentStore<SpotLightComponent> spotLights{};
     std::vector<TransformCacheEntry> transformCache_{};

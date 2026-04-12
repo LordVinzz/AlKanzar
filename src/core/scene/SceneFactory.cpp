@@ -399,6 +399,7 @@ bool SceneFactory::buildScene(
     auto createRenderableEntity = [&world](
         const std::string& name,
         const TransformComponent& transform,
+        const render::Mesh& meshData,
         const render::Bounds3& bounds,
         render::MeshHandle mesh,
         MaterialHandle material,
@@ -410,6 +411,7 @@ bool SceneFactory::buildScene(
         world.bounds.emplace(entity, BoundsComponent{bounds});
         world.visibilities.emplace(entity, VisibilityComponent{true});
         world.renderables.emplace(entity, RenderableComponent{mesh, material, layer});
+        world.navSourceGeometry.emplace(entity, NavSourceGeometryComponent{std::make_shared<render::Mesh>(meshData)});
         world.markTransformsDirty(entity);
         return entity;
     };
@@ -417,6 +419,7 @@ bool SceneFactory::buildScene(
     createRenderableEntity(
         "Ground",
         TransformComponent{},
+        groundMesh,
         computeMeshBounds(groundMesh),
         groundMeshHandle,
         groundMaterial,
@@ -425,6 +428,7 @@ bool SceneFactory::buildScene(
     createRenderableEntity(
         "Wall A",
         TransformComponent{glm::vec3(-blueprint.wallOffset, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)},
+        wallAMesh,
         computeMeshBounds(wallAMesh),
         wallAMeshHandle,
         wallRockMaterial,
@@ -433,6 +437,7 @@ bool SceneFactory::buildScene(
     createRenderableEntity(
         "Wall B",
         TransformComponent{glm::vec3(blueprint.wallOffset, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)},
+        wallBMesh,
         computeMeshBounds(wallBMesh),
         wallBMeshHandle,
         wallWoodMaterial,
@@ -441,6 +446,7 @@ bool SceneFactory::buildScene(
     createRenderableEntity(
         "Frustum Test Box",
         TransformComponent{glm::vec3(-9.5f, 0.75f, -14.0f), glm::vec3(0.0f), glm::vec3(1.0f)},
+        frustumTestBoxMesh,
         computeMeshBounds(frustumTestBoxMesh),
         frustumTestBoxMeshHandle,
         wallWoodMaterial,
@@ -449,6 +455,7 @@ bool SceneFactory::buildScene(
     createRenderableEntity(
         "Occlusion Test Box",
         TransformComponent{glm::vec3(-3.0f, 0.75f, -8.5f), glm::vec3(0.0f), glm::vec3(1.0f)},
+        occlusionTestBoxMesh,
         computeMeshBounds(occlusionTestBoxMesh),
         occlusionTestBoxMeshHandle,
         wallRockMaterial,
@@ -534,6 +541,7 @@ bool SceneFactory::buildScene(
             world.bounds.emplace(sectionEntity, BoundsComponent{computeMeshBounds(section.mesh)});
             world.visibilities.emplace(sectionEntity, VisibilityComponent{true});
             world.renderables.emplace(sectionEntity, RenderableComponent{meshHandle, materialHandle, modelBlueprint.layer});
+            world.navSourceGeometry.emplace(sectionEntity, NavSourceGeometryComponent{std::make_shared<render::Mesh>(section.mesh)});
             if (section.skinIndex >= 0 && modelAsset->animated()) {
                 world.skinnedRenderables.emplace(sectionEntity, SkinnedRenderableComponent{
                     rootEntity,

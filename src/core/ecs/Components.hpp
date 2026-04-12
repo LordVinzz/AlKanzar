@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,7 @@
 #include "Entity.hpp"
 #include "core/lighting/MaterialLibrary.hpp"
 #include "render/engine/RenderTypes.hpp"
+#include "render/resources/Geometry.hpp"
 
 namespace render {
 struct GltfModelData;
@@ -75,6 +77,36 @@ struct SkinnedRenderableComponent {
     int skinIndex{-1};
     int nodeIndex{-1};
     int sectionIndex{-1};
+};
+
+enum class NavSourceTag {
+    Walkable = 0,
+    Blocking,
+    Ignored,
+};
+
+struct NavSourceComponent {
+    std::string stableId{};
+    NavSourceTag defaultTag{NavSourceTag::Ignored};
+    NavSourceTag effectiveTag{NavSourceTag::Ignored};
+};
+
+struct NavSourceGeometryComponent {
+    std::shared_ptr<render::Mesh> mesh{};
+};
+
+struct NavAgentComponent {
+    float moveSpeed{2.2f};
+    float turnSpeedDeg{540.0f};
+    float arrivalRadius{0.12f};
+    std::vector<glm::vec3> pathCorners{};
+    std::optional<glm::vec3> destination{};
+    bool moving{false};
+};
+
+struct LocomotionComponent {
+    int idleClip{-1};
+    int walkClip{-1};
 };
 
 struct PointLightComponent {

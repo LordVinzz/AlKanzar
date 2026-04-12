@@ -9,12 +9,7 @@ namespace core {
 
 namespace {
 
-struct Ray {
-    glm::vec3 origin{0.0f};
-    glm::vec3 direction{0.0f, 0.0f, -1.0f};
-};
-
-bool intersectRaySphere(const Ray& ray, const glm::vec3& center, float radius, float& outT) {
+bool intersectRaySphere(const ViewportRay& ray, const glm::vec3& center, float radius, float& outT) {
     const glm::vec3 offset = ray.origin - center;
     const float a = glm::dot(ray.direction, ray.direction);
     const float b = 2.0f * glm::dot(offset, ray.direction);
@@ -38,7 +33,7 @@ bool intersectRaySphere(const Ray& ray, const glm::vec3& center, float radius, f
     return false;
 }
 
-bool intersectRayAabb(const Ray& ray, const render::Bounds3& bounds, float& outT) {
+bool intersectRayAabb(const ViewportRay& ray, const render::Bounds3& bounds, float& outT) {
     float tMin = 0.0f;
     float tMax = std::numeric_limits<float>::max();
 
@@ -73,15 +68,13 @@ bool intersectRayAabb(const Ray& ray, const render::Bounds3& bounds, float& outT
 
 }  // namespace
 
-std::optional<EntityId> PickingSystem::pick(
-    const FrameSceneData& frame,
+std::optional<ViewportRay> makeViewportRay(
     const render::CameraMatrices& camera,
     int viewportWidth,
     int viewportHeight,
     int mouseX,
-    int mouseY,
-    bool includeLights
-) const {
+    int mouseY
+) {
     if (viewportWidth <= 0 || viewportHeight <= 0) {
         return std::nullopt;
     }
@@ -100,7 +93,28 @@ std::optional<EntityId> PickingSystem::pick(
         return std::nullopt;
     }
 
-    const Ray ray{nearWorld, glm::normalize(direction)};
+    return ViewportRay{nearWorld, glm::normalize(direction)};
+}
+
+std::optional<EntityId> PickingSystem::pick(
+    const FrameSceneData& frame,
+    const render::CameraMatrices& camera,
+    int viewportWidth,
+    int viewportHeight,
+    int mouseX,
+    int mouseY,
+    bool includeLights
+) const {
+    const std::optional<ViewportRay> ray = makeViewportRay(
+        camera,
+        viewportWidth,
+        viewportHeight,
+        mouseX,
+        mouseY
+    );
+    if (!ray.has_value()) {
+        return std::nullopt;
+    }
     bool hit = false;
     float bestT = std::numeric_limits<float>::max();
     EntityId bestEntity{};
@@ -111,7 +125,7 @@ std::optional<EntityId> PickingSystem::pick(
         }
 
         float tHit = 0.0f;
-        if (!intersectRayAabb(ray, renderable.worldBounds, tHit)) {
+        if (!intersectRayAabb(*ray, renderable.worldBounds, tHit)) {
             continue;
         }
         if (tHit < bestT) {
@@ -132,7 +146,7 @@ std::optional<EntityId> PickingSystem::pick(
             }
 
             float tHit = 0.0f;
-            if (!intersectRaySphere(ray, sphereCenter, sphereRadius, tHit)) {
+            if (!intersectRaySphere(*ray, sphereCenter, sphereRadius, tHit)) {
                 continue;
             }
             if (tHit < bestT) {

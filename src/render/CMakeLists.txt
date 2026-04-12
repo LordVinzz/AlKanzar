@@ -89,6 +89,12 @@ file(GLOB_RECURSE TEXTURE_FILES
     ${TEXTURE_SOURCE_DIR}/*
 )
 
+set(NAVMESH_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../assets/navmeshes)
+set(NAVMESH_OUTPUT_DIR ${CMAKE_BINARY_DIR}/navmeshes)
+file(GLOB NAVMESH_FILES
+    ${NAVMESH_SOURCE_DIR}/*
+)
+
 add_custom_target(copy_models ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory ${MODEL_OUTPUT_DIR}
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MODEL_FILES} ${MODEL_OUTPUT_DIR}
@@ -103,7 +109,14 @@ add_custom_target(copy_textures ALL
     COMMENT "Copying textures to build/textures"
 )
 
-add_dependencies(alkanzar_render copy_shaders copy_models copy_textures)
+add_custom_target(copy_navmeshes ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${NAVMESH_OUTPUT_DIR}
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${NAVMESH_SOURCE_DIR} ${NAVMESH_OUTPUT_DIR}
+    DEPENDS ${NAVMESH_FILES}
+    COMMENT "Copying navmeshes to build/navmeshes"
+)
+
+add_dependencies(alkanzar_render copy_shaders copy_models copy_textures copy_navmeshes)
 
 target_include_directories(alkanzar_render
     PUBLIC

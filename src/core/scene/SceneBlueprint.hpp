@@ -53,6 +53,7 @@ struct SceneBlueprint {
     float wallOffset{3.0f};
     float wallLength{5.0f};
     float wallThickness{0.5f};
+    std::string navMeshAssetPath{};
     std::vector<ModelInstanceBlueprint> models{};
     std::vector<PointLightBlueprint> pointLights{};
     std::vector<SpotLightBlueprint> spotLights{};

@@ -205,6 +205,10 @@ void Application::run() {
                 logFrameStageBoundary("end", "State Update", frameIndex, "main");
             }
         }
+        {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Navigation Update");
+            services_.navigationSystem.updateAgents(services_.world, services_.navigation, services_.time);
+        }
 
         {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Animation Update");
@@ -299,6 +303,8 @@ void Application::run() {
             }
         }
 
+        services_.navigationSystem.syncFrame(services_.world, services_.navigation, services_.frame);
+
         const render::CameraMatrices camera = computeCameraMatrices(
             services_.camera,
             services_.renderer.width(),
@@ -309,6 +315,7 @@ void Application::run() {
             services_.shadowDebugCascade,
             services_.showLightDebug,
             currentMode_ == AppMode::Editor,
+            currentMode_ == AppMode::Editor && services_.editorSession.navMeshOverlayVisible,
         };
         {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Render Frame");
@@ -485,7 +492,7 @@ void Application::bindEventHandlers() {
         services_.shadowDebugCascade = std::max(0, services_.shadowDebugCascade + event.delta);
     });
     services_.events.subscribe<ViewportClickedEvent>([this](const ViewportClickedEvent& event) {
-        if (currentMode_ != AppMode::Editor || services_.renderer.wantsMouse()) {
+        if (services_.renderer.wantsMouse()) {
             return;
         }
         const render::CameraMatrices camera = computeCameraMatrices(
@@ -493,6 +500,52 @@ void Application::bindEventHandlers() {
             services_.renderer.width(),
             services_.renderer.height()
         );
+        const auto moveControlledAgent = [&]() {
+            if (services_.world.navAgents.entities().empty()) {
+                return false;
+            }
+            const std::optional<NavHitResult> hit = services_.navigationSystem.hitTest(
+                services_.navigation,
+                camera,
+                services_.renderer.width(),
+                services_.renderer.height(),
+                event.x,
+                event.y
+            );
+            if (!hit.has_value()) {
+                return false;
+            }
+            return services_.navigationSystem.setAgentDestination(
+                services_.world,
+                services_.navigation,
+                services_.world.navAgents.entities().front(),
+                hit->position
+            );
+        };
+
+        if (currentMode_ == AppMode::Gameplay) {
+            moveControlledAgent();
+            return;
+        }
+        if (currentMode_ != AppMode::Editor) {
+            return;
+        }
+        if (services_.navigation.editor.polygonCaptureActive) {
+            services_.navigationSystem.capturePolygonClick(
+                services_.navigation,
+                camera,
+                services_.renderer.width(),
+                services_.renderer.height(),
+                event.x,
+                event.y
+            );
+            return;
+        }
+        if (services_.navigation.editor.testMoveMode) {
+            moveControlledAgent();
+            return;
+        }
+
         services_.selection.set(services_.pickingSystem.pick(
             services_.frame,
             camera,
@@ -541,6 +594,14 @@ void Application::translateSdlEvent(const SDL_Event& event) {
                             services_.editorSession.profilerWindowFocusRequested =
                                 services_.editorSession.profilerWindowVisible;
                             break;
+                        case SDLK_n:
+                            setPersistedEditorSessionFlag(
+                                services_.editorSession.navMeshWindowVisible,
+                                !services_.editorSession.navMeshWindowVisible
+                            );
+                            services_.editorSession.navMeshWindowFocusRequested =
+                                services_.editorSession.navMeshWindowVisible;
+                            break;
                         case SDLK_s:
                             setPersistedEditorSessionFlag(
                                 services_.editorSession.sceneHierarchyVisible,
@@ -554,6 +615,7 @@ void Application::translateSdlEvent(const SDL_Event& event) {
                     }
 
                     if (event.key.keysym.sym == SDLK_i ||
+                        event.key.keysym.sym == SDLK_n ||
                         event.key.keysym.sym == SDLK_p ||
                         event.key.keysym.sym == SDLK_s) {
                         break;
@@ -631,7 +693,7 @@ void Application::translateSdlEvent(const SDL_Event& event) {
             services_.events.publish(ViewportWheelEvent{event.wheel.y});
             break;
         case SDL_MOUSEBUTTONDOWN:
-            if (event.button.button == SDL_BUTTON_LEFT && currentMode_ == AppMode::Editor) {
+            if (event.button.button == SDL_BUTTON_LEFT) {
                 services_.events.publish(ViewportClickedEvent{event.button.x, event.button.y});
             }
             if (event.button.button == SDL_BUTTON_MIDDLE) {

@@ -24,6 +24,9 @@ struct EditorSession {
     bool inspectorWindowFocusRequested{false};
     bool profilerWindowVisible{true};
     bool profilerWindowFocusRequested{false};
+    bool navMeshWindowVisible{true};
+    bool navMeshWindowFocusRequested{false};
+    bool navMeshOverlayVisible{true};
     bool profilerFollowLatest{true};
     int profilerSelectedFrame{0};
     int animationInspectorSkinIndex{0};
@@ -33,7 +36,7 @@ struct EditorSession {
     std::array<char, 128> animationSkeletonSearch{};
 
     [[nodiscard]] bool anyToolWindowVisible() const {
-        return sceneHierarchyVisible || inspectorWindowVisible || profilerWindowVisible;
+        return sceneHierarchyVisible || inspectorWindowVisible || profilerWindowVisible || navMeshWindowVisible;
     }
 
     void clearFocusRequests() {
@@ -42,15 +45,18 @@ struct EditorSession {
         sceneHierarchyFocusRequested = false;
         inspectorWindowFocusRequested = false;
         profilerWindowFocusRequested = false;
+        navMeshWindowFocusRequested = false;
     }
 
     void setToolWindowsVisible(bool visible) {
         sceneHierarchyVisible = visible;
         inspectorWindowVisible = visible;
         profilerWindowVisible = visible;
+        navMeshWindowVisible = visible;
         sceneHierarchyFocusRequested = false;
         inspectorWindowFocusRequested = false;
         profilerWindowFocusRequested = false;
+        navMeshWindowFocusRequested = false;
     }
 
     void ensureToolWindowsVisible() {
