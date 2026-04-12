@@ -358,6 +358,8 @@ bool SceneFactory::buildScene(
 
     render::Mesh wallAMesh;
     render::Mesh wallBMesh;
+    render::Mesh frustumTestBoxMesh;
+    render::Mesh occlusionTestBoxMesh;
     addBox(
         glm::vec3(-blueprint.wallThickness * 0.5f, 0.0f, -blueprint.wallLength),
         glm::vec3(blueprint.wallThickness * 0.5f, blueprint.wallHeight, blueprint.wallLength),
@@ -370,11 +372,26 @@ bool SceneFactory::buildScene(
         glm::vec4(1.0f),
         wallBMesh
     );
+    addBox(
+        glm::vec3(-0.75f, -0.75f, -0.75f),
+        glm::vec3(0.75f, 0.75f, 0.75f),
+        glm::vec4(1.0f),
+        frustumTestBoxMesh
+    );
+    addBox(
+        glm::vec3(-0.75f, -0.75f, -0.75f),
+        glm::vec3(0.75f, 0.75f, 0.75f),
+        glm::vec4(1.0f),
+        occlusionTestBoxMesh
+    );
 
     const render::MeshHandle groundMeshHandle = renderer.uploadMesh(groundMesh);
     const render::MeshHandle wallAMeshHandle = renderer.uploadMesh(wallAMesh);
     const render::MeshHandle wallBMeshHandle = renderer.uploadMesh(wallBMesh);
-    if (!groundMeshHandle.valid() || !wallAMeshHandle.valid() || !wallBMeshHandle.valid()) {
+    const render::MeshHandle frustumTestBoxMeshHandle = renderer.uploadMesh(frustumTestBoxMesh);
+    const render::MeshHandle occlusionTestBoxMeshHandle = renderer.uploadMesh(occlusionTestBoxMesh);
+    if (!groundMeshHandle.valid() || !wallAMeshHandle.valid() || !wallBMeshHandle.valid() ||
+        !frustumTestBoxMeshHandle.valid() || !occlusionTestBoxMeshHandle.valid()) {
         spdlog::error("SceneFactory: failed to upload procedural scene meshes");
         return false;
     }
@@ -419,6 +436,22 @@ bool SceneFactory::buildScene(
         computeMeshBounds(wallBMesh),
         wallBMeshHandle,
         wallWoodMaterial,
+        render::RenderLayer::Geometry
+    );
+    createRenderableEntity(
+        "Frustum Test Box",
+        TransformComponent{glm::vec3(-9.5f, 0.75f, -14.0f), glm::vec3(0.0f), glm::vec3(1.0f)},
+        computeMeshBounds(frustumTestBoxMesh),
+        frustumTestBoxMeshHandle,
+        wallWoodMaterial,
+        render::RenderLayer::Geometry
+    );
+    createRenderableEntity(
+        "Occlusion Test Box",
+        TransformComponent{glm::vec3(-3.0f, 0.75f, -8.5f), glm::vec3(0.0f), glm::vec3(1.0f)},
+        computeMeshBounds(occlusionTestBoxMesh),
+        occlusionTestBoxMeshHandle,
+        wallRockMaterial,
         render::RenderLayer::Geometry
     );
 

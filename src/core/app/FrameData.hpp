@@ -22,6 +22,7 @@ struct FrameRenderable {
     render::RenderLayer layer{render::RenderLayer::Geometry};
     render::Bounds3 localBounds{};
     render::Bounds3 worldBounds{};
+    bool hasWorldBounds{false};
     glm::mat4 modelMatrix{1.0f};
     bool visible{true};
     bool skinned{false};

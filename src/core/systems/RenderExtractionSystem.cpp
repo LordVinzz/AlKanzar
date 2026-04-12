@@ -193,11 +193,16 @@ void applyAnimatedRenderableState(
         frameRenderable.modelMatrix = world.transformCache_[skinned->animationOwner.index].worldMatrix;
     }
 
-    if (!computeConservativeSkinnedWorldBounds(*animated, *skinned, frameRenderable.modelMatrix, frameRenderable.worldBounds) &&
-        !computeSkinnedWorldBounds(*animated, *skinned, frameRenderable.modelMatrix, frameRenderable.worldBounds) &&
-        (entity.index >= world.transformCache_.size() || !world.transformCache_[entity.index].hasWorldBounds)) {
+    const bool conservativeBounds =
+        computeConservativeSkinnedWorldBounds(*animated, *skinned, frameRenderable.modelMatrix, frameRenderable.worldBounds);
+    const bool exactBounds =
+        !conservativeBounds && computeSkinnedWorldBounds(*animated, *skinned, frameRenderable.modelMatrix, frameRenderable.worldBounds);
+    if (conservativeBounds || exactBounds) {
+        frameRenderable.hasWorldBounds = true;
+    } else if (entity.index >= world.transformCache_.size() || !world.transformCache_[entity.index].hasWorldBounds) {
         // Fall back to the raw section bounds when skin data is unavailable.
         frameRenderable.worldBounds = transformBounds(frameRenderable.localBounds, frameRenderable.modelMatrix);
+        frameRenderable.hasWorldBounds = true;
     }
 
     if (skinned->skinIndex < 0 || skinned->skinIndex >= static_cast<int>(animated->skinJointMatrices.size())) {
@@ -390,8 +395,11 @@ void RenderExtractionSystem::extract(
                 ? world.bounds.get(entity).localBounds
                 : render::Bounds3{};
             if (cache != nullptr) {
-                frameRenderable.worldBounds = cache->worldBounds;
                 frameRenderable.modelMatrix = cache->worldMatrix;
+                frameRenderable.hasWorldBounds = cache->hasWorldBounds;
+                if (cache->hasWorldBounds) {
+                    frameRenderable.worldBounds = cache->worldBounds;
+                }
             }
             outFrame.renderables.push_back(std::move(frameRenderable));
         }
@@ -485,8 +493,11 @@ void RenderExtractionSystem::extract(
                         ? world.bounds.get(entity).localBounds
                         : render::Bounds3{};
                     if (cache != nullptr) {
-                        frameRenderable.worldBounds = cache->worldBounds;
                         frameRenderable.modelMatrix = cache->worldMatrix;
+                        frameRenderable.hasWorldBounds = cache->hasWorldBounds;
+                        if (cache->hasWorldBounds) {
+                            frameRenderable.worldBounds = cache->worldBounds;
+                        }
                     }
                     outFrame.renderables[index] = std::move(frameRenderable);
                 }
@@ -609,7 +620,7 @@ void RenderExtractionSystem::extract(
             continue;
         }
         outFrame.selection.worldBounds = renderable.worldBounds;
-        outFrame.selection.hasWorldBounds = true;
+        outFrame.selection.hasWorldBounds = renderable.hasWorldBounds;
         break;
     }
     if (!outFrame.selection.hasWorldBounds ||

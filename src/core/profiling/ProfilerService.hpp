@@ -68,6 +68,7 @@ struct ProfilerFrameSnapshot {
     std::vector<ProfilerScopeNode> cpuScopes{};
     std::vector<GpuPassSample> gpuPasses{};
     std::vector<ResourceMemoryEntry> resources{};
+    std::vector<render::FrameCounterRecord> counters{};
 };
 
 struct ProfilerTraceFrame {
@@ -79,6 +80,7 @@ struct ProfilerTraceFrame {
     std::vector<ProfilerRecordedScope> cpuScopes{};
     std::vector<GpuPassSample> gpuPasses{};
     std::vector<ResourceMemoryEntry> resources{};
+    std::vector<render::FrameCounterRecord> counters{};
 };
 
 struct ProfilerTraceCapture {
@@ -158,7 +160,10 @@ public:
     void startCapture();
     void stopCapture();
     void beginFrame();
-    void endFrame(const std::vector<render::ResourceMemoryRecord>& resources);
+    void endFrame(
+        const std::vector<render::ResourceMemoryRecord>& resources,
+        const std::vector<render::FrameCounterRecord>& counters = {}
+    );
     void recordProfilerUiTime(double durationMs);
 
     [[nodiscard]] CpuScopeHandle scopedCpu(const char* name);
@@ -203,6 +208,7 @@ private:
         std::vector<ProfilerRecordedScope> cpuScopes{};
         std::vector<RawGpuPass> gpuPasses{};
         std::vector<render::ResourceMemoryRecord> resources{};
+        std::vector<render::FrameCounterRecord> counters{};
     };
 
     struct RawGpuFrame {

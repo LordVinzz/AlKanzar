@@ -11,6 +11,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -75,6 +76,46 @@ std::string entityLabel(const EngineServices& services, EntityId entity) {
         return name->value;
     }
     return "Entity " + std::to_string(entity.index);
+}
+
+void sortCounterPointers(std::vector<const render::FrameCounterRecord*>& counters) {
+    std::sort(counters.begin(), counters.end(), [](const render::FrameCounterRecord* lhs, const render::FrameCounterRecord* rhs) {
+        if (lhs->name != rhs->name) {
+            return lhs->name < rhs->name;
+        }
+        return lhs->value < rhs->value;
+    });
+}
+
+void drawProfilerCounterTable(
+    const char* tableId,
+    const std::vector<const render::FrameCounterRecord*>& counters
+) {
+    if (!ImGui::BeginTable(
+            tableId,
+            2,
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp)) {
+        return;
+    }
+
+    ImGui::TableSetupColumn("Metric");
+    ImGui::TableSetupColumn("Value");
+    ImGui::TableHeadersRow();
+    for (const render::FrameCounterRecord* counter : counters) {
+        const std::string_view name(counter->name);
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextUnformatted(counter->name.c_str());
+        ImGui::TableSetColumnIndex(1);
+        if (name.ends_with(" Enabled")) {
+            ImGui::TextUnformatted(counter->value != 0 ? "Enabled" : "Disabled");
+        } else if (name.ends_with(" Dirty")) {
+            ImGui::TextUnformatted(counter->value != 0 ? "Dirty" : "Clean");
+        } else {
+            ImGui::Text("%lld", static_cast<long long>(counter->value));
+        }
+    }
+    ImGui::EndTable();
 }
 
 std::string selectionLabel(const EngineServices& services) {
@@ -1066,6 +1107,69 @@ void drawProfilerWindow(EngineServices& services) {
     } else {
         ImGui::SameLine();
         ImGui::TextUnformatted("GPU Pending/Unavailable");
+    }
+
+    std::vector<const render::FrameCounterRecord*> frustumCounters{};
+    frustumCounters.reserve(selected->counters.size());
+    std::vector<const render::FrameCounterRecord*> occlusionCounters{};
+    occlusionCounters.reserve(selected->counters.size());
+    std::vector<const render::FrameCounterRecord*> runtimePolicyCounters{};
+    runtimePolicyCounters.reserve(selected->counters.size());
+    std::vector<const render::FrameCounterRecord*> generalCounters{};
+    generalCounters.reserve(selected->counters.size());
+
+    const auto counterValue = [&](std::string_view group, std::string_view name) -> std::optional<std::int64_t> {
+        const auto it = std::find_if(selected->counters.begin(), selected->counters.end(), [group, name](const render::FrameCounterRecord& counter) {
+            return counter.group == group && counter.name == name;
+        });
+        if (it == selected->counters.end()) {
+            return std::nullopt;
+        }
+        return it->value;
+    };
+    for (const render::FrameCounterRecord& counter : selected->counters) {
+        if (counter.group == "Frustum Culling") {
+            frustumCounters.push_back(&counter);
+        } else if (counter.group == "Occlusion Culling") {
+            occlusionCounters.push_back(&counter);
+        } else if (counter.group == "Runtime Policy") {
+            runtimePolicyCounters.push_back(&counter);
+        } else {
+            generalCounters.push_back(&counter);
+        }
+    }
+
+    sortCounterPointers(frustumCounters);
+    sortCounterPointers(occlusionCounters);
+    sortCounterPointers(runtimePolicyCounters);
+    sortCounterPointers(generalCounters);
+
+    if (!frustumCounters.empty()) {
+        ImGui::SeparatorText("Frustum Culling");
+        drawProfilerCounterTable("ProfilerFrustumCounters", frustumCounters);
+
+        const double boundsTested = static_cast<double>(counterValue("Frustum Culling", "Bounds Tested").value_or(0));
+        const double culled = static_cast<double>(counterValue("Frustum Culling", "Culled").value_or(0));
+        const double cullRatio = boundsTested > 0.0 ? culled / boundsTested : 0.0;
+        ImGui::Text("Cull Ratio: %.2f%%", cullRatio * 100.0);
+    }
+
+    if (!occlusionCounters.empty()) {
+        ImGui::SeparatorText("Occlusion Culling");
+        drawProfilerCounterTable("ProfilerOcclusionCounters", occlusionCounters);
+
+        const double candidates = static_cast<double>(counterValue("Occlusion Culling", "Candidates").value_or(0));
+        const double occluded = static_cast<double>(counterValue("Occlusion Culling", "Occluded").value_or(0));
+        const double occlusionRatio = candidates > 0.0 ? occluded / candidates : 0.0;
+        ImGui::Text("Occlusion Ratio: %.2f%%", occlusionRatio * 100.0);
+    }
+    if (!runtimePolicyCounters.empty()) {
+        ImGui::SeparatorText("Runtime Policy");
+        drawProfilerCounterTable("ProfilerRuntimePolicyCounters", runtimePolicyCounters);
+    }
+    if (!generalCounters.empty()) {
+        ImGui::SeparatorText("Metrics");
+        drawProfilerCounterTable("ProfilerGeneralCounters", generalCounters);
     }
 
     ImGui::SeparatorText("CPU Call Tree");

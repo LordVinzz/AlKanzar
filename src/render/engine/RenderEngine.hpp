@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/vec3.hpp>
@@ -17,6 +18,7 @@
 #include "render/resources/Material.hpp"
 #include "render/resources/MeshBuffer.hpp"
 #include "render/resources/Profiling.hpp"
+#include "render/resources/ShaderProgram.hpp"
 #include "render/pipeline/RenderLightPipeline.hpp"
 #include "RenderResourceRegistry.hpp"
 #include "RenderSceneView.hpp"
@@ -28,6 +30,7 @@ namespace render {
 
 class IRenderPath;
 class SceneOverlayRenderer;
+struct RenderPathContext;
 
 }  // namespace render
 
@@ -69,14 +72,29 @@ public:
     [[nodiscard]] std::vector<std::shared_ptr<Texture>> textureCatalog(TextureSemantic preferredSemantic) const;
     [[nodiscard]] void* texturePreviewId(const std::shared_ptr<Texture>& texture);
     [[nodiscard]] std::vector<ResourceMemoryRecord> profilingResources() const;
+    [[nodiscard]] std::vector<FrameCounterRecord> profilingCounters() const;
     [[nodiscard]] int width() const { return width_; }
     [[nodiscard]] int height() const { return height_; }
 
 private:
+    struct OcclusionQueryState {
+        GLuint queryId{0};
+        bool queryInFlight{false};
+        bool hasLastResult{false};
+        bool lastVisible{true};
+        std::uint8_t occludedFrameStreak{0};
+        std::uint64_t lastFrameTouched{0};
+    };
+
     bool initImGui();
     void shutdownImGui();
+    bool initializeOcclusionResources(const std::string& shaderRoot);
     MeshBuffer* createSceneMesh(const Mesh& mesh);
     void uploadJointMatrices(const std::vector<glm::mat4>& jointMatrices);
+    void pollOcclusionQueries();
+    void cleanupOcclusionStates();
+    void issueOcclusionQueries(const RenderPathContext& context);
+    void recycleOcclusionQuery(GLuint queryId);
 
     SDL_Window* window_{nullptr};
     SDL_GLContext glContext_{nullptr};
@@ -94,11 +112,20 @@ private:
     SceneGeometryRenderer geometryRenderer_{};
     RenderLightPipeline lightPipeline_{};
     RenderSceneView sceneView_{};
+    FrustumCullStats latestFrustumCullStats_{};
+    OcclusionCullStats latestOcclusionCullStats_{};
     RenderLightPipeline::FrameState lightFrame_{};
     ShadowSystem shadowSystem_{};
     std::unique_ptr<SceneOverlayRenderer> overlayRenderer_{};
     std::unique_ptr<IRenderPath> renderPath_{};
     core::ProfilerService* profiler_{nullptr};
+    ShaderProgram occlusionShader_{};
+    GLint occlusionMvpLocation_{-1};
+    GLint occlusionColorLocation_{-1};
+    MeshBuffer occlusionBoundsMesh_{};
+    std::unordered_map<core::EntityId, OcclusionQueryState> occlusionQueryStates_{};
+    std::vector<GLuint> freeOcclusionQueries_{};
+    std::uint64_t renderFrameNumber_{0};
 
     glm::vec3 directionalLightDirection_{0.0f, -1.0f, 0.0f};
     glm::vec3 directionalLightColor_{0.0f};

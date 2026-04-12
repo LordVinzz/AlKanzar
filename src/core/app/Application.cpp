@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <iterator>
 #include <string_view>
 
+#include "RuntimePolicy.hpp"
 #include "core/editor/EditorSessionImGuiSettings.hpp"
 #include "core/scene/Camera.hpp"
 #include <spdlog/spdlog.h>
@@ -16,32 +18,11 @@ namespace {
 constexpr double kMaxFrameRateHz = 60.0;
 constexpr double kTargetFrameSeconds = 1.0 / kMaxFrameRateHz;
 
-struct FrameStageDiagnosticsConfig {
-    bool enableParallelTransformUpdate{false};
-    bool forceSequentialTransformUpdate{false};
-    bool enableParallelLightUpdate{false};
-    bool forceSequentialLightUpdate{false};
-    bool forceSequentialRenderExtraction{false};
-    bool enableParallelRenderExtraction{false};
-    bool enableParallelSceneView{false};
-    bool forceSequentialSceneView{false};
+struct FrameDiagnosticsConfig {
     bool disableProfilerFrame{false};
     bool disableSchedulerProfiling{false};
     bool logFrameStages{false};
     std::uint64_t logFrameStageLimit{8u};
-
-    [[nodiscard]] bool hasRuntimeOverrides() const {
-        return enableParallelTransformUpdate ||
-            forceSequentialTransformUpdate ||
-            enableParallelLightUpdate ||
-            forceSequentialLightUpdate ||
-            forceSequentialRenderExtraction ||
-            enableParallelRenderExtraction ||
-            enableParallelSceneView ||
-            forceSequentialSceneView ||
-            disableProfilerFrame ||
-            disableSchedulerProfiling;
-    }
 
     [[nodiscard]] bool shouldLogFrameStage(std::uint64_t frameIndex) const {
         return logFrameStages && frameIndex < logFrameStageLimit;
@@ -80,21 +61,28 @@ std::uint64_t readUintEnv(const char* name, std::uint64_t fallback) {
     return static_cast<std::uint64_t>(parsed);
 }
 
-FrameStageDiagnosticsConfig loadFrameStageDiagnosticsConfig() {
-    FrameStageDiagnosticsConfig config{};
-    config.enableParallelTransformUpdate = readBoolEnv("ALKANZAR_ENABLE_PARALLEL_TRANSFORM_UPDATE");
-    config.forceSequentialTransformUpdate = readBoolEnv("ALKANZAR_FORCE_SEQUENTIAL_TRANSFORM_UPDATE");
-    config.enableParallelLightUpdate = readBoolEnv("ALKANZAR_ENABLE_PARALLEL_LIGHT_UPDATE");
-    config.forceSequentialLightUpdate = readBoolEnv("ALKANZAR_FORCE_SEQUENTIAL_LIGHT_UPDATE");
-    config.forceSequentialRenderExtraction = readBoolEnv("ALKANZAR_FORCE_SEQUENTIAL_RENDER_EXTRACTION");
-    config.enableParallelRenderExtraction = readBoolEnv("ALKANZAR_ENABLE_PARALLEL_RENDER_EXTRACTION");
-    config.enableParallelSceneView = readBoolEnv("ALKANZAR_ENABLE_PARALLEL_SCENE_VIEW");
-    config.forceSequentialSceneView = readBoolEnv("ALKANZAR_FORCE_SEQUENTIAL_SCENE_VIEW");
+FrameDiagnosticsConfig loadFrameDiagnosticsConfig() {
+    FrameDiagnosticsConfig config{};
     config.disableProfilerFrame = readBoolEnv("ALKANZAR_DISABLE_PROFILER_FRAME");
     config.disableSchedulerProfiling = readBoolEnv("ALKANZAR_DISABLE_SCHEDULER_PROFILING");
     config.logFrameStages = readBoolEnv("ALKANZAR_LOG_FRAME_STAGES");
     config.logFrameStageLimit = readUintEnv("ALKANZAR_LOG_FRAME_STAGE_LIMIT", 8u);
     return config;
+}
+
+RuntimePolicyFrameContext buildRuntimePolicyFrameContext(const EngineServices& services) {
+    return RuntimePolicyFrameContext{
+        services.scheduler.workerCount(),
+        services.world.transformsDirty(),
+        services.world.lightsDirty(),
+        services.world.transforms.size(),
+        services.world.bounds.size(),
+        services.world.renderables.size(),
+        services.world.parents.size(),
+        services.world.pointLights.size(),
+        services.world.spotLights.size(),
+        services.world.lightVolumes.size(),
+    };
 }
 
 void logFrameStageBoundary(
@@ -150,25 +138,14 @@ Application::Application(int width, int height)
 
 void Application::run() {
     transitionTo(AppMode::Bootstrap);
-    const FrameStageDiagnosticsConfig diagnostics = loadFrameStageDiagnosticsConfig();
-    const bool useParallelTransformUpdate =
-        diagnostics.enableParallelTransformUpdate && !diagnostics.forceSequentialTransformUpdate;
-    const bool useParallelLightUpdate =
-        diagnostics.enableParallelLightUpdate && !diagnostics.forceSequentialLightUpdate;
-    const bool useParallelRenderExtraction =
-        diagnostics.enableParallelRenderExtraction && !diagnostics.forceSequentialRenderExtraction;
-    const bool useParallelSceneView =
-        diagnostics.enableParallelSceneView && !diagnostics.forceSequentialSceneView;
+    const FrameDiagnosticsConfig diagnostics = loadFrameDiagnosticsConfig();
+    RuntimePolicy runtimePolicy;
     if (diagnostics.disableSchedulerProfiling) {
         services_.scheduler.setProfiler(nullptr);
     }
     spdlog::info(
         "Application: frame diagnostics "
-        "(transform={}, light={}, extraction={}, scene_view={}, profiler_frame={}, scheduler_profiling={}, frame_logs={}, log_limit={})",
-        useParallelTransformUpdate ? "parallel" : "sequential",
-        useParallelLightUpdate ? "parallel" : "sequential",
-        useParallelRenderExtraction ? "parallel" : "sequential",
-        useParallelSceneView ? "parallel" : "sequential",
+        "(runtime_policy=engine-managed, profiler_frame={}, scheduler_profiling={}, frame_logs={}, log_limit={})",
         diagnostics.disableProfilerFrame ? "disabled" : "enabled",
         diagnostics.disableSchedulerProfiling ? "disabled" : "enabled",
         diagnostics.logFrameStages,
@@ -209,6 +186,7 @@ void Application::run() {
         services_.time.deltaSeconds = static_cast<float>(secondsBetween(previousCounter, currentCounter, performanceFrequency));
         services_.time.totalSeconds = static_cast<float>(secondsBetween(startupCounter, currentCounter, performanceFrequency));
         previousCounter = currentCounter;
+        const RuntimePolicyDecision& runtimeDecision = runtimePolicy.evaluate(buildRuntimePolicyFrameContext(services_));
 
         if (diagnostics.shouldLogFrameStage(frameIndex)) {
             logFrameStageBoundary("begin", "Begin ImGui Frame", frameIndex, "main");
@@ -245,16 +223,16 @@ void Application::run() {
                     "begin",
                     "Transform Update",
                     frameIndex,
-                    useParallelTransformUpdate ? "parallel" : "sequential"
+                    runtimeDecision.parallelTransformUpdate ? "parallel" : "sequential"
                 );
             }
-            services_.transformSystem.update(services_.world, services_.scheduler, useParallelTransformUpdate);
+            services_.transformSystem.update(services_.world, services_.scheduler, runtimeDecision.parallelTransformUpdate);
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary(
                     "end",
                     "Transform Update",
                     frameIndex,
-                    useParallelTransformUpdate ? "parallel" : "sequential"
+                    runtimeDecision.parallelTransformUpdate ? "parallel" : "sequential"
                 );
             }
         }
@@ -265,21 +243,21 @@ void Application::run() {
                     "begin",
                     "Light Update",
                     frameIndex,
-                    useParallelLightUpdate ? "parallel" : "sequential"
+                    runtimeDecision.parallelLightUpdate ? "parallel" : "sequential"
                 );
             }
             services_.lightSystem.update(
                 services_.world,
                 services_.time,
                 services_.scheduler,
-                useParallelLightUpdate
+                runtimeDecision.parallelLightUpdate
             );
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary(
                     "end",
                     "Light Update",
                     frameIndex,
-                    useParallelLightUpdate ? "parallel" : "sequential"
+                    runtimeDecision.parallelLightUpdate ? "parallel" : "sequential"
                 );
             }
         }
@@ -290,7 +268,7 @@ void Application::run() {
                     "begin",
                     "Render Extraction",
                     frameIndex,
-                    useParallelRenderExtraction ? "parallel" : "sequential"
+                    runtimeDecision.parallelRenderExtraction ? "parallel" : "sequential"
                 );
             }
             services_.renderExtractionSystem.extract(
@@ -299,14 +277,14 @@ void Application::run() {
                 services_.selection,
                 services_.frame,
                 services_.scheduler,
-                useParallelRenderExtraction
+                runtimeDecision.parallelRenderExtraction
             );
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary(
                     "end",
                     "Render Extraction",
                     frameIndex,
-                    useParallelRenderExtraction ? "parallel" : "sequential"
+                    runtimeDecision.parallelRenderExtraction ? "parallel" : "sequential"
                 );
             }
         }
@@ -339,7 +317,7 @@ void Application::run() {
                     "begin",
                     "Render Frame",
                     frameIndex,
-                    useParallelSceneView ? "parallel" : "sequential"
+                    runtimeDecision.parallelSceneView ? "parallel" : "sequential"
                 );
             }
             services_.renderer.renderFrame(
@@ -347,14 +325,14 @@ void Application::run() {
                 camera,
                 renderOptions,
                 services_.scheduler,
-                useParallelSceneView
+                runtimeDecision.parallelSceneView
             );
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary(
                     "end",
                     "Render Frame",
                     frameIndex,
-                    useParallelSceneView ? "parallel" : "sequential"
+                    runtimeDecision.parallelSceneView ? "parallel" : "sequential"
                 );
             }
         }
@@ -384,6 +362,17 @@ void Application::run() {
         const std::vector<render::ResourceMemoryRecord> profilingResources =
             diagnostics.disableProfilerFrame ? std::vector<render::ResourceMemoryRecord>{}
                                              : services_.renderer.profilingResources();
+        std::vector<render::FrameCounterRecord> profilingCounters =
+            diagnostics.disableProfilerFrame ? std::vector<render::FrameCounterRecord>{}
+                                             : services_.renderer.profilingCounters();
+        if (!diagnostics.disableProfilerFrame) {
+            std::vector<render::FrameCounterRecord> runtimeCounters = runtimePolicy.profilingCounters();
+            profilingCounters.insert(
+                profilingCounters.end(),
+                std::make_move_iterator(runtimeCounters.begin()),
+                std::make_move_iterator(runtimeCounters.end())
+            );
+        }
         if (diagnostics.shouldLogFrameStage(frameIndex)) {
             logFrameStageBoundary("end", "Collect Profiling Resources", frameIndex, diagnostics.disableProfilerFrame ? "disabled" : "enabled");
         }
@@ -391,7 +380,7 @@ void Application::run() {
             logFrameStageBoundary("begin", "Profiler End Frame", frameIndex, diagnostics.disableProfilerFrame ? "disabled" : "enabled");
         }
         if (!diagnostics.disableProfilerFrame) {
-            services_.profiler.endFrame(profilingResources);
+            services_.profiler.endFrame(profilingResources, profilingCounters);
         }
         if (diagnostics.shouldLogFrameStage(frameIndex)) {
             logFrameStageBoundary("end", "Profiler End Frame", frameIndex, diagnostics.disableProfilerFrame ? "disabled" : "enabled");

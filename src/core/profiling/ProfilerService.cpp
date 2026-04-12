@@ -186,6 +186,7 @@ ProfilerFrameSnapshot ProfilerService::buildSnapshot(const RawFrameData& rawFram
     snapshot.cpuScopes = buildProfilerScopeTree(rawFrame.cpuScopes, mainThreadId);
     snapshot.gpuPasses.reserve(rawFrame.gpuPasses.size());
     snapshot.resources.reserve(rawFrame.resources.size());
+    snapshot.counters = rawFrame.counters;
 
     snapshot.gpuComplete = !rawFrame.gpuPasses.empty();
     for (const RawGpuPass& pass : rawFrame.gpuPasses) {
@@ -225,6 +226,7 @@ ProfilerTraceFrame ProfilerService::buildTraceFrame(const RawFrameData& rawFrame
     traceFrame.cpuScopes = rawFrame.cpuScopes;
     traceFrame.gpuPasses.reserve(rawFrame.gpuPasses.size());
     traceFrame.resources.reserve(rawFrame.resources.size());
+    traceFrame.counters = rawFrame.counters;
 
     for (const RawGpuPass& pass : rawFrame.gpuPasses) {
         traceFrame.gpuPasses.push_back(GpuPassSample{
@@ -388,7 +390,10 @@ void ProfilerService::beginFrame() {
     currentGpuPasses_.reserve(config_.maxGpuScopesPerFrame);
 }
 
-void ProfilerService::endFrame(const std::vector<render::ResourceMemoryRecord>& resources) {
+void ProfilerService::endFrame(
+    const std::vector<render::ResourceMemoryRecord>& resources,
+    const std::vector<render::FrameCounterRecord>& counters
+) {
     if (!currentFrameActive_.load(std::memory_order_acquire)) {
         return;
     }
@@ -405,6 +410,7 @@ void ProfilerService::endFrame(const std::vector<render::ResourceMemoryRecord>& 
     rawFrame.endNs = nowNs();
     rawFrame.profilerUiMs = currentProfilerUiMs_;
     rawFrame.resources = resources;
+    rawFrame.counters = counters;
     rawFrame.gpuPasses.reserve(currentGpuPasses_.size());
     const std::uint64_t frameSerial = cpuFrameSerial_.load(std::memory_order_acquire);
 

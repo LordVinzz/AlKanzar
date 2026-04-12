@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <variant>
 
 #include <glm/ext/matrix_clip_space.hpp>
@@ -20,6 +21,7 @@
 #include <imgui.h>
 
 #include "core/animation/AnimationSystem.hpp"
+#include "core/app/RuntimePolicy.hpp"
 #include "core/editor/CommandHistory.hpp"
 #include "core/editor/EditorSession.hpp"
 #include "core/editor/EditorSessionImGuiSettings.hpp"
@@ -104,6 +106,35 @@ bool boundsContain(const render::Bounds3& outer, const render::Bounds3& inner, d
 
 core::TaskScheduler makeScheduler(std::size_t workerCount = 2u) {
     return core::TaskScheduler(core::TaskSchedulerConfig{workerCount});
+}
+
+render::CameraMatrices makeOrthoCamera(
+    float left = -1.0f,
+    float right = 1.0f,
+    float bottom = -1.0f,
+    float top = 1.0f,
+    float nearPlane = 0.1f,
+    float farPlane = 10.0f
+) {
+    render::CameraMatrices camera{};
+    camera.projection = glm::ortho(left, right, bottom, top, nearPlane, farPlane);
+    camera.invProjection = glm::inverse(camera.projection);
+    camera.view = glm::mat4(1.0f);
+    return camera;
+}
+
+std::optional<std::int64_t> findCounterValue(
+    const std::vector<render::FrameCounterRecord>& counters,
+    std::string_view name,
+    std::string_view group = {}
+) {
+    const auto it = std::find_if(counters.begin(), counters.end(), [name, group](const render::FrameCounterRecord& counter) {
+        return counter.name == name && counter.group == group;
+    });
+    if (it == counters.end()) {
+        return std::nullopt;
+    }
+    return it->value;
 }
 
 bool containsNonMainThreadScope(const std::vector<core::ProfilerScopeNode>& scopes) {
@@ -1120,6 +1151,7 @@ void testRenderSceneViewBuildResolvesRenderableSelection() {
         render::RenderLayer::Geometry,
         render::Bounds3{glm::vec3(0.0f), glm::vec3(1.0f)},
         render::Bounds3{glm::vec3(2.0f), glm::vec3(3.0f)},
+        true,
         glm::mat4(1.0f),
         true
     });
@@ -1133,6 +1165,8 @@ void testRenderSceneViewBuildResolvesRenderableSelection() {
         scheduler
     );
     assert(scene.objects.size() == 1u);
+    assert(scene.objects[0].hasWorldBounds);
+    assert(scene.objects[0].frustumVisible);
     assert(scene.selection.kind == render::RenderSelectionKind::Renderable);
     assert(scene.selection.index == 0);
     assert(scene.selection.transformMatrix[0][0] == 2.0f);
@@ -1164,6 +1198,244 @@ void testRenderSceneViewBuildResolvesNodeSelection() {
     assert(scene.selection.worldBounds.min.x == 1.0f);
     assert(scene.selection.worldBounds.max.x == 4.0f);
     assert(scene.selection.transformMatrix[0][0] == 3.0f);
+}
+
+void testCameraFrustumCullingUpdatesVisibilityAndStats() {
+    core::TaskScheduler scheduler = makeScheduler();
+    core::FrameSceneData frame;
+    frame.renderables.push_back(core::FrameRenderable{
+        core::EntityId{1, 1},
+        render::MeshHandle{0},
+        {},
+        {},
+        render::RenderLayer::Geometry,
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
+        true,
+        glm::mat4(1.0f),
+        true
+    });
+    frame.renderables.push_back(core::FrameRenderable{
+        core::EntityId{2, 1},
+        render::MeshHandle{1},
+        {},
+        {},
+        render::RenderLayer::Geometry,
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
+        render::Bounds3{glm::vec3(1.5f, -0.25f, -2.0f), glm::vec3(2.0f, 0.25f, -1.5f)},
+        true,
+        glm::mat4(1.0f),
+        true
+    });
+    frame.renderables.push_back(core::FrameRenderable{
+        core::EntityId{3, 1},
+        render::MeshHandle{2},
+        {},
+        {},
+        render::RenderLayer::Geometry,
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
+        true,
+        glm::mat4(1.0f),
+        false
+    });
+    frame.renderables.push_back(core::FrameRenderable{
+        core::EntityId{4, 1},
+        render::MeshHandle{3},
+        {},
+        {},
+        render::RenderLayer::Geometry,
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
+        render::Bounds3{},
+        false,
+        glm::mat4(1.0f),
+        true
+    });
+
+    render::RenderSceneView scene = render::buildRenderSceneView(
+        frame,
+        std::vector<const render::MeshBuffer*>{nullptr, nullptr, nullptr, nullptr},
+        scheduler
+    );
+    render::applyCameraFrustumCulling(scene, makeOrthoCamera());
+
+    assert(scene.objects.size() == 4u);
+    assert(scene.objects[0].frustumVisible);
+    assert(!scene.objects[1].frustumVisible);
+    assert(scene.objects[2].frustumVisible);
+    assert(scene.objects[3].frustumVisible);
+    assert(scene.frustumCullStats.totalRenderables == 4u);
+    assert(scene.frustumCullStats.visibilityHidden == 1u);
+    assert(scene.frustumCullStats.boundsTested == 2u);
+    assert(scene.frustumCullStats.frustumPassed == 1u);
+    assert(scene.frustumCullStats.frustumCulled == 1u);
+    assert(scene.frustumCullStats.noBoundsBypass == 1u);
+    assert(scene.frustumCullStats.mainPassVisible == 2u);
+}
+
+void testCameraFrustumCullingRejectsFarPlaneBounds() {
+    core::TaskScheduler scheduler = makeScheduler();
+    core::FrameSceneData frame;
+    frame.renderables.push_back(core::FrameRenderable{
+        core::EntityId{5, 1},
+        render::MeshHandle{0},
+        {},
+        {},
+        render::RenderLayer::Geometry,
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
+        render::Bounds3{glm::vec3(-0.25f, -0.25f, -12.0f), glm::vec3(0.25f, 0.25f, -11.5f)},
+        true,
+        glm::mat4(1.0f),
+        true
+    });
+
+    render::RenderSceneView scene = render::buildRenderSceneView(
+        frame,
+        std::vector<const render::MeshBuffer*>{nullptr},
+        scheduler
+    );
+    render::applyCameraFrustumCulling(scene, makeOrthoCamera());
+
+    assert(scene.frustumCullStats.boundsTested == 1u);
+    assert(scene.frustumCullStats.frustumCulled == 1u);
+    assert(!scene.objects[0].frustumVisible);
+}
+
+void testOcclusionCullingUsesLastKnownResultsAndWarmup() {
+    core::TaskScheduler scheduler = makeScheduler();
+    core::FrameSceneData frame;
+    frame.renderables.push_back(core::FrameRenderable{
+        core::EntityId{10, 1},
+        render::MeshHandle{0},
+        {},
+        {},
+        render::RenderLayer::Geometry,
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
+        true,
+        glm::mat4(1.0f),
+        true
+    });
+    frame.renderables.push_back(core::FrameRenderable{
+        core::EntityId{11, 1},
+        render::MeshHandle{1},
+        {},
+        {},
+        render::RenderLayer::Geometry,
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
+        render::Bounds3{glm::vec3(0.1f, 0.1f, -2.0f), glm::vec3(0.6f, 0.6f, -1.5f)},
+        true,
+        glm::mat4(1.0f),
+        true
+    });
+    frame.renderables.push_back(core::FrameRenderable{
+        core::EntityId{12, 1},
+        render::MeshHandle{2},
+        {},
+        {},
+        render::RenderLayer::Geometry,
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
+        render::Bounds3{},
+        false,
+        glm::mat4(1.0f),
+        true
+    });
+    frame.renderables.push_back(core::FrameRenderable{
+        core::EntityId{13, 1},
+        render::MeshHandle{3},
+        {},
+        {},
+        render::RenderLayer::Ground,
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
+        true,
+        glm::mat4(1.0f),
+        true
+    });
+
+    render::RenderSceneView scene = render::buildRenderSceneView(
+        frame,
+        std::vector<const render::MeshBuffer*>{nullptr, nullptr, nullptr, nullptr},
+        scheduler
+    );
+    render::applyCameraFrustumCulling(scene, makeOrthoCamera());
+    std::unordered_map<core::EntityId, render::OcclusionCullCacheState> cache{
+        {core::EntityId{11, 1}, render::OcclusionCullCacheState{true, true, false, 1}},
+    };
+    render::applyLastKnownOcclusionVisibility(scene, cache);
+
+    assert(scene.objects[0].occlusionVisible);
+    assert(scene.objects[1].occlusionVisible);
+    assert(scene.objects[2].occlusionVisible);
+    assert(scene.objects[3].occlusionVisible);
+    assert(scene.occlusionCullStats.candidates == 2u);
+    assert(scene.occlusionCullStats.visible == 2u);
+    assert(scene.occlusionCullStats.occluded == 0u);
+    assert(scene.occlusionCullStats.warmupVisible == 1u);
+    assert(scene.occlusionCullStats.pendingReused == 1u);
+    assert(scene.occlusionCullStats.noBoundsBypass == 1u);
+}
+
+void testOcclusionCullingHidesAfterConsecutiveOccludedResults() {
+    core::TaskScheduler scheduler = makeScheduler();
+    core::FrameSceneData frame;
+    frame.renderables.push_back(core::FrameRenderable{
+        core::EntityId{15, 1},
+        render::MeshHandle{0},
+        {},
+        {},
+        render::RenderLayer::Geometry,
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
+        render::Bounds3{glm::vec3(-0.25f, -0.25f, -2.0f), glm::vec3(0.25f, 0.25f, -1.5f)},
+        true,
+        glm::mat4(1.0f),
+        true
+    });
+
+    render::RenderSceneView scene = render::buildRenderSceneView(
+        frame,
+        std::vector<const render::MeshBuffer*>{nullptr},
+        scheduler
+    );
+    render::applyCameraFrustumCulling(scene, makeOrthoCamera());
+    std::unordered_map<core::EntityId, render::OcclusionCullCacheState> cache{
+        {core::EntityId{15, 1}, render::OcclusionCullCacheState{false, true, false, 2}},
+    };
+    render::applyLastKnownOcclusionVisibility(scene, cache);
+
+    assert(!scene.objects[0].occlusionVisible);
+    assert(scene.occlusionCullStats.candidates == 1u);
+    assert(scene.occlusionCullStats.visible == 0u);
+    assert(scene.occlusionCullStats.occluded == 1u);
+}
+
+void testOcclusionCullingTreatsFrustumRejectedObjectsAsNonCandidates() {
+    core::TaskScheduler scheduler = makeScheduler();
+    core::FrameSceneData frame;
+    frame.renderables.push_back(core::FrameRenderable{
+        core::EntityId{14, 1},
+        render::MeshHandle{0},
+        {},
+        {},
+        render::RenderLayer::Geometry,
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
+        render::Bounds3{glm::vec3(2.0f, 2.0f, -2.0f), glm::vec3(2.5f, 2.5f, -1.5f)},
+        true,
+        glm::mat4(1.0f),
+        true
+    });
+
+    render::RenderSceneView scene = render::buildRenderSceneView(
+        frame,
+        std::vector<const render::MeshBuffer*>{nullptr},
+        scheduler
+    );
+    render::applyCameraFrustumCulling(scene, makeOrthoCamera());
+    render::applyLastKnownOcclusionVisibility(scene, {});
+
+    assert(!scene.objects[0].frustumVisible);
+    assert(scene.objects[0].occlusionVisible);
+    assert(scene.occlusionCullStats.candidates == 0u);
 }
 
 void runFramePreparationIterations(std::size_t workerCount) {
@@ -1242,6 +1514,10 @@ void runFramePreparationIterations(std::size_t workerCount) {
         assert(scene.objects.size() == 2u);
         assert(scene.objects[0].sourceIndex == 0);
         assert(scene.objects[1].sourceIndex == 1);
+        assert(frame.renderables[0].hasWorldBounds);
+        assert(frame.renderables[1].hasWorldBounds);
+        assert(scene.objects[0].hasWorldBounds);
+        assert(scene.objects[1].hasWorldBounds);
         assert(scene.lights.size() == 2u);
         assert(scene.lightVolumes.size() == 1u);
         assert(world.transformCache_[renderableA.index].valid);
@@ -1291,6 +1567,7 @@ void testPickingSystemCanIgnoreLights() {
         render::RenderLayer::Geometry,
         render::Bounds3{glm::vec3(0.0f)},
         render::Bounds3{glm::vec3(-0.25f, -0.25f, -6.0f), glm::vec3(0.25f, 0.25f, -4.0f)},
+        true,
         glm::mat4(1.0f),
         true
     });
@@ -1303,10 +1580,7 @@ void testPickingSystemCanIgnoreLights() {
         1.0f
     });
 
-    render::CameraMatrices camera{};
-    camera.projection = glm::ortho(-1.0f, 1.0f, -1.0f, 1.0f, 0.0f, 10.0f);
-    camera.invProjection = glm::inverse(camera.projection);
-    camera.view = glm::mat4(1.0f);
+    render::CameraMatrices camera = makeOrthoCamera(-1.0f, 1.0f, -1.0f, 1.0f, 0.0f, 10.0f);
 
     core::PickingSystem picking;
     const std::optional<core::EntityId> withLights = picking.pick(frame, camera, 100, 100, 50, 50, true);
@@ -1533,6 +1807,81 @@ void testProfilerServiceCapturesWorkerThreadScopes() {
     assert(containsNonMainThreadScope(snapshots[0]->cpuScopes));
 }
 
+void testRuntimePolicyEnablesHeavyWorkloadsAndUsesHysteresis() {
+    core::RuntimePolicy policy;
+    core::RuntimePolicyFrameContext context{};
+    context.workerCount = 4u;
+    context.transformsDirty = true;
+    context.lightsDirty = true;
+    context.transformCount = 512u;
+    context.boundsCount = 256u;
+    context.renderableCount = 640u;
+    context.parentCount = 256u;
+    context.pointLightCount = 48u;
+    context.spotLightCount = 16u;
+    context.lightVolumeCount = 8u;
+
+    const core::RuntimePolicyDecision& heavyDecision = policy.evaluate(context);
+    assert(heavyDecision.parallelTransformUpdate);
+    assert(heavyDecision.parallelLightUpdate);
+    assert(heavyDecision.parallelRenderExtraction);
+    assert(heavyDecision.parallelSceneView);
+
+    context.transformCount = 96u;
+    context.boundsCount = 64u;
+    context.renderableCount = 320u;
+    context.parentCount = 64u;
+    context.pointLightCount = 16u;
+    context.spotLightCount = 8u;
+    context.lightVolumeCount = 8u;
+
+    const core::RuntimePolicyDecision& mediumDecision = policy.evaluate(context);
+    assert(mediumDecision.parallelTransformUpdate);
+    assert(mediumDecision.parallelLightUpdate);
+    assert(mediumDecision.parallelRenderExtraction);
+    assert(mediumDecision.parallelSceneView);
+
+    context.transformCount = 32u;
+    context.boundsCount = 16u;
+    context.renderableCount = 96u;
+    context.parentCount = 16u;
+    context.pointLightCount = 4u;
+    context.spotLightCount = 0u;
+    context.lightVolumeCount = 2u;
+
+    const core::RuntimePolicyDecision& lowDecision = policy.evaluate(context);
+    assert(!lowDecision.parallelTransformUpdate);
+    assert(!lowDecision.parallelLightUpdate);
+    assert(!lowDecision.parallelRenderExtraction);
+    assert(!lowDecision.parallelSceneView);
+
+    const auto counters = policy.profilingCounters();
+    assert(findCounterValue(counters, "Transform Update Enabled", "Runtime Policy").value_or(-1) == 0);
+    assert(findCounterValue(counters, "Scene View Enabled", "Runtime Policy").value_or(-1) == 0);
+    assert(findCounterValue(counters, "Worker Threads", "Runtime Policy").value_or(-1) == 4);
+}
+
+void testRuntimePolicyDisablesParallelismWithoutEnoughWorkers() {
+    core::RuntimePolicy policy;
+    const core::RuntimePolicyDecision& decision = policy.evaluate(core::RuntimePolicyFrameContext{
+        1u,
+        true,
+        true,
+        2048u,
+        1024u,
+        2048u,
+        1024u,
+        256u,
+        128u,
+        32u,
+    });
+
+    assert(!decision.parallelTransformUpdate);
+    assert(!decision.parallelLightUpdate);
+    assert(!decision.parallelRenderExtraction);
+    assert(!decision.parallelSceneView);
+}
+
 void testProfilerServiceRetainsRawFramesForExport() {
     core::ProfilerConfig config{};
     config.maxFrames = 2u;
@@ -1553,9 +1902,26 @@ void testProfilerServiceRetainsRawFramesForExport() {
                 0u,
                 static_cast<std::uint64_t>(1024u * (frame + 1))
             }
+        }, {
+            render::FrameCounterRecord{
+                "Culled",
+                frame == 2 ? 7 : 3,
+                "Frustum Culling"
+            },
+            render::FrameCounterRecord{
+                "Occluded",
+                frame == 2 ? 4 : 1,
+                "Occlusion Culling"
+            }
         });
     }
     profiler.waitForWorkerIdle();
+
+    const auto snapshots = profiler.snapshots();
+    assert(snapshots.size() == 2u);
+    assert(snapshots.back()->counters.size() == 2u);
+    assert(findCounterValue(snapshots.back()->counters, "Culled", "Frustum Culling").value_or(-1) == 7);
+    assert(findCounterValue(snapshots.back()->counters, "Occluded", "Occlusion Culling").value_or(-1) == 4);
 
     const core::ProfilerTraceCapture capture = profiler.rawCapture();
     assert(capture.mainThreadId == profiler.mainThreadId());
@@ -1566,6 +1932,9 @@ void testProfilerServiceRetainsRawFramesForExport() {
     assert(capture.frames.back().cpuScopes[0].name == "Third");
     assert(capture.frames.back().resources.size() == 1u);
     assert(capture.frames.back().resources[0].gpuBytes == 3072u);
+    assert(capture.frames.back().counters.size() == 2u);
+    assert(findCounterValue(capture.frames.back().counters, "Culled", "Frustum Culling").value_or(-1) == 7);
+    assert(findCounterValue(capture.frames.back().counters, "Occluded", "Occlusion Culling").value_or(-1) == 4);
     assert(capture.frames.back().endNs >= capture.frames.back().startNs);
 }
 
@@ -1591,6 +1960,10 @@ void testPerfettoTraceExporterWritesTrackEventsAndCounters() {
             },
             {
                 core::ResourceMemoryEntry{"Shadow Atlas", "Texture", 0u, 4096u},
+            },
+            {
+                render::FrameCounterRecord{"Culled", 3, "Frustum Culling"},
+                render::FrameCounterRecord{"Occluded", 2, "Occlusion Culling"},
             }
         },
         core::ProfilerTraceFrame{
@@ -1608,6 +1981,10 @@ void testPerfettoTraceExporterWritesTrackEventsAndCounters() {
             {
                 core::ResourceMemoryEntry{"Shadow Atlas", "Texture", 0u, 8192u},
                 core::ResourceMemoryEntry{"Mesh Cache", "CPU", 1024u, 0u},
+            },
+            {
+                render::FrameCounterRecord{"Culled", 1, "Frustum Culling"},
+                render::FrameCounterRecord{"Occluded", 0, "Occlusion Culling"},
             }
         }
     };
@@ -1627,6 +2004,11 @@ void testPerfettoTraceExporterWritesTrackEventsAndCounters() {
     assert(bytes.find("Main") != std::string::npos);
     assert(bytes.find("T88") != std::string::npos);
     assert(bytes.find("GPU Timed Passes") != std::string::npos);
+    assert(bytes.find("Metrics") != std::string::npos);
+    assert(bytes.find("Frustum Culling") != std::string::npos);
+    assert(bytes.find("Occlusion Culling") != std::string::npos);
+    assert(bytes.find("Culled") != std::string::npos);
+    assert(bytes.find("Occluded") != std::string::npos);
     assert(bytes.find("Texture: Shadow Atlas (GPU)") != std::string::npos);
     assert(bytes.find("CPU: Mesh Cache (RAM)") != std::string::npos);
 
@@ -1652,10 +2034,10 @@ void testPerfettoTraceExporterWritesTrackEventsAndCounters() {
         }
     }
 
-    assert(descriptorCount >= 9u);
+    assert(descriptorCount >= 12u);
     assert(sliceBeginCount == 6u);
     assert(sliceEndCount == 6u);
-    assert(counterCount == 8u);
+    assert(counterCount == 12u);
 
     std::filesystem::remove(outputPath, removeError);
 }
@@ -1759,6 +2141,11 @@ int main() {
     testRenderSceneViewBuildResolvesRenderableSelection();
     testRenderSceneViewBuildResolvesLightSelection();
     testRenderSceneViewBuildResolvesNodeSelection();
+    testCameraFrustumCullingUpdatesVisibilityAndStats();
+    testCameraFrustumCullingRejectsFarPlaneBounds();
+    testOcclusionCullingUsesLastKnownResultsAndWarmup();
+    testOcclusionCullingHidesAfterConsecutiveOccludedResults();
+    testOcclusionCullingTreatsFrustumRejectedObjectsAsNonCandidates();
     testFramePreparationRemainsStableWithSingleWorker();
     testFramePreparationRemainsStableWithMultipleWorkers();
     testActiveLightSelectionDeduplicatesAcrossVolumes();
@@ -1770,6 +2157,8 @@ int main() {
     testProfilerServiceStartStopAndFrameRingBuffer();
     testProfilerServiceDropsExcessCpuScopes();
     testProfilerServiceCapturesWorkerThreadScopes();
+    testRuntimePolicyEnablesHeavyWorkloadsAndUsesHysteresis();
+    testRuntimePolicyDisablesParallelismWithoutEnoughWorkers();
     testProfilerServiceRetainsRawFramesForExport();
     testPerfettoTraceExporterWritesTrackEventsAndCounters();
     testPerfettoTraceExporterFailsForInvalidOutputPath();

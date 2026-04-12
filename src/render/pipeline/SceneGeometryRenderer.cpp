@@ -140,7 +140,8 @@ void SceneGeometryRenderer::drawLayer(
 
     static const Material defaultMaterial{};
     for (const RenderSceneObjectView& object : scene.objects) {
-        if (object.layer != layer || !object.visible || object.mesh == nullptr || !object.mesh->valid()) {
+        if (object.layer != layer || !object.visible || !object.frustumVisible || !object.occlusionVisible ||
+            object.mesh == nullptr || !object.mesh->valid()) {
             continue;
         }
 

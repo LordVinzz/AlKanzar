@@ -26,6 +26,12 @@ struct ResourceMemoryRecord {
     std::uint64_t gpuBytes{0};
 };
 
+struct FrameCounterRecord {
+    std::string name{};
+    std::int64_t value{0};
+    std::string group{};
+};
+
 struct MeshBufferMemoryEstimate {
     std::uint64_t vertexBytes{0};
     std::uint64_t indexBytes{0};

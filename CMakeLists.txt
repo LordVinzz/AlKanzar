@@ -22,6 +22,7 @@ add_library(alkanzar_core STATIC
     src/core/animation/AnimationSystem.cpp
     src/core/app/AppState.cpp
     src/core/app/Application.cpp
+    src/core/app/RuntimePolicy.cpp
     src/core/editor/EditorSessionImGuiSettings.cpp
     src/core/scene/Camera.cpp
     src/core/scene/SceneFactory.cpp

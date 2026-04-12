@@ -26,6 +26,7 @@ enum class ProtoWireType : std::uint8_t {
 };
 
 enum class CounterUnit : std::uint64_t {
+    Unspecified = 0,
     TimeNs = 1,
     SizeBytes = 3,
 };
@@ -112,6 +113,18 @@ struct ResourceTrackKey {
     }
 };
 
+struct MetricTrackKey {
+    std::string group{};
+    std::string name{};
+
+    bool operator<(const MetricTrackKey& other) const {
+        if (group != other.group) {
+            return group < other.group;
+        }
+        return name < other.name;
+    }
+};
+
 std::string threadLabel(std::uint64_t threadId, std::uint64_t mainThreadId) {
     if (threadId == mainThreadId) {
         return "Main";
@@ -132,7 +145,9 @@ std::int64_t msToNs(double durationMs) {
 
 std::string encodeCounterDescriptor(CounterUnit unit) {
     ProtoWriter writer;
-    writer.addVarintField(3, static_cast<std::uint64_t>(unit));
+    if (unit != CounterUnit::Unspecified) {
+        writer.addVarintField(3, static_cast<std::uint64_t>(unit));
+    }
     return std::move(writer).finish();
 }
 
@@ -275,10 +290,13 @@ bool exportProfilerTraceCaptureToPerfetto(
     const std::uint64_t cpuRootTrackUuid = nextTrackUuid++;
     const std::uint64_t gpuRootTrackUuid = nextTrackUuid++;
     const std::uint64_t resourceRootTrackUuid = nextTrackUuid++;
+    const std::uint64_t metricsRootTrackUuid = nextTrackUuid++;
 
     std::map<std::uint64_t, std::uint64_t> threadTrackUuids{};
     std::map<std::string, std::uint64_t> gpuPassTrackUuids{};
     std::map<ResourceTrackKey, std::uint64_t> resourceTrackUuids{};
+    std::map<std::string, std::uint64_t> metricGroupTrackUuids{};
+    std::map<MetricTrackKey, std::uint64_t> metricTrackUuids{};
 
     for (const ProfilerTraceFrame& frame : capture.frames) {
         for (const ProfilerRecordedScope& scope : frame.cpuScopes) {
@@ -295,6 +313,12 @@ bool exportProfilerTraceCaptureToPerfetto(
                 resourceTrackUuids.try_emplace(ResourceTrackKey{resource.category, resource.name, true}, 0u);
             }
         }
+        for (const render::FrameCounterRecord& counter : frame.counters) {
+            if (!counter.group.empty()) {
+                metricGroupTrackUuids.try_emplace(counter.group, 0u);
+            }
+            metricTrackUuids.try_emplace(MetricTrackKey{counter.group, counter.name}, 0u);
+        }
     }
 
     for (auto& [threadId, uuid] : threadTrackUuids) {
@@ -309,6 +333,16 @@ bool exportProfilerTraceCaptureToPerfetto(
     }
 
     for (auto& [key, uuid] : resourceTrackUuids) {
+        (void)key;
+        uuid = nextTrackUuid++;
+    }
+
+    for (auto& [group, uuid] : metricGroupTrackUuids) {
+        (void)group;
+        uuid = nextTrackUuid++;
+    }
+
+    for (auto& [key, uuid] : metricTrackUuids) {
         (void)key;
         uuid = nextTrackUuid++;
     }
@@ -352,6 +386,17 @@ bool exportProfilerTraceCaptureToPerfetto(
         traceWriter,
         encodeTracePacket(
             encodeTrackDescriptor(TrackDescriptorSpec{resourceRootTrackUuid, 0u, "Resources", false, CounterUnit::TimeNs}),
+            60,
+            kSequenceId,
+            0u,
+            false,
+            false
+        )
+    );
+    addPacketToTrace(
+        traceWriter,
+        encodeTracePacket(
+            encodeTrackDescriptor(TrackDescriptorSpec{metricsRootTrackUuid, 0u, "Metrics", false, CounterUnit::TimeNs}),
             60,
             kSequenceId,
             0u,
@@ -422,6 +467,46 @@ bool exportProfilerTraceCaptureToPerfetto(
                     resourceTrackName(key),
                     true,
                     CounterUnit::SizeBytes
+                }),
+                60,
+                kSequenceId,
+                0u,
+                false,
+                false
+            )
+        );
+    }
+
+    for (const auto& [group, uuid] : metricGroupTrackUuids) {
+        addPacketToTrace(
+            traceWriter,
+            encodeTracePacket(
+                encodeTrackDescriptor(TrackDescriptorSpec{
+                    uuid,
+                    metricsRootTrackUuid,
+                    group,
+                    false,
+                    CounterUnit::Unspecified
+                }),
+                60,
+                kSequenceId,
+                0u,
+                false,
+                false
+            )
+        );
+    }
+
+    for (const auto& [key, uuid] : metricTrackUuids) {
+        addPacketToTrace(
+            traceWriter,
+            encodeTracePacket(
+                encodeTrackDescriptor(TrackDescriptorSpec{
+                    uuid,
+                    key.group.empty() ? metricsRootTrackUuid : metricGroupTrackUuids.at(key.group),
+                    key.name,
+                    true,
+                    CounterUnit::Unspecified
                 }),
                 60,
                 kSequenceId,
@@ -532,6 +617,16 @@ bool exportProfilerTraceCaptureToPerfetto(
                     static_cast<std::int64_t>(resource.gpuBytes)
                 );
             }
+        }
+
+        for (const render::FrameCounterRecord& counter : frame.counters) {
+            appendCounterPacket(
+                traceWriter,
+                kSequenceId,
+                sampleTimestampNs,
+                metricTrackUuids.at(MetricTrackKey{counter.group, counter.name}),
+                counter.value
+            );
         }
     }
 

@@ -119,6 +119,14 @@ bool SimpleForwardPath::init(const std::string& shaderRoot, MaterialBinder& mate
 
 void SimpleForwardPath::resize(int, int) {}
 
+void SimpleForwardPath::prepareOcclusionQueryPass(const RenderPathContext& context) const {
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, context.width, context.height);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_BLEND);
+}
+
 bool SimpleForwardPath::beginFrame(const RenderPathContext&) {
     return shader_.id() != 0;
 }
@@ -270,6 +278,14 @@ bool DeferredRenderPath::init(const std::string& shaderRoot, MaterialBinder& mat
 
 void DeferredRenderPath::resize(int width, int height) {
     ensureResources(width, height);
+}
+
+void DeferredRenderPath::prepareOcclusionQueryPass(const RenderPathContext& context) const {
+    glBindFramebuffer(GL_FRAMEBUFFER, lightFbo_);
+    glViewport(0, 0, context.width, context.height);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_BLEND);
 }
 
 bool DeferredRenderPath::beginFrame(const RenderPathContext& context) {

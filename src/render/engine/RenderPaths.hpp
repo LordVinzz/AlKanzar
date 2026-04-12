@@ -46,6 +46,7 @@ public:
     virtual bool init(const std::string& shaderRoot, MaterialBinder& materialBinder, ShadowSystem& shadowSystem) = 0;
     virtual void resize(int width, int height) = 0;
     virtual void render(const RenderPathContext& context) = 0;
+    virtual void prepareOcclusionQueryPass(const RenderPathContext& context) const = 0;
     [[nodiscard]] virtual const char* name() const = 0;
     [[nodiscard]] virtual bool usesDeferredLighting() const = 0;
     [[nodiscard]] virtual std::vector<ResourceMemoryRecord> profilingResources() const = 0;
@@ -68,6 +69,7 @@ class SimpleForwardPath final : public RenderPathBase {
 public:
     bool init(const std::string& shaderRoot, MaterialBinder& materialBinder, ShadowSystem& shadowSystem) override;
     void resize(int width, int height) override;
+    void prepareOcclusionQueryPass(const RenderPathContext& context) const override;
     [[nodiscard]] const char* name() const override { return "Simple Forward"; }
     [[nodiscard]] bool usesDeferredLighting() const override { return false; }
     [[nodiscard]] std::vector<ResourceMemoryRecord> profilingResources() const override;
@@ -94,6 +96,7 @@ public:
 
     bool init(const std::string& shaderRoot, MaterialBinder& materialBinder, ShadowSystem& shadowSystem) override;
     void resize(int width, int height) override;
+    void prepareOcclusionQueryPass(const RenderPathContext& context) const override;
     [[nodiscard]] const char* name() const override { return "Deferred 4.1"; }
     [[nodiscard]] bool usesDeferredLighting() const override { return true; }
     [[nodiscard]] std::vector<ResourceMemoryRecord> profilingResources() const override;
