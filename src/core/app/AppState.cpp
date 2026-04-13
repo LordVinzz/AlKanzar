@@ -123,7 +123,7 @@ std::string selectionLabel(const EngineServices& services) {
         return "None";
     }
 
-    return entityLabel(services, *services.selection.current());
+    return entityLabel(services, services.selection.current()->entity);
 }
 
 std::string hierarchyLabel(const EngineServices& services, EntityId entity) {
@@ -152,9 +152,8 @@ void notifyLightChanged(EngineServices& services, EntityId entity) {
     services.events.publish(LightChangedEvent{entity});
 }
 
-void notifyMaterialChanged(EngineServices& services, MaterialHandle materialHandle) {
-    services.materials.notifyChanged(materialHandle);
-    services.events.publish(MaterialChangedEvent{materialHandle});
+void notifyMaterialChanged(EngineServices& services, EntityId entity) {
+    services.events.publish(MaterialChangedEvent{entity});
 }
 
 std::filesystem::path defaultProfilerExportPath(const ProfilerTraceCapture& capture) {
@@ -226,6 +225,16 @@ SceneHierarchyData buildSceneHierarchy(const EngineServices& services) {
     collectEntities(world.transforms);
     collectEntities(world.visibilities);
     collectEntities(world.renderables);
+    collectEntities(world.materials);
+    collectEntities(world.lightVolumes);
+    collectEntities(world.boxColliders);
+    collectEntities(world.sphereColliders);
+    collectEntities(world.rigidbodies);
+    collectEntities(world.navAgents);
+    collectEntities(world.locomotion);
+    collectEntities(world.navSources);
+    collectEntities(world.animatedModels);
+    collectEntities(world.skinnedRenderables);
     collectEntities(world.pointLights);
     collectEntities(world.spotLights);
 
@@ -276,6 +285,12 @@ SceneHierarchyData buildSceneHierarchy(const EngineServices& services) {
 
 void selectHierarchyEntity(EngineServices& services, EntityId entity) {
     services.selection.set(entity);
+    services.editorSession.activeInspectorTab = InspectorTab::Selection;
+    services.editorSession.textureBrowserFocusRequested = true;
+}
+
+void selectHierarchyComponent(EngineServices& services, EntityId entity, ComponentKind component) {
+    services.selection.set(SelectionTarget{entity, component});
     services.editorSession.activeInspectorTab = InspectorTab::Selection;
     services.editorSession.textureBrowserFocusRequested = true;
 }
@@ -639,14 +654,23 @@ void drawSceneHierarchyNode(EngineServices& services, const SceneHierarchyData& 
     const std::vector<EntityId>& children = entity.index < hierarchy.childrenByParent.size()
         ? hierarchy.childrenByParent[entity.index]
         : emptyChildren;
-    const bool isSelected = services.selection.current().has_value() && *services.selection.current() == entity;
+    const std::optional<SelectionTarget>& selection = services.selection.current();
+    const bool entitySelected = selection.has_value() &&
+        selection->entity == entity &&
+        !selection->component.has_value();
+    int componentCount = 0;
+    for (const ComponentDescriptor& descriptor : services.componentRegistry.descriptors()) {
+        if (descriptor.hasComponent(services.world, entity)) {
+            componentCount++;
+        }
+    }
 
     ImGui::PushID(static_cast<int>(entity.index));
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth;
-    if (isSelected) {
+    if (entitySelected) {
         flags |= ImGuiTreeNodeFlags_Selected;
     }
-    if (children.empty()) {
+    if (children.empty() && componentCount == 0) {
         flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
     } else {
         flags |= ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick;
@@ -657,7 +681,30 @@ void drawSceneHierarchyNode(EngineServices& services, const SceneHierarchyData& 
         selectHierarchyEntity(services, entity);
     }
 
-    if (open && !children.empty()) {
+    if (open && (componentCount > 0 || !children.empty())) {
+        for (const ComponentDescriptor& descriptor : services.componentRegistry.descriptors()) {
+            if (!descriptor.hasComponent(services.world, entity)) {
+                continue;
+            }
+
+            ImGui::PushID(static_cast<int>(descriptor.kind));
+            ImGuiTreeNodeFlags componentFlags =
+                ImGuiTreeNodeFlags_Leaf |
+                ImGuiTreeNodeFlags_NoTreePushOnOpen |
+                ImGuiTreeNodeFlags_SpanAvailWidth;
+            if (selection.has_value() &&
+                selection->entity == entity &&
+                selection->component.has_value() &&
+                *selection->component == descriptor.kind) {
+                componentFlags |= ImGuiTreeNodeFlags_Selected;
+            }
+
+            ImGui::TreeNodeEx("component", componentFlags, "%s", descriptor.name.c_str());
+            if (ImGui::IsItemClicked()) {
+                selectHierarchyComponent(services, entity, descriptor.kind);
+            }
+            ImGui::PopID();
+        }
         for (EntityId child : children) {
             drawSceneHierarchyNode(services, hierarchy, child);
         }
@@ -800,7 +847,10 @@ void drawNavMeshWindow(EngineServices& services) {
     ImGui::SeparatorText("Tagging");
     if (services.selection.current().has_value()) {
         const std::vector<EntityId> targets =
-            services.navigationSystem.collectRenderableSelectionTargets(services.world, *services.selection.current());
+            services.navigationSystem.collectRenderableSelectionTargets(
+                services.world,
+                services.selection.current()->entity
+            );
         ImGui::Text("%d target renderables", static_cast<int>(targets.size()));
         const char* preview = navSelectionPreviewLabel(targets, services);
         if (ImGui::BeginCombo("Applied Tag", preview)) {
@@ -1559,7 +1609,7 @@ void drawProfilerWindow(EngineServices& services) {
     services.editorSession.profilerWindowFocusRequested = false;
 }
 
-void drawTextureBrowser(EngineServices& services, render::Material& material, MaterialHandle materialHandle) {
+void drawTextureBrowser(EngineServices& services, EntityId entity, render::Material& material) {
     render::TextureRef* targetRef = render::textureRefForSlot(material, services.editorSession.textureBrowserSlot);
     if (targetRef == nullptr) {
         ImGui::TextUnformatted("No texture slot selected.");
@@ -1638,10 +1688,11 @@ void drawTextureBrowser(EngineServices& services, render::Material& material, Ma
                     std::string{},
                     before,
                     after,
-                    [&services, materialHandle](const render::Material& snapshot) {
-                        if (std::shared_ptr<render::Material> materialPtr = services.materials.get(materialHandle)) {
-                            *materialPtr = snapshot;
-                            notifyMaterialChanged(services, materialHandle);
+                    [&services, entity](const render::Material& snapshot) {
+                        if (MaterialComponent* materialComponent = services.world.materials.tryGet(entity);
+                            materialComponent != nullptr && materialComponent->material) {
+                            *materialComponent->material = snapshot;
+                            notifyMaterialChanged(services, entity);
                         }
                     },
                     false
@@ -1660,7 +1711,7 @@ void drawTextureBrowser(EngineServices& services, render::Material& material, Ma
 void drawTextureSlotEditor(
     EngineServices& services,
     const std::string& materialName,
-    MaterialHandle materialHandle,
+    EntityId entity,
     render::MaterialTextureSlot slot,
     render::Material& material
 ) {
@@ -1712,10 +1763,11 @@ void drawTextureSlotEditor(
             std::string{},
             beforeMaterial,
             material,
-            [&services, materialHandle](const render::Material& snapshot) {
-                if (std::shared_ptr<render::Material> materialPtr = services.materials.get(materialHandle)) {
-                    *materialPtr = snapshot;
-                    notifyMaterialChanged(services, materialHandle);
+            [&services, entity](const render::Material& snapshot) {
+                if (MaterialComponent* materialComponent = services.world.materials.tryGet(entity);
+                    materialComponent != nullptr && materialComponent->material) {
+                    *materialComponent->material = snapshot;
+                    notifyMaterialChanged(services, entity);
                 }
             },
             false
@@ -1735,14 +1787,16 @@ void drawTextureSlotEditor(
         editSnapshotCommand<render::Material>(
             "InlineValue",
             "Edit Inline Material Value",
-            "material-inline-" + std::to_string(materialHandle.value) + "-" + std::to_string(static_cast<int>(slot)),
+            "material-inline-" + std::to_string(entity.index) + "-" + std::to_string(static_cast<int>(slot)),
             material,
-            [&services, materialHandle](const render::Material& snapshot) {
-                if (std::shared_ptr<render::Material> materialPtr = services.materials.get(materialHandle)) {
-                    *materialPtr = snapshot;
-                    render::TextureRef* target = render::textureRefForSlot(*materialPtr, services.editorSession.textureBrowserSlot);
+            [&services, entity](const render::Material& snapshot) {
+                if (MaterialComponent* materialComponent = services.world.materials.tryGet(entity);
+                    materialComponent != nullptr && materialComponent->material) {
+                    *materialComponent->material = snapshot;
+                    render::TextureRef* target =
+                        render::textureRefForSlot(*materialComponent->material, services.editorSession.textureBrowserSlot);
                     (void)target;
-                    notifyMaterialChanged(services, materialHandle);
+                    notifyMaterialChanged(services, entity);
                 }
             },
             [&material, ref, slot](render::Material& editedMaterial) {
@@ -1822,10 +1876,11 @@ void drawTextureSlotEditor(
             std::string{},
             before,
             material,
-            [&services, materialHandle](const render::Material& snapshot) {
-                if (std::shared_ptr<render::Material> materialPtr = services.materials.get(materialHandle)) {
-                    *materialPtr = snapshot;
-                    notifyMaterialChanged(services, materialHandle);
+            [&services, entity](const render::Material& snapshot) {
+                if (MaterialComponent* materialComponent = services.world.materials.tryGet(entity);
+                    materialComponent != nullptr && materialComponent->material) {
+                    *materialComponent->material = snapshot;
+                    notifyMaterialChanged(services, entity);
                 }
             },
             false
@@ -1839,7 +1894,7 @@ void drawTextureSlotEditor(
 void drawMaterialTextureSlotGrid(
     EngineServices& services,
     const std::string& materialName,
-    MaterialHandle materialHandle,
+    EntityId entity,
     render::Material& material
 ) {
     static constexpr render::MaterialTextureSlot kTextureSlots[] = {
@@ -1879,7 +1934,7 @@ void drawMaterialTextureSlotGrid(
 
         ImGui::SetCursorPos(ImVec2(cellStart.x + kSlotCardPadding, cellStart.y + kSlotCardPadding));
         ImGui::BeginGroup();
-        drawTextureSlotEditor(services, materialName, materialHandle, slot, material);
+        drawTextureSlotEditor(services, materialName, entity, slot, material);
         ImGui::EndGroup();
 
         const ImVec2 groupMax = ImGui::GetItemRectMax();
@@ -1946,7 +2001,8 @@ void drawInspectorWindow(EngineServices& services) {
         return;
     }
 
-    const EntityId selected = *services.selection.current();
+    const SelectionTarget selectedTarget = *services.selection.current();
+    const EntityId selected = selectedTarget.entity;
     const ImGuiTabItemFlags selectionTabFlags =
         (services.editorSession.textureBrowserFocusRequested &&
          services.editorSession.activeInspectorTab == InspectorTab::Selection)
@@ -1959,234 +2015,54 @@ void drawInspectorWindow(EngineServices& services) {
             : 0;
 
     if (ImGui::BeginTabBar("InspectorTabs")) {
-        if (ImGui::BeginTabItem("Selection", nullptr, selectionTabFlags)) {
+        if (ImGui::BeginTabItem("Entity", nullptr, selectionTabFlags)) {
             services.editorSession.activeInspectorTab = InspectorTab::Selection;
             ImGui::BeginChild("SelectionInspectorContent", ImVec2(0.0f, 0.0f), false);
 
-            if (services.world.renderables.contains(selected)) {
-                const EntityId transformEntity = services.world.editableTransformEntity(selected);
-                drawTransformControls(
-                    services,
-                    transformEntity,
-                    "Move Entity",
-                    "Rotate Entity",
-                    "Scale Entity",
-                    "transform"
-                );
-                drawVisibilityControl(services, selected);
-
-                if (selected.index < services.world.transformCache_.size() &&
-                    services.world.transformCache_[selected.index].hasWorldBounds) {
-                    const render::Bounds3& bounds = services.world.transformCache_[selected.index].worldBounds;
-                    ImGui::Separator();
-                    ImGui::Text("World Bounds Min: %.2f %.2f %.2f", bounds.min.x, bounds.min.y, bounds.min.z);
-                    ImGui::Text("World Bounds Max: %.2f %.2f %.2f", bounds.max.x, bounds.max.y, bounds.max.z);
+            const SceneHierarchyData hierarchy = buildSceneHierarchy(services);
+            const std::size_t childCount = sceneHierarchyChildCount(hierarchy, selected);
+            ImGui::Text("Entity: %s", entityLabel(services, selected).c_str());
+            ImGui::Text("Id: %u", selected.index);
+            if (selectedTarget.component.has_value()) {
+                if (const ComponentDescriptor* descriptor = services.componentRegistry.find(*selectedTarget.component)) {
+                    ImGui::Text("Focused Component: %s", descriptor->name.c_str());
                 }
-
-                const RenderableComponent& renderable = services.world.renderables.get(selected);
-                if (std::shared_ptr<render::Material> material = services.materials.get(renderable.material)) {
-                    ImGui::Separator();
-                    ImGui::Text("Material Asset: %s", material->name.c_str());
-
-                    editSnapshotCommand<render::Material>(
-                        "BaseColorFactor",
-                        "Edit Base Color",
-                        "material-base-color-" + std::to_string(renderable.material.value),
-                        *material,
-                        [&services, handle = renderable.material](const render::Material& snapshot) {
-                            if (std::shared_ptr<render::Material> target = services.materials.get(handle)) {
-                                *target = snapshot;
-                                notifyMaterialChanged(services, handle);
-                            }
-                        },
-                        [](render::Material& edited) {
-                            return ImGui::ColorEdit3("Base Color Factor", glm::value_ptr(edited.baseColorFactor));
-                        },
-                        services.commands
-                    );
-                    editSnapshotCommand<render::Material>(
-                        "MetallicFactor",
-                        "Edit Metallic",
-                        "material-metallic-" + std::to_string(renderable.material.value),
-                        *material,
-                        [&services, handle = renderable.material](const render::Material& snapshot) {
-                            if (std::shared_ptr<render::Material> target = services.materials.get(handle)) {
-                                *target = snapshot;
-                                notifyMaterialChanged(services, handle);
-                            }
-                        },
-                        [](render::Material& edited) {
-                            return ImGui::DragFloat("Metallic Factor", &edited.metallicFactor, 0.01f, 0.0f, 1.0f);
-                        },
-                        services.commands
-                    );
-                    editSnapshotCommand<render::Material>(
-                        "RoughnessFactor",
-                        "Edit Roughness",
-                        "material-roughness-" + std::to_string(renderable.material.value),
-                        *material,
-                        [&services, handle = renderable.material](const render::Material& snapshot) {
-                            if (std::shared_ptr<render::Material> target = services.materials.get(handle)) {
-                                *target = snapshot;
-                                notifyMaterialChanged(services, handle);
-                            }
-                        },
-                        [](render::Material& edited) {
-                            return ImGui::DragFloat("Roughness Factor", &edited.roughnessFactor, 0.01f, 0.0f, 1.0f);
-                        },
-                        services.commands
-                    );
-                    editSnapshotCommand<render::Material>(
-                        "NormalScale",
-                        "Edit Normal Scale",
-                        "material-normal-scale-" + std::to_string(renderable.material.value),
-                        *material,
-                        [&services, handle = renderable.material](const render::Material& snapshot) {
-                            if (std::shared_ptr<render::Material> target = services.materials.get(handle)) {
-                                *target = snapshot;
-                                notifyMaterialChanged(services, handle);
-                            }
-                        },
-                        [](render::Material& edited) {
-                            return ImGui::DragFloat("Normal Scale", &edited.normalScale, 0.01f, 0.0f, 8.0f);
-                        },
-                        services.commands
-                    );
-
-                    drawMaterialTextureSlotGrid(services, material->name, renderable.material, *material);
+            }
+            ImGui::Text("Components: %d", static_cast<int>(std::count_if(
+                services.componentRegistry.descriptors().begin(),
+                services.componentRegistry.descriptors().end(),
+                [&](const ComponentDescriptor& descriptor) {
+                    return descriptor.hasComponent(services.world, selected);
                 }
-            } else if (PointLightComponent* pointLight = services.world.pointLights.tryGet(selected)) {
-                if (TransformComponent* transform = services.world.transforms.tryGet(selected)) {
-                    editSnapshotCommand<TransformComponent>(
-                        "Position",
-                        "Move Point Light",
-                        "point-light-position-" + std::to_string(selected.index),
-                        *transform,
-                        [&services, selected](const TransformComponent& snapshot) {
-                            if (TransformComponent* target = services.world.transforms.tryGet(selected)) {
-                                *target = snapshot;
-                                notifyTransformChanged(services, selected);
-                                notifyLightChanged(services, selected);
-                            }
-                        },
-                        [](TransformComponent& edited) {
-                            return ImGui::DragFloat3("Position", glm::value_ptr(edited.position), 0.05f);
-                        },
-                        services.commands
-                    );
-                }
-
-                editSnapshotCommand<PointLightComponent>(
-                    "PointLightProps",
-                    "Edit Point Light",
-                    "point-light-props-" + std::to_string(selected.index),
-                    *pointLight,
-                    [&services, selected](const PointLightComponent& snapshot) {
-                        if (PointLightComponent* target = services.world.pointLights.tryGet(selected)) {
-                            *target = snapshot;
-                            notifyLightChanged(services, selected);
-                        }
-                    },
-                    [](PointLightComponent& edited) {
-                        bool changed = false;
-                        changed |= ImGui::DragFloat("Radius", &edited.radius, 0.1f, 0.1f, 128.0f);
-                        changed |= ImGui::ColorEdit3("Color", glm::value_ptr(edited.color));
-                        changed |= ImGui::DragFloat("Intensity", &edited.intensity, 0.1f, 0.0f, 128.0f);
-                        changed |= ImGui::Checkbox("Movable", &edited.isMovable);
-                        changed |= ImGui::Checkbox("Casts Shadow", &edited.castsShadow);
-                        return changed;
-                    },
-                    services.commands
-                );
-            } else if (SpotLightComponent* spotLight = services.world.spotLights.tryGet(selected)) {
-                if (TransformComponent* transform = services.world.transforms.tryGet(selected)) {
-                    editSnapshotCommand<TransformComponent>(
-                        "Position",
-                        "Move Spot Light",
-                        "spot-light-position-" + std::to_string(selected.index),
-                        *transform,
-                        [&services, selected](const TransformComponent& snapshot) {
-                            if (TransformComponent* target = services.world.transforms.tryGet(selected)) {
-                                *target = snapshot;
-                                notifyTransformChanged(services, selected);
-                                notifyLightChanged(services, selected);
-                            }
-                        },
-                        [](TransformComponent& edited) {
-                            return ImGui::DragFloat3("Position", glm::value_ptr(edited.position), 0.05f);
-                        },
-                        services.commands
-                    );
-                }
-
-                editSnapshotCommand<SpotLightComponent>(
-                    "SpotLightProps",
-                    "Edit Spot Light",
-                    "spot-light-props-" + std::to_string(selected.index),
-                    *spotLight,
-                    [&services, selected](const SpotLightComponent& snapshot) {
-                        if (SpotLightComponent* target = services.world.spotLights.tryGet(selected)) {
-                            *target = snapshot;
-                            notifyLightChanged(services, selected);
-                        }
-                    },
-                    [](SpotLightComponent& edited) {
-                        bool changed = false;
-                        changed |= ImGui::DragFloat("Radius", &edited.radius, 0.1f, 0.1f, 128.0f);
-                        changed |= ImGui::ColorEdit3("Color", glm::value_ptr(edited.color));
-                        changed |= ImGui::DragFloat("Intensity", &edited.intensity, 0.1f, 0.0f, 128.0f);
-                        changed |= ImGui::DragFloat3("Target", glm::value_ptr(edited.target), 0.05f);
-                        changed |= ImGui::DragFloat("Inner Angle", &edited.innerAngle, 0.25f, 1.0f, edited.outerAngle);
-                        changed |= ImGui::DragFloat("Outer Angle", &edited.outerAngle, 0.25f, edited.innerAngle, 80.0f);
-                        changed |= ImGui::Checkbox("Movable", &edited.isMovable);
-                        changed |= ImGui::Checkbox("Casts Shadow", &edited.castsShadow);
-                        return changed;
-                    },
-                    services.commands
-                );
-            } else {
-                const EntityId transformEntity = services.world.editableTransformEntity(selected);
-                if (transformEntity.valid()) {
-                    drawTransformControls(
-                        services,
-                        transformEntity,
-                        "Move Entity",
-                        "Rotate Entity",
-                        "Scale Entity",
-                        "scene-node"
-                    );
-                }
-
-                drawVisibilityControl(services, selected);
-
-                const SceneHierarchyData hierarchy = buildSceneHierarchy(services);
-                const std::size_t childCount = sceneHierarchyChildCount(hierarchy, selected);
-                if (selected.index < services.world.transformCache_.size() &&
-                    services.world.transformCache_[selected.index].hasWorldBounds) {
-                    const render::Bounds3& bounds = services.world.transformCache_[selected.index].worldBounds;
-                    ImGui::Separator();
-                    ImGui::Text("World Bounds Min: %.2f %.2f %.2f", bounds.min.x, bounds.min.y, bounds.min.z);
-                    ImGui::Text("World Bounds Max: %.2f %.2f %.2f", bounds.max.x, bounds.max.y, bounds.max.z);
-                }
-                if (childCount > 0u) {
-                    ImGui::Separator();
-                    ImGui::Text("Child Nodes: %d", static_cast<int>(childCount));
-                } else if (!transformEntity.valid()) {
-                    ImGui::TextUnformatted("Selected scene node has no editable properties.");
-                }
+            )));
+            if (childCount > 0u) {
+                ImGui::Text("Child Nodes: %d", static_cast<int>(childCount));
+            }
+            if (selected.index < services.world.transformCache_.size() &&
+                services.world.transformCache_[selected.index].hasWorldBounds) {
+                const render::Bounds3& bounds = services.world.transformCache_[selected.index].worldBounds;
+                ImGui::Separator();
+                ImGui::Text("World Bounds Min: %.2f %.2f %.2f", bounds.min.x, bounds.min.y, bounds.min.z);
+                ImGui::Text("World Bounds Max: %.2f %.2f %.2f", bounds.max.x, bounds.max.y, bounds.max.z);
             }
 
             drawAnimationInspector(services, selected);
+
+            ImGui::Separator();
+            ImGui::Spacing();
+            services.componentRegistry.drawAddComponentButton(services, selected);
 
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
 
-        if (services.world.renderables.contains(selected) &&
+        services.componentRegistry.drawComponentTabs(services, selected, selectedTarget.component);
+
+        if (services.world.materials.contains(selected) &&
             ImGui::BeginTabItem("Texture Browser", nullptr, browserTabFlags)) {
-            if (std::shared_ptr<render::Material> material = services.materials.get(
-                    services.world.renderables.get(selected).material)) {
-                drawTextureBrowser(services, *material, services.world.renderables.get(selected).material);
+            if (MaterialComponent* material = services.world.materials.tryGet(selected);
+                material != nullptr && material->material) {
+                drawTextureBrowser(services, selected, *material->material);
             }
             ImGui::EndTabItem();
         }
@@ -2215,7 +2091,6 @@ void BootstrapState::onEnter(EngineServices& services) {
     services.sceneLoaded = services.sceneFactory.buildScene(
         services.currentScene,
         services.world,
-        services.materials,
         services.renderer
     );
     if (!services.sceneLoaded) {

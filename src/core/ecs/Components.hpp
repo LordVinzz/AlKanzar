@@ -10,9 +10,9 @@
 #include <glm/vec3.hpp>
 
 #include "Entity.hpp"
-#include "core/lighting/MaterialLibrary.hpp"
 #include "render/engine/RenderTypes.hpp"
 #include "render/resources/Geometry.hpp"
+#include "render/resources/Material.hpp"
 
 namespace render {
 struct GltfModelData;
@@ -50,8 +50,11 @@ struct BoundsComponent {
 
 struct RenderableComponent {
     render::MeshHandle mesh{};
-    MaterialHandle material{};
     render::RenderLayer layer{render::RenderLayer::Geometry};
+};
+
+struct MaterialComponent {
+    std::shared_ptr<render::Material> material{};
 };
 
 struct AnimatedModelComponent {
@@ -95,10 +98,18 @@ struct NavSourceGeometryComponent {
     std::shared_ptr<render::Mesh> mesh{};
 };
 
+enum class NavAgentClearanceSource {
+    None = 0,
+    Auto,
+    SphereCollider,
+    BoxCollider,
+};
+
 struct NavAgentComponent {
     float moveSpeed{2.2f};
     float turnSpeedDeg{540.0f};
     float arrivalRadius{0.12f};
+    NavAgentClearanceSource clearanceSource{NavAgentClearanceSource::None};
     std::vector<glm::vec3> pathCorners{};
     std::optional<glm::vec3> destination{};
     bool moving{false};
@@ -132,6 +143,40 @@ struct SpotLightComponent {
     bool castsShadow{false};
     float shadowBiasMin{0.0f};
     float shadowBiasSlope{0.0f};
+};
+
+struct LightVolumeComponent {
+    glm::vec3 halfExtents{1.0f};
+};
+
+enum class ColliderShape {
+    Box = 0,
+    Sphere,
+    Capsule,
+};
+
+struct BoxColliderComponent {
+    glm::vec3 center{0.0f};
+    glm::vec3 halfExtents{0.5f};
+    bool isTrigger{false};
+    bool showDebug{false};
+};
+
+struct SphereColliderComponent {
+    glm::vec3 center{0.0f};
+    float radius{0.5f};
+    bool isTrigger{false};
+    bool showDebug{false};
+};
+
+struct RigidbodyComponent {
+    float mass{1.0f};
+    float linearDamping{0.05f};
+    float angularDamping{0.05f};
+    bool isKinematic{false};
+    bool useGravity{true};
+    glm::vec3 velocity{0.0f};
+    glm::vec3 angularVelocity{0.0f};
 };
 
 struct TransformCacheEntry {

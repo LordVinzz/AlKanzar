@@ -1,7 +1,6 @@
 #pragma once
 
 #include "core/app/FrameData.hpp"
-#include "core/lighting/MaterialLibrary.hpp"
 #include "core/editor/SelectionModel.hpp"
 #include "TaskScheduler.hpp"
 #include "core/ecs/World.hpp"
@@ -16,7 +15,6 @@ public:
      */
     void extract(
         const World& world,
-        const MaterialLibrary& materials,
         const SelectionModel& selection,
         FrameSceneData& outFrame,
         TaskScheduler& scheduler,

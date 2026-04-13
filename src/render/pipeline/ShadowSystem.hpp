@@ -181,6 +181,14 @@ public:
      * Returns the PCF radius for spot shadows.
      */
     int spotPcfRadius() const { return spotPcfRadius_; }
+    /**
+     * Returns the world-space positions for registered spot shadows.
+     */
+    const std::array<glm::vec3, kMaxSpotShadows>& spotShadowPositions() const { return spotShadowPositions_; }
+    /**
+     * Returns the far planes for registered spot shadows.
+     */
+    const std::array<float, kMaxSpotShadows>& spotShadowFarPlanes() const { return spotShadowFarPlanes_; }
 
     /**
      * Returns the number of point shadows registered this frame.
@@ -259,6 +267,8 @@ private:
     int spotShadowCount_{0};
     std::array<glm::mat4, kMaxSpotShadows> spotShadowViewProj_{};
     std::array<glm::mat4, kMaxSpotShadows> spotShadowMatrices_{};
+    std::array<glm::vec3, kMaxSpotShadows> spotShadowPositions_{};
+    std::array<float, kMaxSpotShadows> spotShadowFarPlanes_{};
 
     int pointShadowCount_{0};
     std::array<std::array<glm::mat4, 6>, kMaxPointShadows> pointShadowViewProj_{};

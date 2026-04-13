@@ -8,7 +8,6 @@
 #include "ComponentStore.hpp"
 #include "Components.hpp"
 #include "EntityPool.hpp"
-#include "core/lighting/LightVolume.hpp"
 #include "core/events/Signal.hpp"
 
 namespace core {
@@ -32,12 +31,17 @@ public:
         visibilities.remove(entity);
         bounds.remove(entity);
         renderables.remove(entity);
+        materials.remove(entity);
         animatedModels.remove(entity);
         skinnedRenderables.remove(entity);
         navSources.remove(entity);
         navSourceGeometry.remove(entity);
         navAgents.remove(entity);
         locomotion.remove(entity);
+        lightVolumes.remove(entity);
+        boxColliders.remove(entity);
+        sphereColliders.remove(entity);
+        rigidbodies.remove(entity);
         pointLights.remove(entity);
         spotLights.remove(entity);
         if (entity.index < transformCache_.size()) {
@@ -63,17 +67,21 @@ public:
         visibilities.clear();
         bounds.clear();
         renderables.clear();
+        materials.clear();
         animatedModels.clear();
         skinnedRenderables.clear();
         navSources.clear();
         navSourceGeometry.clear();
         navAgents.clear();
         locomotion.clear();
+        lightVolumes.clear();
+        boxColliders.clear();
+        sphereColliders.clear();
+        rigidbodies.clear();
         pointLights.clear();
         spotLights.clear();
         transformCache_.clear();
         lightRuntime_.clear();
-        lightVolumes.clear();
         transformsDirty_ = true;
         lightsDirty_ = true;
     }
@@ -196,17 +204,21 @@ public:
     ComponentStore<VisibilityComponent> visibilities{};
     ComponentStore<BoundsComponent> bounds{};
     ComponentStore<RenderableComponent> renderables{};
+    ComponentStore<MaterialComponent> materials{};
     ComponentStore<AnimatedModelComponent> animatedModels{};
     ComponentStore<SkinnedRenderableComponent> skinnedRenderables{};
     ComponentStore<NavSourceComponent> navSources{};
     ComponentStore<NavSourceGeometryComponent> navSourceGeometry{};
     ComponentStore<NavAgentComponent> navAgents{};
     ComponentStore<LocomotionComponent> locomotion{};
+    ComponentStore<LightVolumeComponent> lightVolumes{};
+    ComponentStore<BoxColliderComponent> boxColliders{};
+    ComponentStore<SphereColliderComponent> sphereColliders{};
+    ComponentStore<RigidbodyComponent> rigidbodies{};
     ComponentStore<PointLightComponent> pointLights{};
     ComponentStore<SpotLightComponent> spotLights{};
     std::vector<TransformCacheEntry> transformCache_{};
     std::vector<LightRuntime> lightRuntime_{};
-    std::vector<LightVolume> lightVolumes{};
 
     Signal<EntityId>& transformChanged() { return transformChanged_; }
     Signal<EntityId>& lightChanged() { return lightChanged_; }

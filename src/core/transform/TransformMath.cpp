@@ -7,6 +7,18 @@
 
 namespace core {
 
+namespace {
+
+glm::vec3 axisFromColumn(const glm::mat4& matrix, int columnIndex) {
+    return glm::vec3(matrix[columnIndex]);
+}
+
+float axisLength(const glm::vec3& axis) {
+    return glm::max(glm::length(axis), 1.0e-6f);
+}
+
+}  // namespace
+
 glm::mat4 composeTransform(const TransformComponent& transform) {
     glm::mat4 model(1.0f);
     model = glm::translate(model, transform.position);
@@ -44,6 +56,59 @@ render::Bounds3 transformBounds(const render::Bounds3& bounds, const glm::mat4& 
     }
 
     return transformed;
+}
+
+OrientedBox makeOrientedBox(const glm::mat4& modelMatrix, const BoxColliderComponent& collider) {
+    OrientedBox box{};
+    box.center = glm::vec3(modelMatrix * glm::vec4(collider.center, 1.0f));
+
+    const glm::vec3 scaledAxisX = axisFromColumn(modelMatrix, 0);
+    const glm::vec3 scaledAxisY = axisFromColumn(modelMatrix, 1);
+    const glm::vec3 scaledAxisZ = axisFromColumn(modelMatrix, 2);
+
+    const float scaleX = axisLength(scaledAxisX);
+    const float scaleY = axisLength(scaledAxisY);
+    const float scaleZ = axisLength(scaledAxisZ);
+
+    box.axes[0] = scaledAxisX / scaleX;
+    box.axes[1] = scaledAxisY / scaleY;
+    box.axes[2] = scaledAxisZ / scaleZ;
+    box.halfExtents = glm::max(glm::vec3(
+        collider.halfExtents.x * scaleX,
+        collider.halfExtents.y * scaleY,
+        collider.halfExtents.z * scaleZ
+    ), glm::vec3(0.001f));
+
+    box.modelMatrix = glm::mat4(
+        glm::vec4(box.axes[0] * box.halfExtents.x, 0.0f),
+        glm::vec4(box.axes[1] * box.halfExtents.y, 0.0f),
+        glm::vec4(box.axes[2] * box.halfExtents.z, 0.0f),
+        glm::vec4(box.center, 1.0f)
+    );
+
+    std::size_t cornerIndex = 0u;
+    for (float signX : {-1.0f, 1.0f}) {
+        for (float signY : {-1.0f, 1.0f}) {
+            for (float signZ : {-1.0f, 1.0f}) {
+                box.corners[cornerIndex++] = box.center +
+                    box.axes[0] * (box.halfExtents.x * signX) +
+                    box.axes[1] * (box.halfExtents.y * signY) +
+                    box.axes[2] * (box.halfExtents.z * signZ);
+            }
+        }
+    }
+
+    box.aabb.min = box.corners.front();
+    box.aabb.max = box.corners.front();
+    for (const glm::vec3& corner : box.corners) {
+        box.aabb.min = glm::min(box.aabb.min, corner);
+        box.aabb.max = glm::max(box.aabb.max, corner);
+    }
+    return box;
+}
+
+OrientedBox makeOrientedBox(const TransformComponent& transform, const BoxColliderComponent& collider) {
+    return makeOrientedBox(composeTransform(transform), collider);
 }
 
 }  // namespace core

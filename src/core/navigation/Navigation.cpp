@@ -31,6 +31,10 @@ constexpr float kHorizontalNormalMinDot = 0.9848077f;
 constexpr float kLayerGroupingEpsilon = 0.10f;
 constexpr float kPolygonEpsilon = 1.0e-4f;
 constexpr float kPlaneEpsilon = 1.0e-5f;
+constexpr float kTau = 6.28318530717958647692f;
+constexpr int kClearanceSampleDirections = 24;
+constexpr int kClearanceBinarySearchSteps = 10;
+constexpr int kClearanceProjectionIterations = 16;
 constexpr int kNavAssetVersion = 1;
 const glm::vec4 kWalkableOverlayColor(0.0f, 1.0f, 0.0f, 0.5f);
 
@@ -126,6 +130,30 @@ struct NavigationSolveView {
     const std::vector<std::vector<NavGraphEdge>>& graph;
 };
 
+struct SolvedPath {
+    glm::vec3 destination{0.0f};
+    std::vector<glm::vec3> corners{};
+};
+
+enum class AgentClearanceShape {
+    None = 0,
+    Sphere,
+    Box,
+};
+
+struct AgentClearanceProfile {
+    AgentClearanceShape shape{AgentClearanceShape::None};
+    glm::vec2 centerXZ{0.0f};
+    float sphereRadius{0.0f};
+    glm::vec2 boxHalfExtentsXZ{0.0f};
+
+    [[nodiscard]] bool empty() const {
+        return shape == AgentClearanceShape::None;
+    }
+};
+
+glm::vec3 cellCenter3(const NavigationSolveView& runtime, std::size_t cellIndex);
+
 float cross2(const glm::vec2& lhs, const glm::vec2& rhs) {
     return lhs.x * rhs.y - lhs.y * rhs.x;
 }
@@ -158,6 +186,103 @@ std::string lowercaseCopy(std::string value) {
         return static_cast<char>(std::tolower(ch));
     });
     return value;
+}
+
+float planarAbsMax(const TransformComponent& transform) {
+    return std::max(std::abs(transform.scale.x), std::abs(transform.scale.z));
+}
+
+glm::vec2 normalizeOrFallback(const glm::vec2& vector, const glm::vec2& fallback = glm::vec2(0.0f, 1.0f)) {
+    const float length = glm::length(vector);
+    return length > kPlaneEpsilon ? vector / length : fallback;
+}
+
+glm::vec2 rotateLocalXZToPlanar(const glm::vec2& local, const glm::vec2& forward) {
+    const glm::vec2 safeForward = normalizeOrFallback(forward);
+    const glm::vec2 right(safeForward.y, -safeForward.x);
+    return right * local.x + safeForward * local.y;
+}
+
+float supportDistance(const AgentClearanceProfile& profile, const glm::vec2& sampleDirection, const glm::vec2& travelDirection) {
+    if (profile.empty()) {
+        return 0.0f;
+    }
+
+    const glm::vec2 direction = normalizeOrFallback(sampleDirection);
+    if (profile.shape == AgentClearanceShape::Sphere) {
+        const glm::vec2 center = rotateLocalXZToPlanar(profile.centerXZ, travelDirection);
+        return std::abs(glm::dot(direction, center)) + profile.sphereRadius;
+    }
+
+    const glm::vec2 forward = normalizeOrFallback(travelDirection);
+    const glm::vec2 right(forward.y, -forward.x);
+    const glm::vec2 center = rotateLocalXZToPlanar(profile.centerXZ, travelDirection);
+    return std::abs(glm::dot(direction, center)) +
+        std::abs(glm::dot(direction, right)) * profile.boxHalfExtentsXZ.x +
+        std::abs(glm::dot(direction, forward)) * profile.boxHalfExtentsXZ.y;
+}
+
+AgentClearanceProfile resolveAgentClearanceProfile(const World& world, EntityId entity, const NavAgentComponent& agent) {
+    if (agent.clearanceSource == NavAgentClearanceSource::None) {
+        return AgentClearanceProfile{};
+    }
+
+    const TransformComponent* transform = world.transforms.tryGet(entity);
+    if (transform == nullptr) {
+        return AgentClearanceProfile{};
+    }
+
+    const SphereColliderComponent* sphere = world.sphereColliders.tryGet(entity);
+    const BoxColliderComponent* box = world.boxColliders.tryGet(entity);
+    switch (agent.clearanceSource) {
+        case NavAgentClearanceSource::SphereCollider:
+            if (sphere != nullptr) {
+                return AgentClearanceProfile{
+                    AgentClearanceShape::Sphere,
+                    glm::vec2(sphere->center.x * transform->scale.x, sphere->center.z * transform->scale.z),
+                    sphere->radius * planarAbsMax(*transform),
+                    glm::vec2(0.0f)
+                };
+            }
+            return AgentClearanceProfile{};
+        case NavAgentClearanceSource::BoxCollider:
+            if (box != nullptr) {
+                return AgentClearanceProfile{
+                    AgentClearanceShape::Box,
+                    glm::vec2(box->center.x * transform->scale.x, box->center.z * transform->scale.z),
+                    0.0f,
+                    glm::vec2(
+                        std::abs(box->halfExtents.x * transform->scale.x),
+                        std::abs(box->halfExtents.z * transform->scale.z)
+                    )
+                };
+            }
+            return AgentClearanceProfile{};
+        case NavAgentClearanceSource::Auto:
+            if (sphere != nullptr) {
+                return AgentClearanceProfile{
+                    AgentClearanceShape::Sphere,
+                    glm::vec2(sphere->center.x * transform->scale.x, sphere->center.z * transform->scale.z),
+                    sphere->radius * planarAbsMax(*transform),
+                    glm::vec2(0.0f)
+                };
+            }
+            if (box != nullptr) {
+                return AgentClearanceProfile{
+                    AgentClearanceShape::Box,
+                    glm::vec2(box->center.x * transform->scale.x, box->center.z * transform->scale.z),
+                    0.0f,
+                    glm::vec2(
+                        std::abs(box->halfExtents.x * transform->scale.x),
+                        std::abs(box->halfExtents.z * transform->scale.z)
+                    )
+                };
+            }
+            return AgentClearanceProfile{};
+        case NavAgentClearanceSource::None:
+        default:
+            return AgentClearanceProfile{};
+    }
 }
 
 std::string entityName(const World& world, EntityId entity) {
@@ -1433,6 +1558,298 @@ bool pointInsideAuthoredWalkableSurface(const NavigationSolveView& runtime, cons
     return false;
 }
 
+glm::vec2 travelDirectionForSegment(const glm::vec3& from, const glm::vec3& to, const glm::vec2& fallback = glm::vec2(0.0f, 1.0f)) {
+    return normalizeOrFallback(glm::vec2(to.x - from.x, to.z - from.z), fallback);
+}
+
+glm::vec2 clearanceSampleDirection(int sampleIndex) {
+    const float angle = kTau * static_cast<float>(sampleIndex) / static_cast<float>(kClearanceSampleDirections);
+    return glm::vec2(std::cos(angle), std::sin(angle));
+}
+
+bool pointInsideAuthoredWalkableSurfaceWithClearance(
+    const NavigationSolveView& runtime,
+    const glm::vec3& point,
+    const AgentClearanceProfile& profile,
+    const glm::vec2& travelDirection
+) {
+    if (!pointInsideAuthoredWalkableSurface(runtime, point)) {
+        return false;
+    }
+    if (profile.empty()) {
+        return true;
+    }
+
+    for (int sampleIndex = 0; sampleIndex < kClearanceSampleDirections; ++sampleIndex) {
+        const glm::vec2 direction = clearanceSampleDirection(sampleIndex);
+        const float clearanceDistance = supportDistance(profile, direction, travelDirection);
+        const glm::vec3 samplePoint(
+            point.x + direction.x * clearanceDistance,
+            point.y,
+            point.z + direction.y * clearanceDistance
+        );
+        if (!pointInsideAuthoredWalkableSurface(runtime, samplePoint)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::optional<SharedPortalResult> shrinkPortal(
+    const glm::vec2& a,
+    const glm::vec2& b,
+    const AgentClearanceProfile& profile,
+    const glm::vec2& travelDirection
+) {
+    if (profile.empty()) {
+        return SharedPortalResult{a, b};
+    }
+
+    const glm::vec2 delta = b - a;
+    const float length = glm::length(delta);
+    if (length <= kPolygonEpsilon) {
+        return std::nullopt;
+    }
+    const glm::vec2 direction = delta / length;
+    const float clearanceDistance = supportDistance(profile, direction, travelDirection);
+    if (length <= clearanceDistance * 2.0f + kPolygonEpsilon) {
+        return std::nullopt;
+    }
+    return SharedPortalResult{
+        a + direction * clearanceDistance,
+        b - direction * clearanceDistance
+    };
+}
+
+void appendPathCorner(std::vector<glm::vec3>& corners, const glm::vec3& point, float epsilon) {
+    if (corners.empty() || !nearlyEqualVec3(corners.back(), point, epsilon)) {
+        corners.push_back(point);
+    }
+}
+
+std::optional<glm::vec3> resolvePointWithClearance(
+    const NavigationSolveView& runtime,
+    const glm::vec3& point,
+    const AgentClearanceProfile& profile,
+    const glm::vec2& preferredTravelDirection = glm::vec2(0.0f, 1.0f)
+) {
+    if (profile.empty()) {
+        return pointInsideAuthoredWalkableSurface(runtime, point)
+            ? std::optional<glm::vec3>(point)
+            : std::optional<glm::vec3>{};
+    }
+    if (pointInsideAuthoredWalkableSurfaceWithClearance(runtime, point, profile, preferredTravelDirection)) {
+        return point;
+    }
+
+    glm::vec3 resolved = point;
+    if (!pointInsideAuthoredWalkableSurface(runtime, resolved)) {
+        const std::optional<std::size_t> nearest = findNearestCell(runtime, point);
+        if (!nearest.has_value()) {
+            return std::nullopt;
+        }
+        resolved = cellCenter3(runtime, *nearest);
+    }
+    const glm::vec2 inwardDirection = travelDirectionForSegment(point, resolved, preferredTravelDirection);
+    if (pointInsideAuthoredWalkableSurfaceWithClearance(runtime, resolved, profile, inwardDirection)) {
+        return resolved;
+    }
+
+    for (int iteration = 0; iteration < kClearanceProjectionIterations; ++iteration) {
+        glm::vec2 correction(0.0f);
+        bool anyOutside = false;
+        for (int sampleIndex = 0; sampleIndex < kClearanceSampleDirections; ++sampleIndex) {
+            const glm::vec2 direction = clearanceSampleDirection(sampleIndex);
+            const float clearanceDistance = supportDistance(profile, direction, inwardDirection);
+            const glm::vec3 samplePoint(
+                resolved.x + direction.x * clearanceDistance,
+                resolved.y,
+                resolved.z + direction.y * clearanceDistance
+            );
+            if (pointInsideAuthoredWalkableSurface(runtime, samplePoint)) {
+                continue;
+            }
+
+            anyOutside = true;
+            float insideT = 0.0f;
+            float outsideT = 1.0f;
+            for (int searchStep = 0; searchStep < kClearanceBinarySearchSteps; ++searchStep) {
+                const float midT = (insideT + outsideT) * 0.5f;
+                const glm::vec3 midPoint(
+                    resolved.x + direction.x * clearanceDistance * midT,
+                    resolved.y,
+                    resolved.z + direction.y * clearanceDistance * midT
+                );
+                if (pointInsideAuthoredWalkableSurface(runtime, midPoint)) {
+                    insideT = midT;
+                } else {
+                    outsideT = midT;
+                }
+            }
+            correction -= direction * (clearanceDistance * (1.0f - insideT));
+        }
+
+        if (!anyOutside) {
+            return resolved;
+        }
+
+        const float correctionLength = glm::length(correction);
+        if (correctionLength <= kPolygonEpsilon) {
+            break;
+        }
+
+        const glm::vec2 delta = correction / static_cast<float>(kClearanceSampleDirections);
+        bool advanced = false;
+        float stepScale = 1.0f;
+        while (stepScale >= 0.125f) {
+            const glm::vec3 candidate(
+                resolved.x + delta.x * stepScale,
+                resolved.y,
+                resolved.z + delta.y * stepScale
+            );
+            if (pointInsideAuthoredWalkableSurface(runtime, candidate)) {
+                resolved = candidate;
+                advanced = true;
+                break;
+            }
+            stepScale *= 0.5f;
+        }
+        if (!advanced) {
+            break;
+        }
+        if (pointInsideAuthoredWalkableSurfaceWithClearance(
+                runtime,
+                resolved,
+                profile,
+                travelDirectionForSegment(point, resolved, preferredTravelDirection))) {
+            return resolved;
+        }
+    }
+
+    std::optional<glm::vec3> bestCandidate{};
+    float bestDistance = std::numeric_limits<float>::max();
+    const auto considerCandidate = [&](const glm::vec3& candidate) {
+        if (!pointInsideAuthoredWalkableSurfaceWithClearance(
+                runtime,
+                candidate,
+                profile,
+                travelDirectionForSegment(point, candidate, preferredTravelDirection))) {
+            return;
+        }
+        const float distance = glm::distance(point, candidate);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestCandidate = candidate;
+        }
+    };
+    const auto considerProjectedCandidate = [&](const glm::vec3& safeTarget) {
+        if (!pointInsideAuthoredWalkableSurfaceWithClearance(
+                runtime,
+                safeTarget,
+                profile,
+                travelDirectionForSegment(point, safeTarget, preferredTravelDirection))) {
+            return;
+        }
+        float unsafeT = 0.0f;
+        float safeT = 1.0f;
+        for (int searchStep = 0; searchStep < kClearanceBinarySearchSteps; ++searchStep) {
+            const float midT = (unsafeT + safeT) * 0.5f;
+            const glm::vec3 midPoint = point + (safeTarget - point) * midT;
+            if (pointInsideAuthoredWalkableSurfaceWithClearance(
+                    runtime,
+                    midPoint,
+                    profile,
+                    travelDirectionForSegment(point, midPoint, preferredTravelDirection))) {
+                safeT = midT;
+            } else {
+                unsafeT = midT;
+            }
+        }
+        considerCandidate(point + (safeTarget - point) * safeT);
+    };
+
+    considerCandidate(resolved);
+    considerProjectedCandidate(resolved);
+    for (std::size_t cellIndex = 0; cellIndex < runtime.bakedCells.size(); ++cellIndex) {
+        const glm::vec3 cellCenter = cellCenter3(runtime, cellIndex);
+        considerCandidate(cellCenter);
+        considerProjectedCandidate(cellCenter);
+    }
+
+    const float nominalClearance = std::max(
+        supportDistance(profile, glm::vec2(1.0f, 0.0f), preferredTravelDirection),
+        supportDistance(profile, glm::vec2(0.0f, 1.0f), preferredTravelDirection)
+    );
+    float searchLimit = std::max(nominalClearance * 4.0f, 1.0f);
+    if (const std::optional<std::size_t> nearest = findNearestCell(runtime, point); nearest.has_value()) {
+        searchLimit = std::max(searchLimit, glm::distance(point, cellCenter3(runtime, *nearest)) + nominalClearance * 2.0f);
+    }
+    const float radiusStep = std::max(nominalClearance * 0.25f, 0.05f);
+    for (float radius = radiusStep; radius <= searchLimit; radius += radiusStep) {
+        for (int sampleIndex = 0; sampleIndex < kClearanceSampleDirections; ++sampleIndex) {
+            const glm::vec2 direction = clearanceSampleDirection(sampleIndex);
+            considerCandidate(glm::vec3(
+                point.x + direction.x * radius,
+                resolved.y,
+                point.z + direction.y * radius
+            ));
+        }
+    }
+    return bestCandidate;
+}
+
+std::optional<glm::vec3> resolvePointTowardReferenceWithClearance(
+    const NavigationSolveView& runtime,
+    const glm::vec3& point,
+    const glm::vec3& reference,
+    const AgentClearanceProfile& profile
+) {
+    if (profile.empty()) {
+        return point;
+    }
+    const glm::vec2 travelDirection = travelDirectionForSegment(point, reference);
+    if (pointInsideAuthoredWalkableSurfaceWithClearance(runtime, point, profile, travelDirection)) {
+        return point;
+    }
+    if (!pointInsideAuthoredWalkableSurfaceWithClearance(runtime, reference, profile, travelDirection)) {
+        return std::nullopt;
+    }
+    if (glm::distance(point, reference) <= kPolygonEpsilon) {
+        return std::nullopt;
+    }
+
+    constexpr int kReferenceSamples = 32;
+    float unsafeT = 0.0f;
+    std::optional<float> safeT{};
+    for (int sampleIndex = 1; sampleIndex <= kReferenceSamples; ++sampleIndex) {
+        const float t = static_cast<float>(sampleIndex) / static_cast<float>(kReferenceSamples);
+        const glm::vec3 candidate = point + (reference - point) * t;
+        if (pointInsideAuthoredWalkableSurfaceWithClearance(runtime, candidate, profile, travelDirection)) {
+            safeT = t;
+            break;
+        }
+        unsafeT = t;
+    }
+    if (!safeT.has_value()) {
+        safeT = 1.0f;
+    }
+
+    for (int searchStep = 0; searchStep < kClearanceBinarySearchSteps; ++searchStep) {
+        const float midT = (unsafeT + *safeT) * 0.5f;
+        const glm::vec3 candidate = point + (reference - point) * midT;
+        if (pointInsideAuthoredWalkableSurfaceWithClearance(runtime, candidate, profile, travelDirection)) {
+            safeT = midT;
+        } else {
+            unsafeT = midT;
+        }
+    }
+
+    const glm::vec3 resolved = point + (reference - point) * (*safeT);
+    return pointInsideAuthoredWalkableSurfaceWithClearance(runtime, resolved, profile, travelDirection)
+        ? std::optional<glm::vec3>(resolved)
+        : std::nullopt;
+}
+
 bool segmentInsideAuthoredWalkableSurface(
     const NavigationSolveView& runtime,
     const glm::vec3& from,
@@ -1442,6 +1859,28 @@ bool segmentInsideAuthoredWalkableSurface(
     for (int sampleIndex = 0; sampleIndex <= kSegmentSamples; ++sampleIndex) {
         const float t = static_cast<float>(sampleIndex) / static_cast<float>(kSegmentSamples);
         if (!pointInsideAuthoredWalkableSurface(runtime, from + t * (to - from))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool segmentInsideAuthoredWalkableSurfaceWithClearance(
+    const NavigationSolveView& runtime,
+    const glm::vec3& from,
+    const glm::vec3& to,
+    const AgentClearanceProfile& profile
+) {
+    if (profile.empty()) {
+        return segmentInsideAuthoredWalkableSurface(runtime, from, to);
+    }
+
+    const float distance = glm::distance(from, to);
+    const int sampleCount = std::max(24, static_cast<int>(std::ceil(distance / 0.25f)));
+    const glm::vec2 travelDirection = travelDirectionForSegment(from, to);
+    for (int sampleIndex = 0; sampleIndex <= sampleCount; ++sampleIndex) {
+        const float t = static_cast<float>(sampleIndex) / static_cast<float>(sampleCount);
+        if (!pointInsideAuthoredWalkableSurfaceWithClearance(runtime, from + t * (to - from), profile, travelDirection)) {
             return false;
         }
     }
@@ -1471,12 +1910,13 @@ bool pathInsideWalkableSurfaceOrLinks(
     const glm::vec3& start,
     const std::vector<glm::vec3>& corners,
     const std::vector<const NavGraphEdge*>& edgePath,
-    float epsilon
+    float epsilon,
+    const AgentClearanceProfile& profile
 ) {
     glm::vec3 previous = start;
     for (const glm::vec3& corner : corners) {
-        if (!segmentInsideAuthoredWalkableSurface(runtime, previous, corner) &&
-            !segmentMatchesLink(previous, corner, edgePath, epsilon)) {
+        if (!segmentMatchesLink(previous, corner, edgePath, epsilon) &&
+            !segmentInsideAuthoredWalkableSurfaceWithClearance(runtime, previous, corner, profile)) {
             return false;
         }
         previous = corner;
@@ -1486,42 +1926,76 @@ bool pathInsideWalkableSurfaceOrLinks(
 
 std::vector<glm::vec3> buildConservativeCellPathCorners(
     const NavigationSolveView& runtime,
-    const glm::vec3& start,
     const glm::vec3& destination,
-    const std::vector<std::size_t>& cellPath,
     const std::vector<const NavGraphEdge*>& edgePath,
-    float arrivalRadius
+    float arrivalRadius,
+    const AgentClearanceProfile& profile
 ) {
     std::vector<glm::vec3> corners{};
-    if (cellPath.empty()) {
+    glm::vec3 previous = destination;
+    for (const NavGraphEdge* edgePtr : edgePath) {
+        if (edgePtr == nullptr) {
+            continue;
+        }
+        const NavGraphEdge& edge = *edgePtr;
+        if (edge.viaLink) {
+            appendPathCorner(corners, edge.linkStartPoint, arrivalRadius);
+            appendPathCorner(corners, edge.linkEndPoint, arrivalRadius);
+            continue;
+        }
+
+        const glm::vec3 targetPoint = edge.targetCellIndex < runtime.bakedCells.size()
+            ? cellCenter3(runtime, edge.targetCellIndex)
+            : destination;
+        const std::optional<SharedPortalResult> safePortal = shrinkPortal(
+            edge.portalA,
+            edge.portalB,
+            profile,
+            travelDirectionForSegment(previous, targetPoint)
+        );
+        if (!safePortal.has_value()) {
+            return {};
+        }
+        const glm::vec2 midpoint = (safePortal->a + safePortal->b) * 0.5f;
+        const float elevation = edge.targetCellIndex < runtime.bakedCells.size()
+            ? runtime.bakedCells[edge.targetCellIndex].elevationY
+            : destination.y;
+        previous = glm::vec3(midpoint.x, elevation, midpoint.y);
+        appendPathCorner(corners, previous, arrivalRadius);
+    }
+
+    appendPathCorner(corners, destination, arrivalRadius);
+    return corners;
+}
+
+std::vector<glm::vec3> simplifyPathCorners(
+    const NavigationSolveView& runtime,
+    const glm::vec3& start,
+    const std::vector<glm::vec3>& corners,
+    float arrivalRadius,
+    const AgentClearanceProfile& profile
+) {
+    if (corners.size() <= 1u) {
         return corners;
     }
 
-    for (std::size_t stepIndex = 0; stepIndex < edgePath.size(); ++stepIndex) {
-        const NavGraphEdge& edge = *edgePath[stepIndex];
-        const std::size_t nextCellIndex = cellPath[stepIndex + 1u];
-        if (edge.viaLink) {
-            if (corners.empty() || !nearlyEqualVec3(corners.back(), edge.linkStartPoint, arrivalRadius)) {
-                corners.push_back(edge.linkStartPoint);
+    std::vector<glm::vec3> simplified{};
+    glm::vec3 segmentStart = start;
+    std::size_t anchorIndex = 0u;
+    while (anchorIndex < corners.size()) {
+        std::size_t bestIndex = anchorIndex;
+        for (std::size_t candidateIndex = corners.size(); candidateIndex-- > anchorIndex;) {
+            const glm::vec3& candidate = corners[candidateIndex];
+            if (segmentInsideAuthoredWalkableSurfaceWithClearance(runtime, segmentStart, candidate, profile)) {
+                bestIndex = candidateIndex;
+                break;
             }
-            corners.push_back(edge.linkEndPoint);
-            if (stepIndex + 1u < edgePath.size()) {
-                const glm::vec2 center = runtime.bakedCellCenters[nextCellIndex];
-                corners.push_back(glm::vec3(center.x, runtime.bakedCells[nextCellIndex].elevationY, center.y));
-            }
-            continue;
         }
-        if (stepIndex + 1u >= edgePath.size()) {
-            continue;
-        }
-        const glm::vec2 center = runtime.bakedCellCenters[nextCellIndex];
-        corners.push_back(glm::vec3(center.x, runtime.bakedCells[nextCellIndex].elevationY, center.y));
+        appendPathCorner(simplified, corners[bestIndex], arrivalRadius);
+        segmentStart = corners[bestIndex];
+        anchorIndex = bestIndex + 1u;
     }
-
-    if (corners.empty() || !nearlyEqualVec3(corners.back(), destination, arrivalRadius)) {
-        corners.push_back(destination);
-    }
-    return corners;
+    return simplified;
 }
 
 bool segmentMatchesAnyNavLink(
@@ -1760,30 +2234,61 @@ std::shared_ptr<const NavigationSolveSnapshot> buildSolveSnapshot(const Navigati
     });
 }
 
-std::optional<std::vector<glm::vec3>> solvePathCorners(
+std::optional<SolvedPath> solvePathCorners(
     const NavigationSolveView& runtime,
     const glm::vec3& start,
     const glm::vec3& destination,
-    float arrivalRadius
+    float arrivalRadius,
+    const AgentClearanceProfile& profile
 ) {
     if (runtime.bakedCells.empty()) {
         return std::nullopt;
     }
 
-    std::vector<std::size_t> startCells = findContainingCells(runtime, start);
-    std::vector<std::size_t> targetCells = findContainingCells(runtime, destination);
-    if (!startCells.empty() && !targetCells.empty()) {
-        if (const auto visibilityPath = findVisibilityPath(runtime, start, destination); visibilityPath.has_value()) {
-            return visibilityPath;
+    const std::vector<std::size_t> rawStartCells = findContainingCells(runtime, start);
+    const std::vector<std::size_t> rawTargetCells = findContainingCells(runtime, destination);
+    const bool allowReferenceProjection =
+        !profile.empty() &&
+        std::abs(start.y - destination.y) <= kLayerGroupingEpsilon &&
+        segmentInsideAuthoredWalkableSurface(runtime, start, destination);
+
+    glm::vec3 resolvedStart = start;
+    glm::vec3 resolvedDestination = destination;
+    if (!profile.empty()) {
+        const std::optional<glm::vec3> safeStart = allowReferenceProjection
+            ? resolvePointTowardReferenceWithClearance(runtime, start, destination, profile)
+            : resolvePointWithClearance(runtime, start, profile);
+        const std::optional<glm::vec3> safeDestination = allowReferenceProjection
+            ? resolvePointTowardReferenceWithClearance(runtime, destination, start, profile)
+            : resolvePointWithClearance(runtime, destination, profile);
+        if (!safeStart.has_value() || !safeDestination.has_value()) {
+            return std::nullopt;
+        }
+        resolvedStart = *safeStart;
+        resolvedDestination = *safeDestination;
+    }
+    if ((rawStartCells == rawTargetCells || (!rawStartCells.empty() && !rawTargetCells.empty() &&
+            std::find_first_of(rawStartCells.begin(), rawStartCells.end(), rawTargetCells.begin(), rawTargetCells.end()) != rawStartCells.end())) &&
+        segmentInsideAuthoredWalkableSurfaceWithClearance(runtime, resolvedStart, resolvedDestination, profile)) {
+        std::vector<glm::vec3> directCorners{};
+        appendPathCorner(directCorners, resolvedDestination, arrivalRadius);
+        return SolvedPath{resolvedDestination, std::move(directCorners)};
+    }
+
+    std::vector<std::size_t> startCells = findContainingCells(runtime, resolvedStart);
+    std::vector<std::size_t> targetCells = findContainingCells(runtime, resolvedDestination);
+    if (profile.empty() && !startCells.empty() && !targetCells.empty()) {
+        if (const auto visibilityPath = findVisibilityPath(runtime, resolvedStart, resolvedDestination); visibilityPath.has_value()) {
+            return SolvedPath{resolvedDestination, *visibilityPath};
         }
     }
     if (startCells.empty()) {
-        if (const auto nearest = findNearestCell(runtime, start); nearest.has_value()) {
+        if (const auto nearest = findNearestCell(runtime, resolvedStart); nearest.has_value()) {
             startCells.push_back(*nearest);
         }
     }
     if (targetCells.empty()) {
-        if (const auto nearest = findNearestCell(runtime, destination); nearest.has_value()) {
+        if (const auto nearest = findNearestCell(runtime, resolvedDestination); nearest.has_value()) {
             targetCells.push_back(*nearest);
         }
     }
@@ -1845,6 +2350,20 @@ std::optional<std::vector<glm::vec3>> solvePathCorners(
 
         for (std::size_t edgeIndex = 0; edgeIndex < runtime.graph[current.cellIndex].size(); ++edgeIndex) {
             const NavGraphEdge& edge = runtime.graph[current.cellIndex][edgeIndex];
+            if (!profile.empty()) {
+                if (edge.viaLink) {
+                    const glm::vec2 linkDirection = travelDirectionForSegment(edge.linkStartPoint, edge.linkEndPoint);
+                    if (!pointInsideAuthoredWalkableSurfaceWithClearance(runtime, edge.linkStartPoint, profile, linkDirection) ||
+                        !pointInsideAuthoredWalkableSurfaceWithClearance(runtime, edge.linkEndPoint, profile, linkDirection)) {
+                        continue;
+                    }
+                } else if (!shrinkPortal(edge.portalA, edge.portalB, profile, glm::vec2(
+                               runtime.bakedCellCenters[edge.targetCellIndex].x - runtime.bakedCellCenters[current.cellIndex].x,
+                               runtime.bakedCellCenters[edge.targetCellIndex].y - runtime.bakedCellCenters[current.cellIndex].y)).has_value()) {
+                    continue;
+                }
+            }
+
             const glm::vec3 fromCenter = cellCenter3(runtime, current.cellIndex);
             const glm::vec3 toCenter = cellCenter3(runtime, edge.targetCellIndex);
             const float stepCost = edge.viaLink
@@ -1885,7 +2404,7 @@ std::optional<std::vector<glm::vec3>> solvePathCorners(
     std::reverse(edgePath.begin(), edgePath.end());
 
     std::vector<glm::vec3> corners{};
-    glm::vec3 segmentStart = start;
+    glm::vec3 segmentStart = resolvedStart;
     std::vector<std::pair<glm::vec2, glm::vec2>> portals{};
     float currentLayerY = runtime.bakedCells[cellPath.front()].elevationY;
     for (std::size_t stepIndex = 0; stepIndex < edgePath.size(); ++stepIndex) {
@@ -1893,17 +2412,29 @@ std::optional<std::vector<glm::vec3>> solvePathCorners(
         const std::size_t fromCellIndex = cellPath[stepIndex];
         const std::size_t toCellIndex = cellPath[stepIndex + 1u];
         if (!edge.viaLink) {
+            const std::optional<SharedPortalResult> safePortal = shrinkPortal(
+                edge.portalA,
+                edge.portalB,
+                profile,
+                glm::vec2(
+                    runtime.bakedCellCenters[toCellIndex].x - runtime.bakedCellCenters[fromCellIndex].x,
+                    runtime.bakedCellCenters[toCellIndex].y - runtime.bakedCellCenters[fromCellIndex].y
+                )
+            );
+            if (!safePortal.has_value()) {
+                return std::nullopt;
+            }
             const glm::vec2 left = orientPortalLeft(
                 runtime.bakedCellCenters[fromCellIndex],
                 runtime.bakedCellCenters[toCellIndex],
-                edge.portalA,
-                edge.portalB
+                safePortal->a,
+                safePortal->b
             );
             const glm::vec2 right = orientPortalRight(
                 runtime.bakedCellCenters[fromCellIndex],
                 runtime.bakedCellCenters[toCellIndex],
-                edge.portalA,
-                edge.portalB
+                safePortal->a,
+                safePortal->b
             );
             portals.emplace_back(left, right);
             continue;
@@ -1915,10 +2446,10 @@ std::optional<std::vector<glm::vec3>> solvePathCorners(
             glm::vec2(edge.linkStartPoint.x, edge.linkStartPoint.z)
         );
         for (std::size_t pointIndex = 1; pointIndex < pulled.size(); ++pointIndex) {
-            corners.push_back(glm::vec3(pulled[pointIndex].x, currentLayerY, pulled[pointIndex].y));
+            appendPathCorner(corners, glm::vec3(pulled[pointIndex].x, currentLayerY, pulled[pointIndex].y), arrivalRadius);
         }
-        corners.push_back(edge.linkStartPoint);
-        corners.push_back(edge.linkEndPoint);
+        appendPathCorner(corners, edge.linkStartPoint, arrivalRadius);
+        appendPathCorner(corners, edge.linkEndPoint, arrivalRadius);
         segmentStart = edge.linkEndPoint;
         currentLayerY = runtime.bakedCells[toCellIndex].elevationY;
         portals.clear();
@@ -1927,29 +2458,39 @@ std::optional<std::vector<glm::vec3>> solvePathCorners(
     const std::vector<glm::vec2> pulled = stringPull(
         glm::vec2(segmentStart.x, segmentStart.z),
         portals,
-        glm::vec2(destination.x, destination.z)
+        glm::vec2(resolvedDestination.x, resolvedDestination.z)
     );
     for (std::size_t pointIndex = 1; pointIndex < pulled.size(); ++pointIndex) {
-        corners.push_back(glm::vec3(pulled[pointIndex].x, currentLayerY, pulled[pointIndex].y));
+        appendPathCorner(corners, glm::vec3(pulled[pointIndex].x, currentLayerY, pulled[pointIndex].y), arrivalRadius);
     }
-    if (corners.empty() || !nearlyEqualVec3(corners.back(), destination, arrivalRadius)) {
-        corners.push_back(destination);
-    }
-    if (!pathInsideWalkableSurfaceOrLinks(runtime, start, corners, edgePath, arrivalRadius)) {
+    appendPathCorner(corners, resolvedDestination, arrivalRadius);
+    if (!pathInsideWalkableSurfaceOrLinks(runtime, resolvedStart, corners, edgePath, arrivalRadius, profile)) {
         corners = buildConservativeCellPathCorners(
             runtime,
-            start,
-            destination,
-            cellPath,
+            resolvedDestination,
             edgePath,
-            arrivalRadius
+            arrivalRadius,
+            profile
         );
-        if (!pathInsideWalkableSurfaceOrLinks(runtime, start, corners, edgePath, arrivalRadius)) {
+        if (!pathInsideWalkableSurfaceOrLinks(runtime, resolvedStart, corners, edgePath, arrivalRadius, profile)) {
             return std::nullopt;
         }
     }
+    if (std::none_of(edgePath.begin(), edgePath.end(), [](const NavGraphEdge* edge) {
+            return edge != nullptr && edge->viaLink;
+        })) {
+        corners = simplifyPathCorners(runtime, resolvedStart, corners, arrivalRadius, profile);
+    }
 
-    return corners;
+    std::vector<glm::vec3> finalCorners{};
+    if (!nearlyEqualVec3(start, resolvedStart, arrivalRadius)) {
+        appendPathCorner(finalCorners, resolvedStart, arrivalRadius);
+    }
+    for (const glm::vec3& corner : corners) {
+        appendPathCorner(finalCorners, corner, arrivalRadius);
+    }
+
+    return SolvedPath{resolvedDestination, std::move(finalCorners)};
 }
 
 void applyPathResult(NavAgentComponent& agent, const glm::vec3& destination, std::vector<glm::vec3> corners) {
@@ -2584,14 +3125,15 @@ bool NavigationSystem::setAgentDestination(
         return false;
     }
 
-    const std::optional<std::vector<glm::vec3>> corners =
-        solvePathCorners(makeSolveView(*snapshot), transform->position, destination, agent->arrivalRadius);
-    if (!corners.has_value()) {
+    const AgentClearanceProfile clearanceProfile = resolveAgentClearanceProfile(world, agentEntity, *agent);
+    const std::optional<SolvedPath> path =
+        solvePathCorners(makeSolveView(*snapshot), transform->position, destination, agent->arrivalRadius, clearanceProfile);
+    if (!path.has_value()) {
         return false;
     }
 
     discardPendingPathRequest(agentEntity);
-    applyPathResult(*agent, destination, *corners);
+    applyPathResult(*agent, path->destination, std::move(path->corners));
     return true;
 }
 
@@ -2611,6 +3153,7 @@ bool NavigationSystem::requestAgentDestination(
 
     const glm::vec3 startPosition = transform->position;
     const float arrivalRadius = agent->arrivalRadius;
+    const AgentClearanceProfile clearanceProfile = resolveAgentClearanceProfile(world, agentEntity, *agent);
     const std::uint64_t requestId = nextPathRequestId_++;
     const std::uint64_t solveRevision = runtime.solveRevision;
 
@@ -2620,7 +3163,16 @@ bool NavigationSystem::requestAgentDestination(
         solveRevision,
         startPosition,
         destination,
-        scheduler.submitAsync("Navigation Pathfind", [snapshot, agentEntity, requestId, solveRevision, startPosition, destination, arrivalRadius]() {
+        scheduler.submitAsync("Navigation Pathfind", [
+            snapshot,
+            agentEntity,
+            requestId,
+            solveRevision,
+            startPosition,
+            destination,
+            arrivalRadius,
+            clearanceProfile
+        ]() {
             const auto startedAt = std::chrono::steady_clock::now();
             PathSolveResult result{};
             result.agentEntity = agentEntity;
@@ -2628,7 +3180,14 @@ bool NavigationSystem::requestAgentDestination(
             result.solveRevision = solveRevision;
             result.startPosition = startPosition;
             result.destination = destination;
-            result.pathCorners = solvePathCorners(makeSolveView(*snapshot), startPosition, destination, arrivalRadius);
+            const std::optional<SolvedPath> path =
+                solvePathCorners(makeSolveView(*snapshot), startPosition, destination, arrivalRadius, clearanceProfile);
+            if (path.has_value()) {
+                result.destination = path->destination;
+                result.pathCorners = path->corners;
+            } else {
+                result.pathCorners.reset();
+            }
             result.durationUs = static_cast<std::uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - startedAt).count()
             );

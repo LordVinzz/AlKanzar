@@ -23,7 +23,9 @@ add_library(alkanzar_core STATIC
     src/core/app/AppState.cpp
     src/core/app/Application.cpp
     src/core/app/RuntimePolicy.cpp
+    src/core/ecs/ComponentRegistry.cpp
     src/core/editor/EditorSessionImGuiSettings.cpp
+    src/core/physics/PhysicsSystem.cpp
     src/core/navigation/Navigation.cpp
     src/core/scene/Camera.cpp
     src/core/scene/SceneFactory.cpp

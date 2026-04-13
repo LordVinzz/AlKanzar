@@ -28,6 +28,14 @@ SceneBlueprint SceneRegistry::defaultScene() const {
         }
     };
 
+    blueprint.lightVolumes = {
+        LightVolumeBlueprint{
+            "Global Light Volume",
+            TransformComponent{},
+            glm::vec3(100.0f)
+        }
+    };
+
     blueprint.pointLights = {
         PointLightBlueprint{
             "Point Light",

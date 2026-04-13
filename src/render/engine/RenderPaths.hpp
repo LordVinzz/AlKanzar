@@ -134,6 +134,8 @@ private:
     GLint volumeBoundsMaxLocation_{-1};
     GLint volumeInvViewLocation_{-1};
     GLint volumeSpotShadowMatrixLocation_{-1};
+    GLint volumeSpotShadowPositionLocation_{-1};
+    GLint volumeSpotShadowFarPlaneLocation_{-1};
     GLint volumeSpotShadowCountLocation_{-1};
     GLint volumeSpotShadowTexelSizeLocation_{-1};
     GLint volumeSpotShadowPcfRadiusLocation_{-1};

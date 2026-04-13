@@ -228,6 +228,10 @@ void Application::run() {
             }
         }
         {
+            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Physics Update");
+            services_.physicsSystem.update(services_.world, services_.time, services_.scheduler, true);
+        }
+        {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Transform Update");
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary(
@@ -284,7 +288,6 @@ void Application::run() {
             }
             services_.renderExtractionSystem.extract(
                 services_.world,
-                services_.materials,
                 services_.selection,
                 services_.frame,
                 services_.scheduler,
@@ -448,7 +451,7 @@ void Application::transitionTo(AppMode mode) {
 }
 
 void Application::bindEventHandlers() {
-    services_.selection.changed().connect([this](const std::optional<EntityId>& selection) {
+    services_.selection.changed().connect([this](const std::optional<SelectionTarget>& selection) {
         services_.events.publish(SelectionChangedEvent{selection});
     });
 

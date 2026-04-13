@@ -9,7 +9,7 @@
 #include <glm/vec4.hpp>
 
 #include "core/ecs/Entity.hpp"
-#include "core/lighting/MaterialLibrary.hpp"
+#include "core/ecs/ComponentRegistry.hpp"
 #include "render/resources/Material.hpp"
 #include "render/engine/RenderTypes.hpp"
 
@@ -18,7 +18,6 @@ namespace core {
 struct FrameRenderable {
     EntityId entity{};
     render::MeshHandle mesh{};
-    MaterialHandle materialHandle{};
     std::shared_ptr<render::Material> material{};
     render::RenderLayer layer{render::RenderLayer::Geometry};
     render::Bounds3 localBounds{};
@@ -48,18 +47,36 @@ struct FrameLight {
 };
 
 struct FrameLightVolume {
+    EntityId entity{};
     glm::vec3 minCorner{0.0f};
     glm::vec3 maxCorner{0.0f};
     std::vector<int> staticLightIndices{};
     std::vector<int> movableLightIndices{};
 };
 
+enum class FrameColliderShape {
+    Box = 0,
+    Sphere,
+};
+
+struct FrameColliderDebug {
+    EntityId entity{};
+    FrameColliderShape shape{FrameColliderShape::Box};
+    render::Bounds3 bounds{};
+    glm::mat4 modelMatrix{1.0f};
+    glm::vec3 center{0.0f};
+    float radius{0.0f};
+};
+
 struct FrameSelection {
     std::optional<EntityId> entity{};
+    std::optional<ComponentKind> component{};
     bool isLight{false};
     render::Bounds3 worldBounds{};
     bool hasWorldBounds{false};
     glm::mat4 transformMatrix{1.0f};
+    glm::mat4 boundsModelMatrix{1.0f};
+    bool hasBoundsModelMatrix{false};
 };
 
 struct FrameSkeletonDebug {
@@ -118,15 +135,17 @@ struct FrameSceneData {
     std::vector<FrameRenderable> renderables{};
     std::vector<FrameLight> lights{};
     std::vector<FrameLightVolume> lightVolumes{};
+    std::vector<FrameColliderDebug> colliderDebug{};
     std::vector<glm::mat4> jointMatrices{};
     FrameSelection selection{};
     FrameSkeletonDebug selectionSkeleton{};
     FrameNavigationDebug navigation{};
 
-    void reserve(std::size_t renderableCount, std::size_t lightCount, std::size_t volumeCount) {
+    void reserve(std::size_t renderableCount, std::size_t lightCount, std::size_t volumeCount, std::size_t colliderCount = 0u) {
         renderables.reserve(renderableCount);
         lights.reserve(lightCount);
         lightVolumes.reserve(volumeCount);
+        colliderDebug.reserve(colliderCount);
         jointMatrices.reserve(renderableCount * 64u);
     }
 
@@ -134,6 +153,7 @@ struct FrameSceneData {
         renderables.clear();
         lights.clear();
         lightVolumes.clear();
+        colliderDebug.clear();
         jointMatrices.clear();
         selection = FrameSelection{};
         selectionSkeleton.clear();

@@ -203,12 +203,9 @@ namespace core {
 bool SceneFactory::buildScene(
     const SceneBlueprint& blueprint,
     World& world,
-    MaterialLibrary& materials,
     render::RenderEngine& renderer
 ) const {
     world.clear();
-    materials.clear();
-    world.lightVolumes.emplace_back(glm::vec3(-100.0f), glm::vec3(100.0f));
 
     const std::string texturesRoot = assetRootPath("textures/");
     const auto soilBase = renderer.registerTexture(render::loadTextureFromFile(
@@ -304,7 +301,7 @@ bool SceneFactory::buildScene(
         return material;
     };
 
-    const MaterialHandle groundMaterial = materials.add(createProceduralMaterial(
+    const std::shared_ptr<render::Material> groundMaterial = createProceduralMaterial(
         "Ground Soil",
         soilBase,
         soilNormal,
@@ -316,8 +313,8 @@ bool SceneFactory::buildScene(
         0.0f,
         0.0f,
         0.85f
-    ));
-    const MaterialHandle wallRockMaterial = materials.add(createProceduralMaterial(
+    );
+    const std::shared_ptr<render::Material> wallRockMaterial = createProceduralMaterial(
         "Wall Rock",
         rockBase,
         rockNormal,
@@ -329,8 +326,8 @@ bool SceneFactory::buildScene(
         0.0f,
         0.0f,
         1.15f
-    ));
-    const MaterialHandle wallWoodMaterial = materials.add(createProceduralMaterial(
+    );
+    const std::shared_ptr<render::Material> wallWoodMaterial = createProceduralMaterial(
         "Wall Wood",
         woodBase,
         woodNormal,
@@ -342,7 +339,7 @@ bool SceneFactory::buildScene(
         0.20f,
         0.25f,
         0.45f
-    ));
+    );
 
     render::Mesh groundMesh;
     groundMesh.uvSets.resize(2);
@@ -402,7 +399,7 @@ bool SceneFactory::buildScene(
         const render::Mesh& meshData,
         const render::Bounds3& bounds,
         render::MeshHandle mesh,
-        MaterialHandle material,
+        const std::shared_ptr<render::Material>& material,
         render::RenderLayer layer
     ) {
         const EntityId entity = world.createEntity();
@@ -410,7 +407,8 @@ bool SceneFactory::buildScene(
         world.transforms.emplace(entity, transform);
         world.bounds.emplace(entity, BoundsComponent{bounds});
         world.visibilities.emplace(entity, VisibilityComponent{true});
-        world.renderables.emplace(entity, RenderableComponent{mesh, material, layer});
+        world.renderables.emplace(entity, RenderableComponent{mesh, layer});
+        world.materials.emplace(entity, MaterialComponent{material});
         world.navSourceGeometry.emplace(entity, NavSourceGeometryComponent{std::make_shared<render::Mesh>(meshData)});
         world.markTransformsDirty(entity);
         return entity;
@@ -461,6 +459,15 @@ bool SceneFactory::buildScene(
         wallRockMaterial,
         render::RenderLayer::Geometry
     );
+
+    for (const LightVolumeBlueprint& volumeBlueprint : blueprint.lightVolumes) {
+        const EntityId entity = world.createEntity();
+        world.names.emplace(entity, NameComponent{volumeBlueprint.name});
+        world.transforms.emplace(entity, volumeBlueprint.transform);
+        world.lightVolumes.emplace(entity, LightVolumeComponent{volumeBlueprint.halfExtents});
+        world.markTransformsDirty(entity);
+        world.markLightsDirty(entity);
+    }
 
     const std::string modelRoot = assetRootPath("models/");
     for (const ModelInstanceBlueprint& modelBlueprint : blueprint.models) {
@@ -524,8 +531,6 @@ bool SceneFactory::buildScene(
             if (material->name.empty()) {
                 material->name = section.name;
             }
-            const MaterialHandle materialHandle = materials.add(material);
-
             const EntityId sectionEntity = world.createEntity();
             world.names.emplace(sectionEntity, NameComponent{modelBlueprint.name + " / " + section.name});
             world.parents.emplace(sectionEntity, ParentComponent{rootEntity});
@@ -540,7 +545,8 @@ bool SceneFactory::buildScene(
             }
             world.bounds.emplace(sectionEntity, BoundsComponent{computeMeshBounds(section.mesh)});
             world.visibilities.emplace(sectionEntity, VisibilityComponent{true});
-            world.renderables.emplace(sectionEntity, RenderableComponent{meshHandle, materialHandle, modelBlueprint.layer});
+            world.renderables.emplace(sectionEntity, RenderableComponent{meshHandle, modelBlueprint.layer});
+            world.materials.emplace(sectionEntity, MaterialComponent{material});
             world.navSourceGeometry.emplace(sectionEntity, NavSourceGeometryComponent{std::make_shared<render::Mesh>(section.mesh)});
             if (section.skinIndex >= 0 && modelAsset->animated()) {
                 world.skinnedRenderables.emplace(sectionEntity, SkinnedRenderableComponent{

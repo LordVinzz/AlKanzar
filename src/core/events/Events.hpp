@@ -4,7 +4,7 @@
 #include <variant>
 
 #include "core/ecs/Entity.hpp"
-#include "core/lighting/MaterialLibrary.hpp"
+#include "core/editor/SelectionModel.hpp"
 #include "render/engine/RenderTypes.hpp"
 
 namespace core {
@@ -47,7 +47,7 @@ struct ViewportClickedEvent {
 };
 
 struct SelectionChangedEvent {
-    std::optional<EntityId> entity{};
+    std::optional<SelectionTarget> selection{};
 };
 
 struct TransformChangedEvent {
@@ -59,7 +59,7 @@ struct LightChangedEvent {
 };
 
 struct MaterialChangedEvent {
-    MaterialHandle material{};
+    EntityId entity{};
 };
 
 using AppEvent = std::variant<

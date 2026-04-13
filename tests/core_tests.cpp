@@ -29,14 +29,15 @@
 #include "core/events/EventBus.hpp"
 #include "core/events/Events.hpp"
 #include "core/lighting/LightSystem.hpp"
-#include "core/lighting/MaterialLibrary.hpp"
 #include "core/navigation/Navigation.hpp"
+#include "core/physics/PhysicsSystem.hpp"
 #include "core/scene/Camera.hpp"
 #include "core/systems/PickingSystem.hpp"
 #include "core/profiling/ProfilerService.hpp"
 #include "core/systems/RenderExtractionSystem.hpp"
 #include "core/editor/SelectionModel.hpp"
 #include "core/systems/TaskScheduler.hpp"
+#include "core/transform/TransformMath.hpp"
 #include "core/transform/TransformSystem.hpp"
 #include "core/ecs/World.hpp"
 #include "render/resources/Profiling.hpp"
@@ -123,6 +124,41 @@ render::CameraMatrices makeOrthoCamera(
     camera.invProjection = glm::inverse(camera.projection);
     camera.view = glm::mat4(1.0f);
     return camera;
+}
+
+std::shared_ptr<render::Material> makeMaterial(std::string_view name = {}) {
+    auto material = std::make_shared<render::Material>();
+    material->name = std::string(name);
+    return material;
+}
+
+core::EntityId addLightVolumeEntity(core::World& world, const glm::vec3& position, const glm::vec3& halfExtents) {
+    const core::EntityId entity = world.createEntity();
+    world.transforms.emplace(entity, core::TransformComponent{position, glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.lightVolumes.emplace(entity, core::LightVolumeComponent{halfExtents});
+    world.markTransformsDirty(entity);
+    return entity;
+}
+
+core::FrameRenderable makeFrameRenderable(
+    core::EntityId entity,
+    render::MeshHandle mesh,
+    render::RenderLayer layer,
+    const render::Bounds3& localBounds,
+    const render::Bounds3& worldBounds,
+    bool hasWorldBounds = true,
+    bool visible = true
+) {
+    core::FrameRenderable renderable{};
+    renderable.entity = entity;
+    renderable.mesh = mesh;
+    renderable.layer = layer;
+    renderable.localBounds = localBounds;
+    renderable.worldBounds = worldBounds;
+    renderable.hasWorldBounds = hasWorldBounds;
+    renderable.modelMatrix = glm::mat4(1.0f);
+    renderable.visible = visible;
+    return renderable;
 }
 
 render::Mesh makeHorizontalQuadMesh(float minX, float maxX, float minZ, float maxZ, float y) {
@@ -624,6 +660,25 @@ void testEditorSessionImGuiSettingsRoundTrip() {
     ImGui::DestroyContext();
 }
 
+void testSelectionModelTracksComponentFocus() {
+    core::SelectionModel selection;
+    const core::EntityId entity{42, 1};
+
+    selection.set(std::optional<core::SelectionTarget>{core::SelectionTarget{entity, core::ComponentKind::Material}});
+    assert(selection.current().has_value());
+    assert(selection.current()->entity == entity);
+    assert(selection.current()->component.has_value());
+    assert(*selection.current()->component == core::ComponentKind::Material);
+
+    selection.set(entity);
+    assert(selection.current().has_value());
+    assert(selection.current()->entity == entity);
+    assert(!selection.current()->component.has_value());
+
+    selection.clear();
+    assert(!selection.current().has_value());
+}
+
 void testNavigationAssetRoundTrip() {
     core::NavMeshAsset asset{};
     asset.sourceTagOverrides.push_back(core::NavSourceTagOverride{"Root/Ground", core::NavSourceTag::Walkable});
@@ -1056,6 +1111,175 @@ void testNavigationAgentMovementRotatesAndRequestsWalkThenIdle() {
     assert(finalAnimation.requestedClip == world.locomotion.get(entity).idleClip);
 }
 
+void testNavigationAgentClearanceRemainsOptIn() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {glm::vec2(0.0f, 0.0f), glm::vec2(4.0f, 0.0f), glm::vec2(4.0f, 2.0f), glm::vec2(0.0f, 2.0f)}}
+    };
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    world.transforms.emplace(entity, core::TransformComponent{glm::vec3(1.0f, 0.0f, 1.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.navAgents.emplace(entity, core::NavAgentComponent{});
+    world.sphereColliders.emplace(entity, core::SphereColliderComponent{glm::vec3(0.0f), 0.5f, false, false});
+
+    assert(navigation.setAgentDestination(world, runtime, entity, glm::vec3(3.9f, 0.0f, 1.0f)));
+
+    const core::NavAgentComponent& agent = world.navAgents.get(entity);
+    assert(agent.destination.has_value());
+    assert(nearlyEqual(agent.destination->x, 3.9, 0.001));
+    assert(nearlyEqual(agent.pathCorners.back().x, 3.9, 0.001));
+}
+
+void testNavigationAgentSphereClearancePullsDestinationAwayFromWalls() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {glm::vec2(0.0f, 0.0f), glm::vec2(4.0f, 0.0f), glm::vec2(4.0f, 2.0f), glm::vec2(0.0f, 2.0f)}}
+    };
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    world.transforms.emplace(entity, core::TransformComponent{glm::vec3(1.0f, 0.0f, 1.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    core::NavAgentComponent agent{};
+    agent.clearanceSource = core::NavAgentClearanceSource::SphereCollider;
+    world.navAgents.emplace(entity, agent);
+    world.sphereColliders.emplace(entity, core::SphereColliderComponent{glm::vec3(0.0f), 0.5f, false, false});
+
+    assert(navigation.setAgentDestination(world, runtime, entity, glm::vec3(3.9f, 0.0f, 1.0f)));
+
+    const core::NavAgentComponent& solvedAgent = world.navAgents.get(entity);
+    assert(solvedAgent.destination.has_value());
+    assert(solvedAgent.destination->x <= 3.5f + 0.02f);
+    assert(solvedAgent.destination->x >= 3.5f - 0.05f);
+    assert(solvedAgent.destination->z >= 0.5f - 0.02f);
+    assert(solvedAgent.destination->z <= 1.5f + 0.02f);
+
+    for (int step = 0; step < 16; ++step) {
+        navigation.updateAgents(world, runtime, core::TimeContext{0.0f, 0.25f});
+    }
+
+    const core::TransformComponent& finalTransform = world.transforms.get(entity);
+    const core::NavAgentComponent& finalAgent = world.navAgents.get(entity);
+    assert(!finalAgent.moving);
+    assert(!finalAgent.destination.has_value());
+    assert(finalTransform.position.x <= 3.5f + 0.02f);
+    assert(finalTransform.position.z >= 0.5f - 0.02f);
+    assert(finalTransform.position.z <= 1.5f + 0.02f);
+}
+
+void testNavigationAgentBoxClearanceUsesLateralFootprintAndKeepsDirectPath() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {glm::vec2(0.0f, 0.0f), glm::vec2(10.0f, 0.0f), glm::vec2(10.0f, 1.0f), glm::vec2(0.0f, 1.0f)}}
+    };
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    world.transforms.emplace(entity, core::TransformComponent{glm::vec3(1.0f, 0.0f, 0.5f), glm::vec3(0.0f, 45.0f, 0.0f), glm::vec3(1.0f)});
+    core::NavAgentComponent agent{};
+    agent.clearanceSource = core::NavAgentClearanceSource::BoxCollider;
+    world.navAgents.emplace(entity, agent);
+    world.boxColliders.emplace(entity, core::BoxColliderComponent{glm::vec3(0.0f), glm::vec3(0.20f, 0.5f, 0.80f), false, false});
+
+    assert(navigation.setAgentDestination(world, runtime, entity, glm::vec3(9.0f, 0.0f, 0.5f)));
+
+    const core::NavAgentComponent& solvedAgent = world.navAgents.get(entity);
+    assert(solvedAgent.destination.has_value());
+    assert(nearlyEqual(solvedAgent.destination->x, 9.0, 0.001));
+    assert(nearlyEqual(solvedAgent.destination->z, 0.5, 0.001));
+    assert(solvedAgent.pathCorners.size() == 1u);
+    assert(nearlyEqual(solvedAgent.pathCorners.front().x, 9.0, 0.001));
+    assert(nearlyEqual(solvedAgent.pathCorners.front().z, 0.5, 0.001));
+}
+
+void testNavigationRotatedBoxClearancePreservesExplicitLinkTransitions() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{10, 0.0f, {glm::vec2(0.0f, 0.0f), glm::vec2(1.0f, 0.0f), glm::vec2(1.0f, 1.0f), glm::vec2(0.0f, 1.0f)}},
+        core::NavPolygon{11, 3.0f, {glm::vec2(0.0f, 0.0f), glm::vec2(1.0f, 0.0f), glm::vec2(1.0f, 1.0f), glm::vec2(0.0f, 1.0f)}},
+    };
+    runtime.asset.links = {
+        core::NavLink{3, 10, 11, glm::vec3(0.5f, 0.0f, 0.5f), glm::vec3(0.5f, 3.0f, 0.5f), true}
+    };
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    world.transforms.emplace(entity, core::TransformComponent{glm::vec3(0.2f, 0.0f, 0.5f), glm::vec3(0.0f, 45.0f, 0.0f), glm::vec3(1.0f)});
+    core::NavAgentComponent agent{};
+    agent.clearanceSource = core::NavAgentClearanceSource::BoxCollider;
+    world.navAgents.emplace(entity, agent);
+    world.boxColliders.emplace(entity, core::BoxColliderComponent{glm::vec3(0.0f), glm::vec3(0.15f, 0.5f, 0.35f), false, false});
+
+    const glm::vec3 destination(0.5f, 3.0f, 0.5f);
+    assert(navigation.setAgentDestination(world, runtime, entity, destination));
+
+    const core::NavAgentComponent& solvedAgent = world.navAgents.get(entity);
+    assert(solvedAgent.destination.has_value());
+    assert(nearlyEqual(solvedAgent.destination->x, destination.x, 0.02));
+    assert(nearlyEqual(solvedAgent.destination->y, destination.y, 0.02));
+    assert(nearlyEqual(solvedAgent.destination->z, destination.z, 0.02));
+    assert(solvedAgent.pathCorners.size() >= 2u);
+    assert(std::any_of(
+        solvedAgent.pathCorners.begin(),
+        solvedAgent.pathCorners.end(),
+        [](const glm::vec3& corner) {
+            return nearlyEqual(corner.x, 0.5, 0.02) &&
+                nearlyEqual(corner.y, 0.0, 0.02) &&
+                nearlyEqual(corner.z, 0.5, 0.02);
+        }
+    ));
+    assert(std::any_of(
+        solvedAgent.pathCorners.begin(),
+        solvedAgent.pathCorners.end(),
+        [](const glm::vec3& corner) {
+            return nearlyEqual(corner.x, 0.5, 0.02) &&
+                nearlyEqual(corner.y, 3.0, 0.02) &&
+                nearlyEqual(corner.z, 0.5, 0.02);
+        }
+    ));
+    assert(nearlyEqual(solvedAgent.pathCorners.back().x, destination.x, 0.02));
+    assert(nearlyEqual(solvedAgent.pathCorners.back().y, destination.y, 0.02));
+    assert(nearlyEqual(solvedAgent.pathCorners.back().z, destination.z, 0.02));
+}
+
+void testNavigationClearanceResolvesTowardApproachInsteadOfCornerVertex() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {glm::vec2(0.0f, 0.0f), glm::vec2(4.0f, 0.0f), glm::vec2(4.0f, 4.0f), glm::vec2(0.0f, 4.0f)}}
+    };
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    const glm::vec3 start(0.5f, 0.0f, 2.0f);
+    const glm::vec3 click(3.9f, 0.0f, 0.1f);
+    world.transforms.emplace(entity, core::TransformComponent{start, glm::vec3(0.0f), glm::vec3(1.0f)});
+    core::NavAgentComponent agent{};
+    agent.clearanceSource = core::NavAgentClearanceSource::SphereCollider;
+    world.navAgents.emplace(entity, agent);
+    world.sphereColliders.emplace(entity, core::SphereColliderComponent{glm::vec3(0.0f), 0.5f, false, false});
+
+    assert(navigation.setAgentDestination(world, runtime, entity, click));
+
+    const core::NavAgentComponent& solvedAgent = world.navAgents.get(entity);
+    assert(solvedAgent.destination.has_value());
+    assert(solvedAgent.pathCorners.size() == 1u);
+    assert(nearlyEqual(solvedAgent.destination->z, 0.5, 0.02));
+    assert(nearlyEqual(solvedAgent.destination->x, 3.1842, 0.05));
+    assert(solvedAgent.destination->x < 3.35f);
+    assert(nearlyEqual(solvedAgent.pathCorners.front().x, solvedAgent.destination->x, 0.001));
+    assert(nearlyEqual(solvedAgent.pathCorners.front().z, solvedAgent.destination->z, 0.001));
+}
+
 void testTaskSchedulerParallelForCoversFullRange() {
     core::TaskScheduler scheduler = makeScheduler();
     std::vector<int> visits(257, 0);
@@ -1164,8 +1388,8 @@ void testTransformHierarchyAndBounds() {
     world.transforms.emplace(childB, core::TransformComponent{glm::vec3(4.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
     world.bounds.emplace(childA, core::BoundsComponent{render::Bounds3{glm::vec3(-1.0f), glm::vec3(1.0f)}});
     world.bounds.emplace(childB, core::BoundsComponent{render::Bounds3{glm::vec3(-1.0f), glm::vec3(1.0f)}});
-    world.renderables.emplace(childA, core::RenderableComponent{render::MeshHandle{0}, {}, render::RenderLayer::Geometry});
-    world.renderables.emplace(childB, core::RenderableComponent{render::MeshHandle{1}, {}, render::RenderLayer::Geometry});
+    world.renderables.emplace(childA, core::RenderableComponent{render::MeshHandle{0}, render::RenderLayer::Geometry});
+    world.renderables.emplace(childB, core::RenderableComponent{render::MeshHandle{1}, render::RenderLayer::Geometry});
     world.markTransformsDirty(parent);
     world.markTransformsDirty(childA);
     world.markTransformsDirty(childB);
@@ -1201,8 +1425,8 @@ void testTransformSystemProcessesMultipleRoots() {
     world.transforms.emplace(childB, core::TransformComponent{glm::vec3(0.0f, 4.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
     world.bounds.emplace(childA, core::BoundsComponent{render::Bounds3{glm::vec3(-1.0f), glm::vec3(1.0f)}});
     world.bounds.emplace(childB, core::BoundsComponent{render::Bounds3{glm::vec3(-1.0f), glm::vec3(1.0f)}});
-    world.renderables.emplace(childA, core::RenderableComponent{render::MeshHandle{0}, {}, render::RenderLayer::Geometry});
-    world.renderables.emplace(childB, core::RenderableComponent{render::MeshHandle{1}, {}, render::RenderLayer::Geometry});
+    world.renderables.emplace(childA, core::RenderableComponent{render::MeshHandle{0}, render::RenderLayer::Geometry});
+    world.renderables.emplace(childB, core::RenderableComponent{render::MeshHandle{1}, render::RenderLayer::Geometry});
     world.markTransformsDirty(rootA);
     world.markTransformsDirty(childA);
     world.markTransformsDirty(rootB);
@@ -1217,29 +1441,76 @@ void testTransformSystemProcessesMultipleRoots() {
     assert(world.transformCache_[childB.index].worldBounds.max.y == 7.0f);
 }
 
+void testTransformMathBuildsRotatedBoxesWithoutInflatingLocalExtents() {
+    const core::TransformComponent transform{
+        glm::vec3(2.0f, 1.0f, -3.0f),
+        glm::vec3(0.0f, 45.0f, 0.0f),
+        glm::vec3(1.0f)
+    };
+    const core::BoxColliderComponent collider{glm::vec3(0.0f), glm::vec3(0.5f, 0.75f, 0.25f), false, false};
+
+    const core::OrientedBox box = core::makeOrientedBox(transform, collider);
+
+    assert(nearlyEqual(box.center.x, 2.0, 0.0001));
+    assert(nearlyEqual(box.center.y, 1.0, 0.0001));
+    assert(nearlyEqual(box.center.z, -3.0, 0.0001));
+    assert(nearlyEqual(box.halfExtents.x, 0.5, 0.0001));
+    assert(nearlyEqual(box.halfExtents.y, 0.75, 0.0001));
+    assert(nearlyEqual(box.halfExtents.z, 0.25, 0.0001));
+    assert(nearlyEqual(glm::length(box.axes[0]), 1.0, 0.0001));
+    assert(nearlyEqual(glm::length(box.axes[1]), 1.0, 0.0001));
+    assert(nearlyEqual(glm::length(box.axes[2]), 1.0, 0.0001));
+    assert(std::abs(box.axes[0].x) > 0.6f);
+    assert(std::abs(box.axes[0].z) > 0.6f);
+    assert(std::abs(box.axes[2].x) > 0.6f);
+    assert(std::abs(box.axes[2].z) > 0.6f);
+    assert(nearlyEqual(glm::length(glm::vec3(box.modelMatrix[0])), 0.5, 0.0001));
+    assert(nearlyEqual(glm::length(glm::vec3(box.modelMatrix[1])), 0.75, 0.0001));
+    assert(nearlyEqual(glm::length(glm::vec3(box.modelMatrix[2])), 0.25, 0.0001));
+}
+
 void testLightVolumeAssignment() {
     core::World world;
     core::TaskScheduler scheduler = makeScheduler();
-    world.lightVolumes.emplace_back(glm::vec3(-10.0f), glm::vec3(10.0f));
+    core::SelectionModel selection;
+    core::TransformSystem transformSystem;
+    core::LightSystem lightSystem;
+    core::RenderExtractionSystem extraction;
+    const core::EntityId lightVolume = addLightVolumeEntity(world, glm::vec3(2.0f, 0.0f, 0.0f), glm::vec3(10.0f));
     const core::EntityId point = world.createEntity();
     const core::EntityId spot = world.createEntity();
 
     world.transforms.emplace(point, core::TransformComponent{glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
-    world.transforms.emplace(spot, core::TransformComponent{glm::vec3(1.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.transforms.emplace(spot, core::TransformComponent{glm::vec3(5.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
     world.pointLights.emplace(point, core::PointLightComponent{4.0f, glm::vec3(1.0f), 1.0f, 0.0f, false, false, 0.0f, 0.0f});
     world.spotLights.emplace(spot, core::SpotLightComponent{5.0f, glm::vec3(1.0f), 1.0f, glm::vec3(0.0f), 15.0f, 25.0f, 0.0f, true, false, 0.0f, 0.0f});
+    world.markTransformsDirty(point);
+    world.markTransformsDirty(spot);
 
-    core::LightSystem system;
-    system.update(world, core::TimeContext{1.0f, 0.016f}, scheduler);
+    transformSystem.update(world, scheduler);
+    lightSystem.update(world, core::TimeContext{1.0f, 0.016f}, scheduler);
 
-    assert(world.lightVolumes[0].staticLightEntities().size() == 1u);
-    assert(world.lightVolumes[0].movableLightEntities().size() == 1u);
+    core::FrameSceneData frame;
+    extraction.extract(world, selection, frame, scheduler);
+
+    assert(frame.lightVolumes.size() == 1u);
+    assert(frame.lightVolumes[0].entity == lightVolume);
+    assert(frame.lightVolumes[0].staticLightIndices.size() == 1u);
+    assert(frame.lightVolumes[0].movableLightIndices.size() == 1u);
+    assert(frame.lights[frame.lightVolumes[0].staticLightIndices[0]].entity == point);
+    assert(frame.lights[frame.lightVolumes[0].movableLightIndices[0]].entity == spot);
+    assert(nearlyEqual(frame.lightVolumes[0].minCorner.x, -8.0, 0.0001));
+    assert(nearlyEqual(frame.lightVolumes[0].maxCorner.x, 12.0, 0.0001));
 }
 
 void testLightVolumeAssignmentIsStableAcrossLightTypes() {
     core::World world;
     core::TaskScheduler scheduler = makeScheduler();
-    world.lightVolumes.emplace_back(glm::vec3(-10.0f), glm::vec3(10.0f));
+    core::SelectionModel selection;
+    core::TransformSystem transformSystem;
+    core::LightSystem lightSystem;
+    core::RenderExtractionSystem extraction;
+    addLightVolumeEntity(world, glm::vec3(0.0f), glm::vec3(10.0f));
 
     const core::EntityId spot = world.createEntity();
     const core::EntityId point = world.createEntity();
@@ -1247,14 +1518,22 @@ void testLightVolumeAssignmentIsStableAcrossLightTypes() {
     world.transforms.emplace(point, core::TransformComponent{glm::vec3(1.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
     world.spotLights.emplace(spot, core::SpotLightComponent{5.0f, glm::vec3(1.0f), 1.0f, glm::vec3(0.0f), 15.0f, 25.0f, 0.0f, false, false, 0.0f, 0.0f});
     world.pointLights.emplace(point, core::PointLightComponent{4.0f, glm::vec3(1.0f), 1.0f, 0.0f, false, false, 0.0f, 0.0f});
+    world.markTransformsDirty(spot);
+    world.markTransformsDirty(point);
 
-    core::LightSystem system;
-    system.update(world, core::TimeContext{1.0f, 0.016f}, scheduler);
+    transformSystem.update(world, scheduler);
+    lightSystem.update(world, core::TimeContext{1.0f, 0.016f}, scheduler);
 
-    const std::vector<core::EntityId>& staticLights = world.lightVolumes[0].staticLightEntities();
-    assert(staticLights.size() == 2u);
-    assert(staticLights[0] == spot);
-    assert(staticLights[1] == point);
+    core::FrameSceneData frame;
+    extraction.extract(world, selection, frame, scheduler);
+
+    assert(frame.lights.size() == 2u);
+    assert(frame.lights[0].entity == point);
+    assert(frame.lights[1].entity == spot);
+    assert(frame.lightVolumes.size() == 1u);
+    assert(frame.lightVolumes[0].staticLightIndices.size() == 2u);
+    assert(frame.lightVolumes[0].staticLightIndices[0] == 0);
+    assert(frame.lightVolumes[0].staticLightIndices[1] == 1);
 }
 
 void testGltfLoaderReadsAnimatedCharacterData() {
@@ -1340,16 +1619,13 @@ void testAnimationSystemDefaultsToIdleAndCrossfades() {
     assert(nearlyEqual(animation.currentTime, pausedTime, 0.0001));
 }
 
-void testMaterialHandleSharingExtraction() {
+void testMaterialComponentSharingExtraction() {
     core::World world;
     core::TaskScheduler scheduler = makeScheduler();
-    core::MaterialLibrary materials;
     core::SelectionModel selection;
     core::RenderExtractionSystem extraction;
 
-    auto material = std::make_shared<render::Material>();
-    material->name = "Shared";
-    const core::MaterialHandle handle = materials.add(material);
+    const std::shared_ptr<render::Material> material = makeMaterial("Shared");
 
     const core::EntityId a = world.createEntity();
     const core::EntityId b = world.createEntity();
@@ -1357,8 +1633,10 @@ void testMaterialHandleSharingExtraction() {
     world.transforms.emplace(b, core::TransformComponent{});
     world.bounds.emplace(a, core::BoundsComponent{render::Bounds3{glm::vec3(0.0f), glm::vec3(1.0f)}});
     world.bounds.emplace(b, core::BoundsComponent{render::Bounds3{glm::vec3(0.0f), glm::vec3(1.0f)}});
-    world.renderables.emplace(a, core::RenderableComponent{render::MeshHandle{0}, handle, render::RenderLayer::Geometry});
-    world.renderables.emplace(b, core::RenderableComponent{render::MeshHandle{1}, handle, render::RenderLayer::Geometry});
+    world.renderables.emplace(a, core::RenderableComponent{render::MeshHandle{0}, render::RenderLayer::Geometry});
+    world.renderables.emplace(b, core::RenderableComponent{render::MeshHandle{1}, render::RenderLayer::Geometry});
+    world.materials.emplace(a, core::MaterialComponent{material});
+    world.materials.emplace(b, core::MaterialComponent{material});
     world.markTransformsDirty(a);
     world.markTransformsDirty(b);
 
@@ -1366,48 +1644,189 @@ void testMaterialHandleSharingExtraction() {
     transformSystem.update(world, scheduler);
 
     core::FrameSceneData frame;
-    extraction.extract(world, materials, selection, frame, scheduler, true);
+    extraction.extract(world, selection, frame, scheduler, true);
 
     assert(frame.renderables.size() == 2u);
     assert(frame.renderables[0].material == frame.renderables[1].material);
+    assert(frame.renderables[0].material == material);
+}
+
+void testRenderExtractionDefaultsMissingVisibilityToHidden() {
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler();
+    core::SelectionModel selection;
+    core::TransformSystem transformSystem;
+    core::RenderExtractionSystem extraction;
+
+    const core::EntityId hidden = world.createEntity();
+    const core::EntityId visible = world.createEntity();
+    world.transforms.emplace(hidden, core::TransformComponent{});
+    world.transforms.emplace(visible, core::TransformComponent{glm::vec3(2.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.bounds.emplace(hidden, core::BoundsComponent{render::Bounds3{glm::vec3(0.0f), glm::vec3(1.0f)}});
+    world.bounds.emplace(visible, core::BoundsComponent{render::Bounds3{glm::vec3(0.0f), glm::vec3(1.0f)}});
+    world.renderables.emplace(hidden, core::RenderableComponent{render::MeshHandle{0}, render::RenderLayer::Geometry});
+    world.renderables.emplace(visible, core::RenderableComponent{render::MeshHandle{1}, render::RenderLayer::Geometry});
+    world.visibilities.emplace(visible, core::VisibilityComponent{true});
+    world.markTransformsDirty(hidden);
+    world.markTransformsDirty(visible);
+
+    transformSystem.update(world, scheduler);
+
+    core::FrameSceneData frame;
+    extraction.extract(world, selection, frame, scheduler);
+
+    assert(frame.renderables.size() == 2u);
+    assert(frame.renderables[0].entity == hidden);
+    assert(!frame.renderables[0].visible);
+    assert(frame.renderables[1].entity == visible);
+    assert(frame.renderables[1].visible);
+}
+
+void testRenderExtractionTracksFocusedComponentSelection() {
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler();
+    core::SelectionModel selection;
+    core::TransformSystem transformSystem;
+    core::RenderExtractionSystem extraction;
+
+    const core::EntityId lightVolume = addLightVolumeEntity(world, glm::vec3(3.0f, 0.0f, 0.0f), glm::vec3(2.0f));
+    transformSystem.update(world, scheduler);
+
+    core::FrameSceneData frame;
+    selection.set(std::optional<core::SelectionTarget>{core::SelectionTarget{lightVolume, core::ComponentKind::LightVolume}});
+    extraction.extract(world, selection, frame, scheduler);
+
+    assert(frame.selection.entity.has_value());
+    assert(*frame.selection.entity == lightVolume);
+    assert(frame.selection.component.has_value());
+    assert(*frame.selection.component == core::ComponentKind::LightVolume);
+    assert(frame.selection.hasWorldBounds);
+    assert(nearlyEqual(frame.selection.worldBounds.min.x, 1.0, 0.0001));
+    assert(nearlyEqual(frame.selection.worldBounds.max.x, 5.0, 0.0001));
+}
+
+void testRenderExtractionEmitsVisibleColliderDebugOnly() {
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler();
+    core::SelectionModel selection;
+    core::TransformSystem transformSystem;
+    core::RenderExtractionSystem extraction;
+
+    const core::EntityId box = world.createEntity();
+    world.transforms.emplace(box, core::TransformComponent{glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.boxColliders.emplace(box, core::BoxColliderComponent{glm::vec3(0.0f), glm::vec3(0.5f), false, true});
+    world.visibilities.emplace(box, core::VisibilityComponent{true});
+
+    const core::EntityId sphere = world.createEntity();
+    world.transforms.emplace(sphere, core::TransformComponent{glm::vec3(-2.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.sphereColliders.emplace(sphere, core::SphereColliderComponent{glm::vec3(0.0f), 0.75f, false, true});
+    world.visibilities.emplace(sphere, core::VisibilityComponent{true});
+
+    const core::EntityId hidden = world.createEntity();
+    world.transforms.emplace(hidden, core::TransformComponent{glm::vec3(4.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.boxColliders.emplace(hidden, core::BoxColliderComponent{glm::vec3(0.0f), glm::vec3(0.5f), false, true});
+
+    const core::EntityId disabled = world.createEntity();
+    world.transforms.emplace(disabled, core::TransformComponent{glm::vec3(6.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.sphereColliders.emplace(disabled, core::SphereColliderComponent{glm::vec3(0.0f), 0.5f, false, false});
+    world.visibilities.emplace(disabled, core::VisibilityComponent{true});
+
+    world.markTransformsDirty(box);
+    world.markTransformsDirty(sphere);
+    world.markTransformsDirty(hidden);
+    world.markTransformsDirty(disabled);
+    transformSystem.update(world, scheduler);
+
+    core::FrameSceneData frame;
+    extraction.extract(world, selection, frame, scheduler);
+
+    assert(frame.colliderDebug.size() == 2u);
+    assert(frame.colliderDebug[0].entity == box);
+    assert(frame.colliderDebug[0].shape == core::FrameColliderShape::Box);
+    assert(nearlyEqual(frame.colliderDebug[0].bounds.min.x, 0.5, 0.0001));
+    assert(nearlyEqual(frame.colliderDebug[0].bounds.max.x, 1.5, 0.0001));
+    assert(frame.colliderDebug[1].entity == sphere);
+    assert(frame.colliderDebug[1].shape == core::FrameColliderShape::Sphere);
+    assert(nearlyEqual(frame.colliderDebug[1].center.x, -2.0, 0.0001));
+    assert(nearlyEqual(frame.colliderDebug[1].radius, 0.75, 0.0001));
+}
+
+void testRenderExtractionUsesOrientedBoxMatricesForRotatedColliders() {
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler();
+    core::SelectionModel selection;
+    core::TransformSystem transformSystem;
+    core::RenderExtractionSystem extraction;
+
+    const core::EntityId box = world.createEntity();
+    world.transforms.emplace(box, core::TransformComponent{glm::vec3(1.0f, 0.0f, 2.0f), glm::vec3(0.0f, 45.0f, 0.0f), glm::vec3(1.0f)});
+    world.boxColliders.emplace(box, core::BoxColliderComponent{glm::vec3(0.0f), glm::vec3(0.5f, 1.0f, 0.25f), false, true});
+    world.visibilities.emplace(box, core::VisibilityComponent{true});
+    world.markTransformsDirty(box);
+    transformSystem.update(world, scheduler);
+
+    selection.set(box);
+
+    core::FrameSceneData frame;
+    extraction.extract(world, selection, frame, scheduler);
+
+    assert(frame.colliderDebug.size() == 1u);
+    assert(frame.colliderDebug.front().entity == box);
+    assert(frame.colliderDebug.front().shape == core::FrameColliderShape::Box);
+    assert(nearlyEqual(glm::length(glm::vec3(frame.colliderDebug.front().modelMatrix[0])), 0.5, 0.0001));
+    assert(nearlyEqual(glm::length(glm::vec3(frame.colliderDebug.front().modelMatrix[1])), 1.0, 0.0001));
+    assert(nearlyEqual(glm::length(glm::vec3(frame.colliderDebug.front().modelMatrix[2])), 0.25, 0.0001));
+    assert(std::abs(frame.colliderDebug.front().modelMatrix[0].z) > 0.3f);
+    assert(frame.selection.hasBoundsModelMatrix);
+    assert(nearlyEqual(glm::length(glm::vec3(frame.selection.boundsModelMatrix[0])), 0.5, 0.0001));
+    assert(nearlyEqual(glm::length(glm::vec3(frame.selection.boundsModelMatrix[1])), 1.0, 0.0001));
+    assert(nearlyEqual(glm::length(glm::vec3(frame.selection.boundsModelMatrix[2])), 0.25, 0.0001));
+    assert(std::abs(frame.selection.boundsModelMatrix[0].z) > 0.3f);
+
+    const render::RenderSceneView scene = render::buildRenderSceneView(frame, {}, scheduler);
+    assert(scene.selection.hasBoundsModelMatrix);
+    assert(nearlyEqual(glm::length(glm::vec3(scene.selection.boundsModelMatrix[0])), 0.5, 0.0001));
+    assert(std::abs(scene.selection.boundsModelMatrix[0].z) > 0.3f);
 }
 
 void testRenderExtractionPreservesOutputOrdering() {
     core::World world;
     core::TaskScheduler scheduler = makeScheduler();
-    core::MaterialLibrary materials;
     core::SelectionModel selection;
     core::RenderExtractionSystem extraction;
     core::TransformSystem transformSystem;
     core::LightSystem lightSystem;
 
-    auto material = std::make_shared<render::Material>();
-    const core::MaterialHandle handle = materials.add(material);
+    const std::shared_ptr<render::Material> material = makeMaterial();
 
     const core::EntityId renderableA = world.createEntity();
     const core::EntityId point = world.createEntity();
     const core::EntityId renderableB = world.createEntity();
     const core::EntityId spot = world.createEntity();
 
-    world.lightVolumes.emplace_back(glm::vec3(-10.0f), glm::vec3(10.0f));
+    addLightVolumeEntity(world, glm::vec3(0.0f), glm::vec3(10.0f));
     world.transforms.emplace(renderableA, core::TransformComponent{});
     world.transforms.emplace(renderableB, core::TransformComponent{glm::vec3(2.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
     world.transforms.emplace(point, core::TransformComponent{});
     world.transforms.emplace(spot, core::TransformComponent{glm::vec3(1.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
     world.bounds.emplace(renderableA, core::BoundsComponent{render::Bounds3{glm::vec3(0.0f), glm::vec3(1.0f)}});
     world.bounds.emplace(renderableB, core::BoundsComponent{render::Bounds3{glm::vec3(0.0f), glm::vec3(1.0f)}});
-    world.renderables.emplace(renderableA, core::RenderableComponent{render::MeshHandle{0}, handle, render::RenderLayer::Geometry});
-    world.renderables.emplace(renderableB, core::RenderableComponent{render::MeshHandle{1}, handle, render::RenderLayer::Actors});
+    world.renderables.emplace(renderableA, core::RenderableComponent{render::MeshHandle{0}, render::RenderLayer::Geometry});
+    world.renderables.emplace(renderableB, core::RenderableComponent{render::MeshHandle{1}, render::RenderLayer::Actors});
+    world.materials.emplace(renderableA, core::MaterialComponent{material});
+    world.materials.emplace(renderableB, core::MaterialComponent{material});
     world.pointLights.emplace(point, core::PointLightComponent{4.0f, glm::vec3(1.0f), 1.0f, 0.0f, false, false, 0.0f, 0.0f});
     world.spotLights.emplace(spot, core::SpotLightComponent{5.0f, glm::vec3(1.0f), 1.0f, glm::vec3(0.0f), 15.0f, 25.0f, 0.0f, false, false, 0.0f, 0.0f});
     world.markTransformsDirty(renderableA);
     world.markTransformsDirty(renderableB);
+    world.markTransformsDirty(point);
+    world.markTransformsDirty(spot);
 
     transformSystem.update(world, scheduler);
     lightSystem.update(world, core::TimeContext{1.0f, 0.016f}, scheduler);
 
     core::FrameSceneData frame;
-    extraction.extract(world, materials, selection, frame, scheduler);
+    extraction.extract(world, selection, frame, scheduler);
 
     assert(frame.renderables.size() == 2u);
     assert(frame.renderables[0].entity == renderableA);
@@ -1425,14 +1844,12 @@ void testRenderExtractionPopulatesSkinnedJointRangesAndSelectionOwner() {
 
     core::World world;
     core::TaskScheduler scheduler = makeScheduler();
-    core::MaterialLibrary materials;
     core::SelectionModel selection;
     core::AnimationSystem animationSystem;
     core::TransformSystem transformSystem;
     core::RenderExtractionSystem extraction;
 
-    auto material = std::make_shared<render::Material>();
-    const core::MaterialHandle materialHandle = materials.add(material);
+    const std::shared_ptr<render::Material> material = makeMaterial();
 
     const core::EntityId root = world.createEntity();
     world.transforms.emplace(root, core::TransformComponent{
@@ -1450,7 +1867,8 @@ void testRenderExtractionPopulatesSkinnedJointRangesAndSelectionOwner() {
     world.transforms.emplace(sectionEntity, core::TransformComponent{});
     world.bounds.emplace(sectionEntity, core::BoundsComponent{render::Bounds3{glm::vec3(-0.5f), glm::vec3(0.5f)}});
     world.visibilities.emplace(sectionEntity, core::VisibilityComponent{true});
-    world.renderables.emplace(sectionEntity, core::RenderableComponent{render::MeshHandle{0}, materialHandle, render::RenderLayer::Actors});
+    world.renderables.emplace(sectionEntity, core::RenderableComponent{render::MeshHandle{0}, render::RenderLayer::Actors});
+    world.materials.emplace(sectionEntity, core::MaterialComponent{material});
     world.skinnedRenderables.emplace(sectionEntity, core::SkinnedRenderableComponent{
         root,
         section.skinIndex,
@@ -1465,7 +1883,7 @@ void testRenderExtractionPopulatesSkinnedJointRangesAndSelectionOwner() {
 
     core::FrameSceneData frame;
     selection.set(sectionEntity);
-    extraction.extract(world, materials, selection, frame, scheduler, false);
+    extraction.extract(world, selection, frame, scheduler, false);
     assert(frame.renderables.size() == 1u);
     assert(frame.renderables[0].skinned);
     assert(world.editableTransformEntity(sectionEntity) == root);
@@ -1483,7 +1901,7 @@ void testRenderExtractionPopulatesSkinnedJointRangesAndSelectionOwner() {
 
     frame.clear();
     selection.set(root);
-    extraction.extract(world, materials, selection, frame, scheduler, false);
+    extraction.extract(world, selection, frame, scheduler, false);
     assert(frame.selectionSkeleton.owner.has_value());
     assert(*frame.selectionSkeleton.owner == root);
 }
@@ -1582,13 +2000,11 @@ void testRenderExtractionAlignsSkinnedChildBoundsWithRenderedMesh() {
 
     core::World world;
     core::TaskScheduler scheduler = makeScheduler();
-    core::MaterialLibrary materials;
     core::SelectionModel selection;
     core::TransformSystem transformSystem;
     core::RenderExtractionSystem extraction;
 
-    auto material = std::make_shared<render::Material>();
-    const core::MaterialHandle materialHandle = materials.add(material);
+    const std::shared_ptr<render::Material> material = makeMaterial();
 
     const core::EntityId root = world.createEntity();
     world.transforms.emplace(root, core::TransformComponent{
@@ -1613,9 +2029,9 @@ void testRenderExtractionAlignsSkinnedChildBoundsWithRenderedMesh() {
     world.visibilities.emplace(sectionEntity, core::VisibilityComponent{true});
     world.renderables.emplace(sectionEntity, core::RenderableComponent{
         render::MeshHandle{0},
-        materialHandle,
         render::RenderLayer::Actors
     });
+    world.materials.emplace(sectionEntity, core::MaterialComponent{material});
     world.skinnedRenderables.emplace(sectionEntity, core::SkinnedRenderableComponent{root, 0, 0, 0});
     world.markTransformsDirty(root);
     world.markTransformsDirty(sectionEntity);
@@ -1628,7 +2044,7 @@ void testRenderExtractionAlignsSkinnedChildBoundsWithRenderedMesh() {
 
     core::FrameSceneData frame;
     selection.set(sectionEntity);
-    extraction.extract(world, materials, selection, frame, scheduler, false);
+    extraction.extract(world, selection, frame, scheduler, false);
 
     assert(frame.renderables.size() == 1u);
     assert(frame.renderables[0].skinned);
@@ -1640,7 +2056,7 @@ void testRenderExtractionAlignsSkinnedChildBoundsWithRenderedMesh() {
 
     frame.clear();
     selection.set(root);
-    extraction.extract(world, materials, selection, frame, scheduler, false);
+    extraction.extract(world, selection, frame, scheduler, false);
     assert(frame.selection.hasWorldBounds);
     assert(nearlyEqual(frame.selection.worldBounds.min.x, 4.0, 0.0001));
     assert(nearlyEqual(frame.selection.worldBounds.max.x, 8.0, 0.0001));
@@ -1662,13 +2078,11 @@ void testRenderExtractionConservativeSkinnedBoundsContainExactBounds() {
 
     core::World world;
     core::TaskScheduler scheduler = makeScheduler();
-    core::MaterialLibrary materials;
     core::SelectionModel selection;
     core::TransformSystem transformSystem;
     core::RenderExtractionSystem extraction;
 
-    auto material = std::make_shared<render::Material>();
-    const core::MaterialHandle materialHandle = materials.add(material);
+    const std::shared_ptr<render::Material> material = makeMaterial();
 
     const std::vector<glm::mat4> skinMatrices{
         glm::translate(glm::mat4(1.0f), glm::vec3(-2.0f, 0.0f, 0.0f)),
@@ -1695,9 +2109,9 @@ void testRenderExtractionConservativeSkinnedBoundsContainExactBounds() {
     world.visibilities.emplace(sectionEntity, core::VisibilityComponent{true});
     world.renderables.emplace(sectionEntity, core::RenderableComponent{
         render::MeshHandle{0},
-        materialHandle,
         render::RenderLayer::Actors
     });
+    world.materials.emplace(sectionEntity, core::MaterialComponent{material});
     world.skinnedRenderables.emplace(sectionEntity, core::SkinnedRenderableComponent{root, 0, 0, 0});
     world.markTransformsDirty(root);
     world.markTransformsDirty(sectionEntity);
@@ -1706,7 +2120,7 @@ void testRenderExtractionConservativeSkinnedBoundsContainExactBounds() {
 
     core::FrameSceneData frame;
     selection.set(sectionEntity);
-    extraction.extract(world, materials, selection, frame, scheduler, false);
+    extraction.extract(world, selection, frame, scheduler, false);
 
     assert(frame.renderables.size() == 1u);
     assert(boundsContain(frame.renderables[0].worldBounds, exactBounds));
@@ -1737,7 +2151,6 @@ void testRenderExtractionFiltersHelperSkeletonBranches() {
 
     core::World world;
     core::TaskScheduler scheduler = makeScheduler();
-    core::MaterialLibrary materials;
     core::SelectionModel selection;
     core::TransformSystem transformSystem;
     core::RenderExtractionSystem extraction;
@@ -1760,7 +2173,7 @@ void testRenderExtractionFiltersHelperSkeletonBranches() {
 
     core::FrameSceneData frame;
     selection.set(root);
-    extraction.extract(world, materials, selection, frame, scheduler, false);
+    extraction.extract(world, selection, frame, scheduler, false);
 
     assert(frame.selectionSkeleton.owner.has_value());
     assert(*frame.selectionSkeleton.owner == root);
@@ -1787,18 +2200,13 @@ void testRenderExtractionFiltersHelperSkeletonBranches() {
 void testRenderSceneViewBuildResolvesRenderableSelection() {
     core::TaskScheduler scheduler = makeScheduler();
     core::FrameSceneData frame;
-    frame.renderables.push_back(core::FrameRenderable{
+    frame.renderables.push_back(makeFrameRenderable(
         core::EntityId{1, 1},
         render::MeshHandle{0},
-        {},
-        {},
         render::RenderLayer::Geometry,
         render::Bounds3{glm::vec3(0.0f), glm::vec3(1.0f)},
-        render::Bounds3{glm::vec3(2.0f), glm::vec3(3.0f)},
-        true,
-        glm::mat4(1.0f),
-        true
-    });
+        render::Bounds3{glm::vec3(2.0f), glm::vec3(3.0f)}
+    ));
     frame.selection.entity = core::EntityId{1, 1};
     frame.selection.worldBounds = render::Bounds3{glm::vec3(2.0f), glm::vec3(3.0f)};
     frame.selection.transformMatrix = glm::mat4(2.0f);
@@ -1847,54 +2255,37 @@ void testRenderSceneViewBuildResolvesNodeSelection() {
 void testCameraFrustumCullingUpdatesVisibilityAndStats() {
     core::TaskScheduler scheduler = makeScheduler();
     core::FrameSceneData frame;
-    frame.renderables.push_back(core::FrameRenderable{
+    frame.renderables.push_back(makeFrameRenderable(
         core::EntityId{1, 1},
         render::MeshHandle{0},
-        {},
-        {},
         render::RenderLayer::Geometry,
         render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
-        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
-        true,
-        glm::mat4(1.0f),
-        true
-    });
-    frame.renderables.push_back(core::FrameRenderable{
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)}
+    ));
+    frame.renderables.push_back(makeFrameRenderable(
         core::EntityId{2, 1},
         render::MeshHandle{1},
-        {},
-        {},
         render::RenderLayer::Geometry,
         render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
-        render::Bounds3{glm::vec3(1.5f, -0.25f, -2.0f), glm::vec3(2.0f, 0.25f, -1.5f)},
-        true,
-        glm::mat4(1.0f),
-        true
-    });
-    frame.renderables.push_back(core::FrameRenderable{
+        render::Bounds3{glm::vec3(1.5f, -0.25f, -2.0f), glm::vec3(2.0f, 0.25f, -1.5f)}
+    ));
+    frame.renderables.push_back(makeFrameRenderable(
         core::EntityId{3, 1},
         render::MeshHandle{2},
-        {},
-        {},
         render::RenderLayer::Geometry,
         render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
         render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
         true,
-        glm::mat4(1.0f),
         false
-    });
-    frame.renderables.push_back(core::FrameRenderable{
+    ));
+    frame.renderables.push_back(makeFrameRenderable(
         core::EntityId{4, 1},
         render::MeshHandle{3},
-        {},
-        {},
         render::RenderLayer::Geometry,
         render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
         render::Bounds3{},
-        false,
-        glm::mat4(1.0f),
-        true
-    });
+        false
+    ));
 
     render::RenderSceneView scene = render::buildRenderSceneView(
         frame,
@@ -1920,18 +2311,13 @@ void testCameraFrustumCullingUpdatesVisibilityAndStats() {
 void testCameraFrustumCullingRejectsFarPlaneBounds() {
     core::TaskScheduler scheduler = makeScheduler();
     core::FrameSceneData frame;
-    frame.renderables.push_back(core::FrameRenderable{
+    frame.renderables.push_back(makeFrameRenderable(
         core::EntityId{5, 1},
         render::MeshHandle{0},
-        {},
-        {},
         render::RenderLayer::Geometry,
         render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
-        render::Bounds3{glm::vec3(-0.25f, -0.25f, -12.0f), glm::vec3(0.25f, 0.25f, -11.5f)},
-        true,
-        glm::mat4(1.0f),
-        true
-    });
+        render::Bounds3{glm::vec3(-0.25f, -0.25f, -12.0f), glm::vec3(0.25f, 0.25f, -11.5f)}
+    ));
 
     render::RenderSceneView scene = render::buildRenderSceneView(
         frame,
@@ -1948,54 +2334,35 @@ void testCameraFrustumCullingRejectsFarPlaneBounds() {
 void testOcclusionCullingUsesLastKnownResultsAndWarmup() {
     core::TaskScheduler scheduler = makeScheduler();
     core::FrameSceneData frame;
-    frame.renderables.push_back(core::FrameRenderable{
+    frame.renderables.push_back(makeFrameRenderable(
         core::EntityId{10, 1},
         render::MeshHandle{0},
-        {},
-        {},
         render::RenderLayer::Geometry,
         render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
-        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
-        true,
-        glm::mat4(1.0f),
-        true
-    });
-    frame.renderables.push_back(core::FrameRenderable{
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)}
+    ));
+    frame.renderables.push_back(makeFrameRenderable(
         core::EntityId{11, 1},
         render::MeshHandle{1},
-        {},
-        {},
         render::RenderLayer::Geometry,
         render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
-        render::Bounds3{glm::vec3(0.1f, 0.1f, -2.0f), glm::vec3(0.6f, 0.6f, -1.5f)},
-        true,
-        glm::mat4(1.0f),
-        true
-    });
-    frame.renderables.push_back(core::FrameRenderable{
+        render::Bounds3{glm::vec3(0.1f, 0.1f, -2.0f), glm::vec3(0.6f, 0.6f, -1.5f)}
+    ));
+    frame.renderables.push_back(makeFrameRenderable(
         core::EntityId{12, 1},
         render::MeshHandle{2},
-        {},
-        {},
         render::RenderLayer::Geometry,
         render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
         render::Bounds3{},
-        false,
-        glm::mat4(1.0f),
-        true
-    });
-    frame.renderables.push_back(core::FrameRenderable{
+        false
+    ));
+    frame.renderables.push_back(makeFrameRenderable(
         core::EntityId{13, 1},
         render::MeshHandle{3},
-        {},
-        {},
         render::RenderLayer::Ground,
         render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
-        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
-        true,
-        glm::mat4(1.0f),
-        true
-    });
+        render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)}
+    ));
 
     render::RenderSceneView scene = render::buildRenderSceneView(
         frame,
@@ -2023,18 +2390,13 @@ void testOcclusionCullingUsesLastKnownResultsAndWarmup() {
 void testOcclusionCullingHidesAfterConsecutiveOccludedResults() {
     core::TaskScheduler scheduler = makeScheduler();
     core::FrameSceneData frame;
-    frame.renderables.push_back(core::FrameRenderable{
+    frame.renderables.push_back(makeFrameRenderable(
         core::EntityId{15, 1},
         render::MeshHandle{0},
-        {},
-        {},
         render::RenderLayer::Geometry,
         render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
-        render::Bounds3{glm::vec3(-0.25f, -0.25f, -2.0f), glm::vec3(0.25f, 0.25f, -1.5f)},
-        true,
-        glm::mat4(1.0f),
-        true
-    });
+        render::Bounds3{glm::vec3(-0.25f, -0.25f, -2.0f), glm::vec3(0.25f, 0.25f, -1.5f)}
+    ));
 
     render::RenderSceneView scene = render::buildRenderSceneView(
         frame,
@@ -2056,18 +2418,13 @@ void testOcclusionCullingHidesAfterConsecutiveOccludedResults() {
 void testOcclusionCullingTreatsFrustumRejectedObjectsAsNonCandidates() {
     core::TaskScheduler scheduler = makeScheduler();
     core::FrameSceneData frame;
-    frame.renderables.push_back(core::FrameRenderable{
+    frame.renderables.push_back(makeFrameRenderable(
         core::EntityId{14, 1},
         render::MeshHandle{0},
-        {},
-        {},
         render::RenderLayer::Geometry,
         render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)},
-        render::Bounds3{glm::vec3(2.0f, 2.0f, -2.0f), glm::vec3(2.5f, 2.5f, -1.5f)},
-        true,
-        glm::mat4(1.0f),
-        true
-    });
+        render::Bounds3{glm::vec3(2.0f, 2.0f, -2.0f), glm::vec3(2.5f, 2.5f, -1.5f)}
+    ));
 
     render::RenderSceneView scene = render::buildRenderSceneView(
         frame,
@@ -2085,16 +2442,13 @@ void testOcclusionCullingTreatsFrustumRejectedObjectsAsNonCandidates() {
 void runFramePreparationIterations(std::size_t workerCount) {
     core::TaskScheduler scheduler = makeScheduler(workerCount);
     core::World world;
-    core::MaterialLibrary materials;
     core::SelectionModel selection;
     core::TransformSystem transformSystem;
     core::LightSystem lightSystem;
     core::RenderExtractionSystem extraction;
     core::FrameSceneData frame;
 
-    auto material = std::make_shared<render::Material>();
-    material->name = "Frame Prep";
-    const core::MaterialHandle materialHandle = materials.add(material);
+    const std::shared_ptr<render::Material> material = makeMaterial("Frame Prep");
 
     const core::EntityId root = world.createEntity();
     const core::EntityId renderableA = world.createEntity();
@@ -2110,8 +2464,12 @@ void runFramePreparationIterations(std::size_t workerCount) {
     world.transforms.emplace(spot, core::TransformComponent{glm::vec3(1.0f, 2.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
     world.bounds.emplace(renderableA, core::BoundsComponent{render::Bounds3{glm::vec3(-0.5f), glm::vec3(0.5f)}});
     world.bounds.emplace(renderableB, core::BoundsComponent{render::Bounds3{glm::vec3(-0.25f), glm::vec3(0.25f)}});
-    world.renderables.emplace(renderableA, core::RenderableComponent{render::MeshHandle{0}, materialHandle, render::RenderLayer::Geometry});
-    world.renderables.emplace(renderableB, core::RenderableComponent{render::MeshHandle{1}, materialHandle, render::RenderLayer::Actors});
+    world.renderables.emplace(renderableA, core::RenderableComponent{render::MeshHandle{0}, render::RenderLayer::Geometry});
+    world.renderables.emplace(renderableB, core::RenderableComponent{render::MeshHandle{1}, render::RenderLayer::Actors});
+    world.materials.emplace(renderableA, core::MaterialComponent{material});
+    world.materials.emplace(renderableB, core::MaterialComponent{material});
+    world.visibilities.emplace(renderableA, core::VisibilityComponent{true});
+    world.visibilities.emplace(renderableB, core::VisibilityComponent{true});
     world.pointLights.emplace(point, core::PointLightComponent{4.0f, glm::vec3(1.0f), 1.0f, 0.0f, false, false, 0.0f, 0.0f});
     world.spotLights.emplace(
         spot,
@@ -2129,7 +2487,7 @@ void runFramePreparationIterations(std::size_t workerCount) {
             0.0f
         }
     );
-    world.lightVolumes.emplace_back(glm::vec3(-10.0f), glm::vec3(10.0f));
+    const core::EntityId lightVolume = addLightVolumeEntity(world, glm::vec3(0.0f), glm::vec3(10.0f));
 
     const std::vector<const render::MeshBuffer*> meshLookup{nullptr, nullptr};
     glm::vec3 previousRootPosition = world.transforms.get(root).position;
@@ -2145,7 +2503,7 @@ void runFramePreparationIterations(std::size_t workerCount) {
         const core::TimeContext timeContext{static_cast<float>(iteration) * 0.25f, 1.0f / 60.0f};
         transformSystem.update(world, scheduler);
         lightSystem.update(world, timeContext, scheduler);
-        extraction.extract(world, materials, selection, frame, scheduler);
+        extraction.extract(world, selection, frame, scheduler);
         const render::RenderSceneView scene = render::buildRenderSceneView(frame, meshLookup, scheduler);
 
         assert(frame.renderables.size() == 2u);
@@ -2164,10 +2522,11 @@ void runFramePreparationIterations(std::size_t workerCount) {
         assert(scene.objects[1].hasWorldBounds);
         assert(scene.lights.size() == 2u);
         assert(scene.lightVolumes.size() == 1u);
+        assert(frame.lightVolumes[0].entity == lightVolume);
+        assert(frame.lightVolumes[0].staticLightIndices.size() == 1u);
+        assert(frame.lightVolumes[0].movableLightIndices.size() == 1u);
         assert(world.transformCache_[renderableA.index].valid);
         assert(world.transformCache_[renderableB.index].valid);
-        assert(world.lightVolumes[0].staticLightEntities().size() == 1u);
-        assert(world.lightVolumes[0].movableLightEntities().size() == 1u);
         assert(world.transforms.get(root).position.x > previousRootPosition.x);
         previousRootPosition = world.transforms.get(root).position;
     }
@@ -2181,6 +2540,129 @@ void testFramePreparationRemainsStableWithMultipleWorkers() {
     runFramePreparationIterations(4u);
 }
 
+void testPhysicsSphereSphereResolvesOverlap() {
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler(4u);
+    core::PhysicsSystem physics;
+
+    const core::EntityId a = world.createEntity();
+    const core::EntityId b = world.createEntity();
+    world.transforms.emplace(a, core::TransformComponent{glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.transforms.emplace(b, core::TransformComponent{glm::vec3(0.75f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.sphereColliders.emplace(a, core::SphereColliderComponent{glm::vec3(0.0f), 0.5f, false, false});
+    world.sphereColliders.emplace(b, core::SphereColliderComponent{glm::vec3(0.0f), 0.5f, false, false});
+    world.rigidbodies.emplace(a, core::RigidbodyComponent{1.0f, 0.0f, 0.0f, false, false});
+    world.rigidbodies.emplace(b, core::RigidbodyComponent{1.0f, 0.0f, 0.0f, false, false});
+
+    physics.update(world, core::TimeContext{0.0f, 0.0f}, scheduler, true);
+
+    const glm::vec3 delta = world.transforms.get(b).position - world.transforms.get(a).position;
+    assert(glm::length(delta) >= 1.0f - 0.0001f);
+    assert(nearlyEqual((world.transforms.get(a).position.x + world.transforms.get(b).position.x) * 0.5f, 0.375, 0.001));
+}
+
+void testPhysicsBoxBoxResolvesOverlap() {
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler(4u);
+    core::PhysicsSystem physics;
+
+    const core::EntityId a = world.createEntity();
+    const core::EntityId b = world.createEntity();
+    world.transforms.emplace(a, core::TransformComponent{glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.transforms.emplace(b, core::TransformComponent{glm::vec3(0.75f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.boxColliders.emplace(a, core::BoxColliderComponent{glm::vec3(0.0f), glm::vec3(0.5f), false, false});
+    world.boxColliders.emplace(b, core::BoxColliderComponent{glm::vec3(0.0f), glm::vec3(0.5f), false, false});
+    world.rigidbodies.emplace(a, core::RigidbodyComponent{1.0f, 0.0f, 0.0f, false, false});
+    world.rigidbodies.emplace(b, core::RigidbodyComponent{1.0f, 0.0f, 0.0f, false, false});
+
+    physics.update(world, core::TimeContext{0.0f, 0.0f}, scheduler, true);
+
+    const float separation = world.transforms.get(b).position.x - world.transforms.get(a).position.x;
+    assert(separation >= 1.0f - 0.0001f);
+    assert(nearlyEqual((world.transforms.get(a).position.x + world.transforms.get(b).position.x) * 0.5f, 0.375, 0.001));
+}
+
+void testPhysicsRotatedBoxDoesNotCollideUsingInflatedAabbOnly() {
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler(4u);
+    core::PhysicsSystem physics;
+
+    const core::EntityId box = world.createEntity();
+    const core::EntityId sphere = world.createEntity();
+    world.transforms.emplace(box, core::TransformComponent{glm::vec3(0.0f), glm::vec3(0.0f, 45.0f, 0.0f), glm::vec3(1.0f)});
+    world.transforms.emplace(sphere, core::TransformComponent{glm::vec3(0.6f, 0.0f, 0.6f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.boxColliders.emplace(box, core::BoxColliderComponent{glm::vec3(0.0f), glm::vec3(0.5f), false, false});
+    world.sphereColliders.emplace(sphere, core::SphereColliderComponent{glm::vec3(0.0f), 0.1f, false, false});
+    world.rigidbodies.emplace(box, core::RigidbodyComponent{1.0f, 0.0f, 0.0f, true, false});
+    world.rigidbodies.emplace(sphere, core::RigidbodyComponent{1.0f, 0.0f, 0.0f, false, false});
+
+    physics.update(world, core::TimeContext{0.0f, 0.0f}, scheduler, true);
+
+    assert(nearlyEqual(world.transforms.get(box).position.x, 0.0, 0.0001));
+    assert(nearlyEqual(world.transforms.get(box).position.z, 0.0, 0.0001));
+    assert(nearlyEqual(world.transforms.get(sphere).position.x, 0.6, 0.0001));
+    assert(nearlyEqual(world.transforms.get(sphere).position.z, 0.6, 0.0001));
+}
+
+void testPhysicsDynamicBodySeparatesAgainstKinematicBody() {
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler(4u);
+    core::PhysicsSystem physics;
+
+    const core::EntityId kinematic = world.createEntity();
+    const core::EntityId dynamic = world.createEntity();
+    world.transforms.emplace(kinematic, core::TransformComponent{glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.transforms.emplace(dynamic, core::TransformComponent{glm::vec3(0.75f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.sphereColliders.emplace(kinematic, core::SphereColliderComponent{glm::vec3(0.0f), 0.5f, false, false});
+    world.sphereColliders.emplace(dynamic, core::SphereColliderComponent{glm::vec3(0.0f), 0.5f, false, false});
+    world.rigidbodies.emplace(kinematic, core::RigidbodyComponent{1.0f, 0.0f, 0.0f, true, false});
+    world.rigidbodies.emplace(dynamic, core::RigidbodyComponent{1.0f, 0.0f, 0.0f, false, false, glm::vec3(-1.0f, 0.0f, 0.0f)});
+
+    physics.update(world, core::TimeContext{0.0f, 0.0f}, scheduler, true);
+
+    assert(nearlyEqual(world.transforms.get(kinematic).position.x, 0.0, 0.0001));
+    assert(world.transforms.get(dynamic).position.x >= 1.0f - 0.0001f);
+    assert(nearlyEqual(world.rigidbodies.get(dynamic).velocity.x, 0.0, 0.0001));
+}
+
+void testPhysicsIgnoresCollidersWithoutRigidbodies() {
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler(4u);
+    core::PhysicsSystem physics;
+
+    const core::EntityId colliderOnly = world.createEntity();
+    const core::EntityId dynamic = world.createEntity();
+    world.transforms.emplace(colliderOnly, core::TransformComponent{glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.transforms.emplace(dynamic, core::TransformComponent{glm::vec3(0.75f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.sphereColliders.emplace(colliderOnly, core::SphereColliderComponent{glm::vec3(0.0f), 0.5f, false, false});
+    world.sphereColliders.emplace(dynamic, core::SphereColliderComponent{glm::vec3(0.0f), 0.5f, false, false});
+    world.rigidbodies.emplace(dynamic, core::RigidbodyComponent{1.0f, 0.0f, 0.0f, false, false});
+
+    physics.update(world, core::TimeContext{0.0f, 0.0f}, scheduler, true);
+
+    assert(nearlyEqual(world.transforms.get(dynamic).position.x, 0.75, 0.0001));
+}
+
+void testPhysicsTriggerFlagDoesNotDisableCollisionResolution() {
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler(4u);
+    core::PhysicsSystem physics;
+
+    const core::EntityId a = world.createEntity();
+    const core::EntityId b = world.createEntity();
+    world.transforms.emplace(a, core::TransformComponent{glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.transforms.emplace(b, core::TransformComponent{glm::vec3(0.75f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
+    world.sphereColliders.emplace(a, core::SphereColliderComponent{glm::vec3(0.0f), 0.5f, true, false});
+    world.sphereColliders.emplace(b, core::SphereColliderComponent{glm::vec3(0.0f), 0.5f, true, false});
+    world.rigidbodies.emplace(a, core::RigidbodyComponent{1.0f, 0.0f, 0.0f, false, false});
+    world.rigidbodies.emplace(b, core::RigidbodyComponent{1.0f, 0.0f, 0.0f, false, false});
+
+    physics.update(world, core::TimeContext{0.0f, 0.0f}, scheduler, true);
+
+    const glm::vec3 delta = world.transforms.get(b).position - world.transforms.get(a).position;
+    assert(glm::length(delta) >= 1.0f - 0.0001f);
+}
+
 void testActiveLightSelectionDeduplicatesAcrossVolumes() {
     std::vector<core::FrameLight> lights{
         core::FrameLight{core::EntityId{1, 1}, render::LightType::Point},
@@ -2188,8 +2670,8 @@ void testActiveLightSelectionDeduplicatesAcrossVolumes() {
         core::FrameLight{core::EntityId{3, 1}, render::LightType::Point},
     };
     std::vector<core::FrameLightVolume> volumes{
-        core::FrameLightVolume{{}, {}, {0, 1}, {2}},
-        core::FrameLightVolume{{}, {}, {1}, {2}},
+        core::FrameLightVolume{core::EntityId{10, 1}, {}, {}, {0, 1}, {2}},
+        core::FrameLightVolume{core::EntityId{11, 1}, {}, {}, {1}, {2}},
     };
 
     const render::ActiveLightSelection selection = render::selectActiveLights(lights, volumes);
@@ -2201,20 +2683,50 @@ void testActiveLightSelectionDeduplicatesAcrossVolumes() {
     assert(selection.indices[2] == 2);
 }
 
+void testSpotShadowRegistrationTracksLinearDepthInputs() {
+    render::ShadowSystem shadowSystem;
+    shadowSystem.beginFrame();
+
+    const render::ShadowSystem::SpotShadowDesc desc{
+        glm::vec3(2.0f, 3.0f, 4.0f),
+        glm::normalize(glm::vec3(-1.0f, -0.5f, -2.0f)),
+        12.0f,
+        25.0f,
+        0.0f,
+        0.0f,
+    };
+
+    const int firstIndex = shadowSystem.registerSpotShadow(desc, glm::mat4(1.0f));
+    assert(firstIndex == 0);
+    assert(shadowSystem.spotShadowCount() == 1);
+    assert(nearlyEqual(shadowSystem.spotShadowPositions()[firstIndex].x, desc.position.x, 0.0001));
+    assert(nearlyEqual(shadowSystem.spotShadowPositions()[firstIndex].y, desc.position.y, 0.0001));
+    assert(nearlyEqual(shadowSystem.spotShadowPositions()[firstIndex].z, desc.position.z, 0.0001));
+    assert(nearlyEqual(shadowSystem.spotShadowFarPlanes()[firstIndex], desc.radius, 0.0001));
+
+    const render::ShadowSystem::SpotShadowDesc clampedDesc{
+        glm::vec3(-1.0f, 0.5f, 2.0f),
+        glm::vec3(0.0f, -1.0f, 0.0f),
+        0.05f,
+        18.0f,
+        0.0f,
+        0.0f,
+    };
+
+    const int secondIndex = shadowSystem.registerSpotShadow(clampedDesc, glm::mat4(1.0f));
+    assert(secondIndex == 1);
+    assert(nearlyEqual(shadowSystem.spotShadowFarPlanes()[secondIndex], 0.2f, 0.0001));
+}
+
 void testPickingSystemCanIgnoreLights() {
     core::FrameSceneData frame;
-    frame.renderables.push_back(core::FrameRenderable{
+    frame.renderables.push_back(makeFrameRenderable(
         core::EntityId{1, 1},
         render::MeshHandle{0},
-        {},
-        {},
         render::RenderLayer::Geometry,
         render::Bounds3{glm::vec3(0.0f)},
-        render::Bounds3{glm::vec3(-0.25f, -0.25f, -6.0f), glm::vec3(0.25f, 0.25f, -4.0f)},
-        true,
-        glm::mat4(1.0f),
-        true
-    });
+        render::Bounds3{glm::vec3(-0.25f, -0.25f, -6.0f), glm::vec3(0.25f, 0.25f, -4.0f)}
+    ));
     frame.lights.push_back(core::FrameLight{
         core::EntityId{2, 1},
         render::LightType::Point,
@@ -3028,6 +3540,7 @@ int main() {
     testCommandHistoryUndoRedoAndMerge();
     testEditorSessionWindowVisibilityHelpers();
     testEditorSessionImGuiSettingsRoundTrip();
+    testSelectionModelTracksComponentFocus();
     testNavigationAssetRoundTrip();
     testNavigationBakeBuildsMultiLevelPolygonsAndBlocksOnlyOverlappingLayers();
     testNavigationPathfindingUsesSameLayerFunnelAndExplicitLinks();
@@ -3038,6 +3551,11 @@ int main() {
     testNavigationRejectsSelfIntersectingPolygon();
     testNavigationHitTestFindsProjectedNavPolygon();
     testNavigationAgentMovementRotatesAndRequestsWalkThenIdle();
+    testNavigationAgentClearanceRemainsOptIn();
+    testNavigationAgentSphereClearancePullsDestinationAwayFromWalls();
+    testNavigationAgentBoxClearanceUsesLateralFootprintAndKeepsDirectPath();
+    testNavigationRotatedBoxClearancePreservesExplicitLinkTransitions();
+    testNavigationClearanceResolvesTowardApproachInsteadOfCornerVertex();
     testTaskSchedulerParallelForCoversFullRange();
     testTaskSchedulerWaitCompletesScheduledGroup();
     testTaskSchedulerAsyncHandleDeliversResult();
@@ -3045,9 +3563,14 @@ int main() {
     testTaskSchedulerRepeatedPhaseWaitsComplete();
     testTransformHierarchyAndBounds();
     testTransformSystemProcessesMultipleRoots();
+    testTransformMathBuildsRotatedBoxesWithoutInflatingLocalExtents();
     testLightVolumeAssignment();
     testLightVolumeAssignmentIsStableAcrossLightTypes();
-    testMaterialHandleSharingExtraction();
+    testMaterialComponentSharingExtraction();
+    testRenderExtractionDefaultsMissingVisibilityToHidden();
+    testRenderExtractionTracksFocusedComponentSelection();
+    testRenderExtractionEmitsVisibleColliderDebugOnly();
+    testRenderExtractionUsesOrientedBoxMatricesForRotatedColliders();
     testRenderExtractionPreservesOutputOrdering();
     testRenderExtractionPopulatesSkinnedJointRangesAndSelectionOwner();
     testJointInfluenceBoundsBuildsSingleJointSection();
@@ -3065,7 +3588,14 @@ int main() {
     testOcclusionCullingTreatsFrustumRejectedObjectsAsNonCandidates();
     testFramePreparationRemainsStableWithSingleWorker();
     testFramePreparationRemainsStableWithMultipleWorkers();
+    testPhysicsSphereSphereResolvesOverlap();
+    testPhysicsBoxBoxResolvesOverlap();
+    testPhysicsRotatedBoxDoesNotCollideUsingInflatedAabbOnly();
+    testPhysicsDynamicBodySeparatesAgainstKinematicBody();
+    testPhysicsIgnoresCollidersWithoutRigidbodies();
+    testPhysicsTriggerFlagDoesNotDisableCollisionResolution();
     testActiveLightSelectionDeduplicatesAcrossVolumes();
+    testSpotShadowRegistrationTracksLinearDepthInputs();
     testPickingSystemCanIgnoreLights();
     testOverlayWorkSkipsAllOverlayWorkWhenDisabled();
     testOverlayWorkCullsIconsAndBatchesSelectedLights();

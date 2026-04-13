@@ -317,6 +317,8 @@ int ShadowSystem::registerSpotShadow(const SpotShadowDesc& desc, const glm::mat4
 
     spotShadowViewProj_[idx] = lightProj * lightView;
     spotShadowMatrices_[idx] = spotShadowViewProj_[idx] * invView;
+    spotShadowPositions_[idx] = desc.position;
+    spotShadowFarPlanes_[idx] = farPlane;
     return idx;
 }
 
@@ -418,8 +420,10 @@ void ShadowSystem::renderSpotShadows(const std::vector<ShadowRenderable>& render
     shadowDepthShader_.use();
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_BUFFER, jointTextureBuffer);
-    glUniform1i(shadowModeLocation_, 0);
     for (int i = 0; i < spotShadowCount_; ++i) {
+        glUniform1i(shadowModeLocation_, 1);
+        glUniform3fv(shadowLightPositionLocation_, 1, glm::value_ptr(spotShadowPositions_[i]));
+        glUniform1f(shadowFarPlaneLocation_, spotShadowFarPlanes_[i]);
         glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, spotShadowMap_, 0, i);
         glClear(GL_DEPTH_BUFFER_BIT);
         glUniformMatrix4fv(shadowViewProjLocation_, 1, GL_FALSE, glm::value_ptr(spotShadowViewProj_[i]));

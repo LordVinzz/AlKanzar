@@ -759,13 +759,18 @@ void SceneOverlayRenderer::renderOverlays(
     const glm::vec3& directionalLightDirection
 ) const {
     const detail::OverlayWork work = detail::buildOverlayWork(scene, lights, camera, options);
+    const bool drawColliderDebug = options.editorEnabled &&
+        debugColorShader_.id() != 0 &&
+        selectionBox_.valid() &&
+        lightSphere_.valid() &&
+        !scene.colliderDebug.empty();
     const bool drawNavigation = options.showNavMeshOverlay &&
         (!scene.navigation.polygons.empty() ||
          !scene.navigation.links.empty() ||
          !scene.navigation.path.empty() ||
          scene.navigation.destination.has_value() ||
          !scene.navigation.captureVertices.empty());
-    if (!work.hasWork() && !drawNavigation) {
+    if (!work.hasWork() && !drawColliderDebug && !drawNavigation) {
         return;
     }
 
@@ -778,7 +783,7 @@ void SceneOverlayRenderer::renderOverlays(
         });
     const bool drawLightDebug = debugColorShader_.id() != 0 && axisGizmo_.valid() &&
         (!work.debugLightIndices.empty() || work.drawDirectionalMarker);
-    if (!drawSelection && !drawSkeleton && !drawIcons && !drawLightDebug && !drawNavigation) {
+    if (!drawSelection && !drawSkeleton && !drawIcons && !drawLightDebug && !drawColliderDebug && !drawNavigation) {
         return;
     }
 
@@ -795,9 +800,9 @@ void SceneOverlayRenderer::renderOverlays(
         const glm::mat4 axisModel = makeUnscaledSelectionAxisModel(scene.selection.transformMatrix, work.selectionAxisScale);
         drawDebugMesh(axisGizmo_, camera.projection, camera.view, axisModel, glm::vec4(1.0f), false);
 
-        glm::mat4 boxModel(1.0f);
-        boxModel = glm::translate(boxModel, work.selectionCenter);
-        boxModel = glm::scale(boxModel, work.selectionExtents);
+        glm::mat4 boxModel = scene.selection.hasBoundsModelMatrix
+            ? scene.selection.boundsModelMatrix
+            : glm::scale(glm::translate(glm::mat4(1.0f), work.selectionCenter), work.selectionExtents);
         drawDebugMesh(
             selectionBox_,
             camera.projection,
@@ -814,6 +819,22 @@ void SceneOverlayRenderer::renderOverlays(
             camera.projection,
             camera.view
         );
+    }
+    if (drawColliderDebug) {
+        for (const RenderColliderDebugView& collider : scene.colliderDebug) {
+            const bool selected = scene.selection.entity == collider.entity;
+            const glm::vec4 color = selected
+                ? glm::vec4(0.95f, 0.88f, 0.32f, 1.0f)
+                : glm::vec4(0.24f, 0.95f, 0.96f, 0.95f);
+            if (collider.shape == core::FrameColliderShape::Box) {
+                drawDebugMesh(selectionBox_, camera.projection, camera.view, collider.modelMatrix, color, true);
+            } else {
+                glm::mat4 model(1.0f);
+                model = glm::translate(model, collider.center);
+                model = glm::scale(model, glm::vec3(std::max(collider.radius, 0.01f)));
+                drawDebugMesh(lightSphere_, camera.projection, camera.view, model, color, true);
+            }
+        }
     }
     if (drawIcons) {
         for (const detail::OverlayIconBatch& batch : work.iconBatches) {

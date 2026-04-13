@@ -6,6 +6,8 @@
 #include <string_view>
 #include <vector>
 
+#include <glm/geometric.hpp>
+
 #include "core/transform/TransformMath.hpp"
 #include "render/resources/StaticGltfModel.hpp"
 
@@ -38,6 +40,45 @@ bool endsWithIgnoreCase(std::string_view value, std::string_view suffix) {
         }
     }
     return true;
+}
+
+glm::mat4 worldMatrixForEntity(const World& world, EntityId entity) {
+    if (entity.index < world.transformCache_.size() && world.transformCache_[entity.index].valid) {
+        return world.transformCache_[entity.index].worldMatrix;
+    }
+    if (const TransformComponent* transform = world.transforms.tryGet(entity)) {
+        return composeTransform(*transform);
+    }
+    return glm::mat4(1.0f);
+}
+
+render::Bounds3 centeredBounds(const glm::vec3& center, const glm::vec3& halfExtents) {
+    return render::Bounds3{
+        center - halfExtents,
+        center + halfExtents,
+    };
+}
+
+bool intersectsSphere(const render::Bounds3& bounds, const glm::vec3& center, float radius) {
+    float distanceSquared = 0.0f;
+    for (int axis = 0; axis < 3; ++axis) {
+        const float value = center[axis];
+        if (value < bounds.min[axis]) {
+            const float delta = bounds.min[axis] - value;
+            distanceSquared += delta * delta;
+        } else if (value > bounds.max[axis]) {
+            const float delta = value - bounds.max[axis];
+            distanceSquared += delta * delta;
+        }
+    }
+    return distanceSquared <= radius * radius;
+}
+
+float maxAxisScale(const glm::mat4& modelMatrix) {
+    const float xScale = glm::length(glm::vec3(modelMatrix[0]));
+    const float yScale = glm::length(glm::vec3(modelMatrix[1]));
+    const float zScale = glm::length(glm::vec3(modelMatrix[2]));
+    return std::max(xScale, std::max(yScale, zScale));
 }
 
 bool computeSkinnedWorldBounds(
@@ -364,7 +405,6 @@ void populateSelectionSkeletonDebug(
 
 void RenderExtractionSystem::extract(
     const World& world,
-    const MaterialLibrary& materials,
     const SelectionModel& selection,
     FrameSceneData& outFrame,
     TaskScheduler& scheduler,
@@ -372,35 +412,102 @@ void RenderExtractionSystem::extract(
 ) const {
     outFrame.clear();
     std::vector<int> lightIndexByEntity(world.lightRuntime_.size(), -1);
+    const auto renderableVisible = [&](EntityId entity) {
+        const VisibilityComponent* visibility = world.visibilities.tryGet(entity);
+        return visibility != nullptr && visibility->visible;
+    };
+    const auto fillFrameRenderable = [&](EntityId entity, FrameRenderable& frameRenderable) {
+        const RenderableComponent& renderable = world.renderables.get(entity);
+        const MaterialComponent* material = world.materials.tryGet(entity);
+        const TransformCacheEntry* cache = entity.index < world.transformCache_.size()
+            ? &world.transformCache_[entity.index]
+            : nullptr;
 
-    if (!useParallel) {
-        outFrame.reserve(world.renderables.size(), world.pointLights.size() + world.spotLights.size(), world.lightVolumes.size());
-
-        for (EntityId entity : world.renderables.entities()) {
-            const RenderableComponent& renderable = world.renderables.get(entity);
-            const VisibilityComponent* visibility = world.visibilities.tryGet(entity);
-            const bool visible = visibility == nullptr || visibility->visible;
-            const TransformCacheEntry* cache = entity.index < world.transformCache_.size()
-                ? &world.transformCache_[entity.index]
-                : nullptr;
-
-            FrameRenderable frameRenderable{};
-            frameRenderable.entity = entity;
-            frameRenderable.mesh = renderable.mesh;
-            frameRenderable.materialHandle = renderable.material;
-            frameRenderable.material = materials.get(renderable.material);
-            frameRenderable.layer = renderable.layer;
-            frameRenderable.visible = visible;
-            frameRenderable.localBounds = world.bounds.contains(entity)
-                ? world.bounds.get(entity).localBounds
-                : render::Bounds3{};
-            if (cache != nullptr) {
-                frameRenderable.modelMatrix = cache->worldMatrix;
-                frameRenderable.hasWorldBounds = cache->hasWorldBounds;
-                if (cache->hasWorldBounds) {
-                    frameRenderable.worldBounds = cache->worldBounds;
+        frameRenderable = FrameRenderable{};
+        frameRenderable.entity = entity;
+        frameRenderable.mesh = renderable.mesh;
+        frameRenderable.material = material != nullptr ? material->material : nullptr;
+        frameRenderable.layer = renderable.layer;
+        frameRenderable.visible = renderableVisible(entity);
+        frameRenderable.localBounds = world.bounds.contains(entity)
+            ? world.bounds.get(entity).localBounds
+            : render::Bounds3{};
+        if (cache != nullptr) {
+            frameRenderable.modelMatrix = cache->worldMatrix;
+            frameRenderable.hasWorldBounds = cache->hasWorldBounds;
+            if (cache->hasWorldBounds) {
+                frameRenderable.worldBounds = cache->worldBounds;
+            }
+        }
+    };
+    const auto appendLightVolumes = [&]() {
+        for (EntityId entity : world.lightVolumes.entities()) {
+            const LightVolumeComponent& volume = world.lightVolumes.get(entity);
+            FrameLightVolume frameVolume{};
+            frameVolume.entity = entity;
+            const render::Bounds3 worldBounds = transformBounds(
+                centeredBounds(glm::vec3(0.0f), glm::max(volume.halfExtents, glm::vec3(0.01f))),
+                worldMatrixForEntity(world, entity)
+            );
+            frameVolume.minCorner = worldBounds.min;
+            frameVolume.maxCorner = worldBounds.max;
+            for (std::size_t lightIndex = 0; lightIndex < outFrame.lights.size(); ++lightIndex) {
+                const FrameLight& light = outFrame.lights[lightIndex];
+                if (!intersectsSphere(worldBounds, light.position, light.radius)) {
+                    continue;
+                }
+                if (light.isMovable) {
+                    frameVolume.movableLightIndices.push_back(static_cast<int>(lightIndex));
+                } else {
+                    frameVolume.staticLightIndices.push_back(static_cast<int>(lightIndex));
                 }
             }
+            outFrame.lightVolumes.push_back(std::move(frameVolume));
+        }
+    };
+    const auto appendColliderDebug = [&]() {
+        for (EntityId entity : world.boxColliders.entities()) {
+            const BoxColliderComponent& collider = world.boxColliders.get(entity);
+            if (!collider.showDebug || !renderableVisible(entity)) {
+                continue;
+            }
+
+            FrameColliderDebug frameCollider{};
+            frameCollider.entity = entity;
+            frameCollider.shape = FrameColliderShape::Box;
+            const OrientedBox box = makeOrientedBox(worldMatrixForEntity(world, entity), collider);
+            frameCollider.bounds = box.aabb;
+            frameCollider.modelMatrix = box.modelMatrix;
+            outFrame.colliderDebug.push_back(std::move(frameCollider));
+        }
+        for (EntityId entity : world.sphereColliders.entities()) {
+            const SphereColliderComponent& collider = world.sphereColliders.get(entity);
+            if (!collider.showDebug || !renderableVisible(entity)) {
+                continue;
+            }
+
+            const glm::mat4 modelMatrix = worldMatrixForEntity(world, entity);
+            FrameColliderDebug frameCollider{};
+            frameCollider.entity = entity;
+            frameCollider.shape = FrameColliderShape::Sphere;
+            frameCollider.center = glm::vec3(modelMatrix * glm::vec4(collider.center, 1.0f));
+            frameCollider.radius = collider.radius * std::max(maxAxisScale(modelMatrix), 0.001f);
+            frameCollider.bounds = centeredBounds(frameCollider.center, glm::vec3(frameCollider.radius));
+            outFrame.colliderDebug.push_back(std::move(frameCollider));
+        }
+    };
+
+    if (!useParallel) {
+        outFrame.reserve(
+            world.renderables.size(),
+            world.pointLights.size() + world.spotLights.size(),
+            world.lightVolumes.size(),
+            world.boxColliders.size() + world.sphereColliders.size()
+        );
+
+        for (EntityId entity : world.renderables.entities()) {
+            FrameRenderable frameRenderable{};
+            fillFrameRenderable(entity, frameRenderable);
             outFrame.renderables.push_back(std::move(frameRenderable));
         }
 
@@ -443,28 +550,12 @@ void RenderExtractionSystem::extract(
             lightIndexByEntity[entity.index] = static_cast<int>(outFrame.lights.size());
             outFrame.lights.push_back(std::move(frameLight));
         }
-
-        for (const LightVolume& volume : world.lightVolumes) {
-            FrameLightVolume frameVolume{};
-            frameVolume.minCorner = volume.minCorner();
-            frameVolume.maxCorner = volume.maxCorner();
-            for (EntityId entity : volume.staticLightEntities()) {
-                if (entity.index < lightIndexByEntity.size() && lightIndexByEntity[entity.index] >= 0) {
-                    frameVolume.staticLightIndices.push_back(lightIndexByEntity[entity.index]);
-                }
-            }
-            for (EntityId entity : volume.movableLightEntities()) {
-                if (entity.index < lightIndexByEntity.size() && lightIndexByEntity[entity.index] >= 0) {
-                    frameVolume.movableLightIndices.push_back(lightIndexByEntity[entity.index]);
-                }
-            }
-            outFrame.lightVolumes.push_back(std::move(frameVolume));
-        }
+        appendLightVolumes();
+        appendColliderDebug();
 
     } else {
         outFrame.renderables.resize(world.renderables.size());
         outFrame.lights.resize(world.pointLights.size() + world.spotLights.size());
-        outFrame.lightVolumes.resize(world.lightVolumes.size());
 
         TaskGroup primaryGroup;
         scheduler.parallelFor(
@@ -476,29 +567,8 @@ void RenderExtractionSystem::extract(
                 const std::vector<EntityId>& entities = world.renderables.entities();
                 for (std::size_t index = begin; index < end; ++index) {
                     const EntityId entity = entities[index];
-                    const RenderableComponent& renderable = world.renderables.get(entity);
-                    const VisibilityComponent* visibility = world.visibilities.tryGet(entity);
-                    const TransformCacheEntry* cache = entity.index < world.transformCache_.size()
-                        ? &world.transformCache_[entity.index]
-                        : nullptr;
-
                     FrameRenderable frameRenderable{};
-                    frameRenderable.entity = entity;
-                    frameRenderable.mesh = renderable.mesh;
-                    frameRenderable.materialHandle = renderable.material;
-                    frameRenderable.material = materials.get(renderable.material);
-                    frameRenderable.layer = renderable.layer;
-                    frameRenderable.visible = visibility == nullptr || visibility->visible;
-                    frameRenderable.localBounds = world.bounds.contains(entity)
-                        ? world.bounds.get(entity).localBounds
-                        : render::Bounds3{};
-                    if (cache != nullptr) {
-                        frameRenderable.modelMatrix = cache->worldMatrix;
-                        frameRenderable.hasWorldBounds = cache->hasWorldBounds;
-                        if (cache->hasWorldBounds) {
-                            frameRenderable.worldBounds = cache->worldBounds;
-                        }
-                    }
+                    fillFrameRenderable(entity, frameRenderable);
                     outFrame.renderables[index] = std::move(frameRenderable);
                 }
             }
@@ -565,34 +635,8 @@ void RenderExtractionSystem::extract(
             }
         );
         scheduler.wait(primaryGroup);
-
-        TaskGroup volumeGroup;
-        scheduler.parallelFor(
-            volumeGroup,
-            world.lightVolumes.size(),
-            taskGrain(world.lightVolumes.size(), scheduler.workerCount()),
-            "Render Extract Light Volumes",
-            [&](std::size_t begin, std::size_t end) {
-                for (std::size_t volumeIndex = begin; volumeIndex < end; ++volumeIndex) {
-                    const LightVolume& volume = world.lightVolumes[volumeIndex];
-                    FrameLightVolume frameVolume{};
-                    frameVolume.minCorner = volume.minCorner();
-                    frameVolume.maxCorner = volume.maxCorner();
-                    for (EntityId entity : volume.staticLightEntities()) {
-                        if (entity.index < lightIndexByEntity.size() && lightIndexByEntity[entity.index] >= 0) {
-                            frameVolume.staticLightIndices.push_back(lightIndexByEntity[entity.index]);
-                        }
-                    }
-                    for (EntityId entity : volume.movableLightEntities()) {
-                        if (entity.index < lightIndexByEntity.size() && lightIndexByEntity[entity.index] >= 0) {
-                            frameVolume.movableLightIndices.push_back(lightIndexByEntity[entity.index]);
-                        }
-                    }
-                    outFrame.lightVolumes[volumeIndex] = std::move(frameVolume);
-                }
-            }
-        );
-        scheduler.wait(volumeGroup);
+        appendLightVolumes();
+        appendColliderDebug();
     }
 
     for (FrameRenderable& renderable : outFrame.renderables) {
@@ -603,8 +647,10 @@ void RenderExtractionSystem::extract(
         return;
     }
 
-    const EntityId selected = *selection.current();
+    const SelectionTarget selectedTarget = *selection.current();
+    const EntityId selected = selectedTarget.entity;
     outFrame.selection.entity = selected;
+    outFrame.selection.component = selectedTarget.component;
     outFrame.selection.isLight = world.pointLights.contains(selected) || world.spotLights.contains(selected);
     if (selected.index < world.transformCache_.size()) {
         outFrame.selection.worldBounds = world.transformCache_[selected.index].worldBounds;
@@ -622,6 +668,30 @@ void RenderExtractionSystem::extract(
         outFrame.selection.worldBounds = renderable.worldBounds;
         outFrame.selection.hasWorldBounds = renderable.hasWorldBounds;
         break;
+    }
+    if (!outFrame.selection.hasWorldBounds && world.lightVolumes.contains(selected)) {
+        const LightVolumeComponent& volume = world.lightVolumes.get(selected);
+        outFrame.selection.worldBounds = transformBounds(
+            centeredBounds(glm::vec3(0.0f), glm::max(volume.halfExtents, glm::vec3(0.01f))),
+            worldMatrixForEntity(world, selected)
+        );
+        outFrame.selection.hasWorldBounds = true;
+    }
+    if (!outFrame.selection.hasWorldBounds && world.boxColliders.contains(selected)) {
+        const BoxColliderComponent& collider = world.boxColliders.get(selected);
+        const OrientedBox box = makeOrientedBox(worldMatrixForEntity(world, selected), collider);
+        outFrame.selection.worldBounds = box.aabb;
+        outFrame.selection.boundsModelMatrix = box.modelMatrix;
+        outFrame.selection.hasBoundsModelMatrix = true;
+        outFrame.selection.hasWorldBounds = true;
+    }
+    if (!outFrame.selection.hasWorldBounds && world.sphereColliders.contains(selected)) {
+        const SphereColliderComponent& collider = world.sphereColliders.get(selected);
+        const glm::mat4 modelMatrix = worldMatrixForEntity(world, selected);
+        const glm::vec3 center = glm::vec3(modelMatrix * glm::vec4(collider.center, 1.0f));
+        const float radius = collider.radius * std::max(maxAxisScale(modelMatrix), 0.001f);
+        outFrame.selection.worldBounds = centeredBounds(center, glm::vec3(radius));
+        outFrame.selection.hasWorldBounds = true;
     }
     if (!outFrame.selection.hasWorldBounds ||
         (world.animatedModels.contains(selected) && !world.renderables.contains(selected))) {

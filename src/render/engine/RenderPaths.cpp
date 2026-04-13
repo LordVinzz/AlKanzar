@@ -214,6 +214,8 @@ bool DeferredRenderPath::init(const std::string& shaderRoot, MaterialBinder& mat
     volumeBoundsMaxLocation_ = volumeShader_.uniformLocation("uVolumeMax");
     volumeInvViewLocation_ = volumeShader_.uniformLocation("uInvView");
     volumeSpotShadowMatrixLocation_ = volumeShader_.uniformLocation("uSpotShadowMatrices[0]");
+    volumeSpotShadowPositionLocation_ = volumeShader_.uniformLocation("uSpotShadowPositions[0]");
+    volumeSpotShadowFarPlaneLocation_ = volumeShader_.uniformLocation("uSpotShadowFarPlanes[0]");
     volumeSpotShadowCountLocation_ = volumeShader_.uniformLocation("uSpotShadowCount");
     volumeSpotShadowTexelSizeLocation_ = volumeShader_.uniformLocation("uSpotShadowTexelSize");
     volumeSpotShadowPcfRadiusLocation_ = volumeShader_.uniformLocation("uSpotShadowPcfRadius");
@@ -462,6 +464,16 @@ void DeferredRenderPath::composeFrame(const RenderPathContext& context) {
             context.shadowSystem.spotShadowCount(),
             GL_FALSE,
             glm::value_ptr(context.shadowSystem.spotShadowMatrices().front())
+        );
+        glUniform3fv(
+            volumeSpotShadowPositionLocation_,
+            context.shadowSystem.spotShadowCount(),
+            glm::value_ptr(context.shadowSystem.spotShadowPositions().front())
+        );
+        glUniform1fv(
+            volumeSpotShadowFarPlaneLocation_,
+            context.shadowSystem.spotShadowCount(),
+            context.shadowSystem.spotShadowFarPlanes().data()
         );
         glUniform1i(volumeSpotShadowCountLocation_, context.shadowSystem.spotShadowCount());
         glUniform2f(

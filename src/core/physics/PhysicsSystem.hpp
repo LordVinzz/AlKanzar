@@ -1,16 +1,16 @@
 #pragma once
 
-#include "core/systems/TaskScheduler.hpp"
 #include "core/app/TimeContext.hpp"
 #include "core/ecs/World.hpp"
+#include "core/systems/TaskScheduler.hpp"
 
 namespace core {
 
-class LightSystem {
+class PhysicsSystem {
 public:
     /**
-     * Updates light runtime state for the current frame.
-     * Parallel mode runs point and spot light evaluation in phases and waits before the frame continues.
+     * Simulates rigidbody-vs-rigidbody collisions for entities that also own a box or sphere collider.
+     * Parallel mode uses the task scheduler for contact generation and applies the final body state on the main thread.
      */
     void update(
         World& world,

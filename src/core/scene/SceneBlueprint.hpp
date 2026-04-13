@@ -47,6 +47,12 @@ struct SpotLightBlueprint {
     float shadowBiasSlope{0.0f};
 };
 
+struct LightVolumeBlueprint {
+    std::string name;
+    TransformComponent transform{};
+    glm::vec3 halfExtents{1.0f};
+};
+
 struct SceneBlueprint {
     float groundHalfExtent{500.0f};
     float wallHeight{2.5f};
@@ -55,6 +61,7 @@ struct SceneBlueprint {
     float wallThickness{0.5f};
     std::string navMeshAssetPath{};
     std::vector<ModelInstanceBlueprint> models{};
+    std::vector<LightVolumeBlueprint> lightVolumes{};
     std::vector<PointLightBlueprint> pointLights{};
     std::vector<SpotLightBlueprint> spotLights{};
 };

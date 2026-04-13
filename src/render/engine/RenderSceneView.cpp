@@ -69,9 +69,12 @@ RenderSelectionView resolveRenderSelection(const core::FrameSceneData& frame) {
         return selection;
     }
 
+    selection.entity = *frame.selection.entity;
     selection.worldBounds = frame.selection.worldBounds;
     selection.hasWorldBounds = frame.selection.hasWorldBounds;
     selection.transformMatrix = frame.selection.transformMatrix;
+    selection.boundsModelMatrix = frame.selection.boundsModelMatrix;
+    selection.hasBoundsModelMatrix = frame.selection.hasBoundsModelMatrix;
 
     for (std::size_t index = 0; index < frame.renderables.size(); ++index) {
         if (frame.renderables[index].entity == *frame.selection.entity) {
@@ -102,6 +105,17 @@ RenderSceneView buildRenderSceneView(
     RenderSceneView scene{};
     scene.lights = frame.lights;
     scene.lightVolumes = frame.lightVolumes;
+    scene.colliderDebug.reserve(frame.colliderDebug.size());
+    for (const core::FrameColliderDebug& collider : frame.colliderDebug) {
+        scene.colliderDebug.push_back(RenderColliderDebugView{
+            collider.entity,
+            collider.shape,
+            collider.bounds,
+            collider.modelMatrix,
+            collider.center,
+            collider.radius
+        });
+    }
     scene.selection = resolveRenderSelection(frame);
     scene.selectionSkeleton.showOverlay = frame.selectionSkeleton.showOverlay;
     scene.selectionSkeleton.parentIndices = frame.selectionSkeleton.parentIndices;

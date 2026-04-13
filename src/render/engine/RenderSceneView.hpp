@@ -73,10 +73,22 @@ enum class RenderSelectionKind {
 
 struct RenderSelectionView {
     RenderSelectionKind kind{RenderSelectionKind::None};
+    core::EntityId entity{};
     int index{-1};
     Bounds3 worldBounds{};
     bool hasWorldBounds{false};
     glm::mat4 transformMatrix{1.0f};
+    glm::mat4 boundsModelMatrix{1.0f};
+    bool hasBoundsModelMatrix{false};
+};
+
+struct RenderColliderDebugView {
+    core::EntityId entity{};
+    core::FrameColliderShape shape{core::FrameColliderShape::Box};
+    Bounds3 bounds{};
+    glm::mat4 modelMatrix{1.0f};
+    glm::vec3 center{0.0f};
+    float radius{0.0f};
 };
 
 struct RenderSelectionSkeletonView {
@@ -112,6 +124,7 @@ struct RenderSceneView {
     std::vector<RenderSceneObjectView> objects{};
     std::vector<core::FrameLight> lights{};
     std::vector<core::FrameLightVolume> lightVolumes{};
+    std::vector<RenderColliderDebugView> colliderDebug{};
     RenderSelectionView selection{};
     RenderSelectionSkeletonView selectionSkeleton{};
     RenderNavigationView navigation{};

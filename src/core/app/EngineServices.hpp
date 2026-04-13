@@ -4,6 +4,7 @@
 
 #include "AppState.hpp"
 #include "core/animation/AnimationSystem.hpp"
+#include "core/ecs/ComponentRegistry.hpp"
 #include "core/scene/Camera.hpp"
 #include "core/editor/CommandHistory.hpp"
 #include "core/editor/EditorSession.hpp"
@@ -11,8 +12,8 @@
 #include "core/events/Events.hpp"
 #include "FrameData.hpp"
 #include "core/lighting/LightSystem.hpp"
-#include "core/lighting/MaterialLibrary.hpp"
 #include "core/navigation/Navigation.hpp"
+#include "core/physics/PhysicsSystem.hpp"
 #include "core/systems/PickingSystem.hpp"
 #include "core/profiling/ProfilerService.hpp"
 #include "core/systems/RenderExtractionSystem.hpp"
@@ -52,7 +53,6 @@ struct EngineServices {
     SceneRegistry sceneRegistry;
     SceneFactory sceneFactory;
     SceneBlueprint currentScene{};
-    MaterialLibrary materials;
     World world;
     TimeContext time;
     CameraState camera;
@@ -63,8 +63,10 @@ struct EngineServices {
     LightSystem lightSystem;
     NavigationRuntime navigation;
     NavigationSystem navigationSystem;
+    PhysicsSystem physicsSystem;
     RenderExtractionSystem renderExtractionSystem;
     PickingSystem pickingSystem;
+    ComponentRegistry componentRegistry;
     InputSession input;
     render::DebugView debugView{render::DebugView::Final};
     int shadowDebugCascade{0};

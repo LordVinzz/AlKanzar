@@ -1,6 +1,5 @@
 #pragma once
 
-#include "core/lighting/MaterialLibrary.hpp"
 #include "SceneBlueprint.hpp"
 #include "core/ecs/World.hpp"
 
@@ -15,7 +14,6 @@ public:
     bool buildScene(
         const SceneBlueprint& blueprint,
         World& world,
-        MaterialLibrary& materials,
         render::RenderEngine& renderer
     ) const;
 };
