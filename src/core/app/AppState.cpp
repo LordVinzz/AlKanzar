@@ -791,12 +791,31 @@ void drawNavMeshWindow(EngineServices& services) {
     }
 
     ImGui::Text("Asset: %s", services.navigation.assetPath.c_str());
+    ImGui::Text(
+        "%zu polygons | %zu runtime cells | %zu filtered",
+        services.navigation.asset.polygons.size(),
+        services.navigation.bakedCells.size(),
+        services.navigation.filteredRuntimeCellCount
+    );
     if (!services.navigation.statusMessage.empty()) {
         const ImVec4 color = services.navigation.statusIsError
             ? ImVec4(0.90f, 0.32f, 0.32f, 1.0f)
             : ImVec4(0.35f, 0.78f, 0.42f, 1.0f);
         ImGui::TextColored(color, "%s", services.navigation.statusMessage.c_str());
     }
+
+    const auto bakeRuntime = [&services]() {
+        std::string error{};
+        if (services.navigationSystem.rebuildRuntime(services.navigation, &error)) {
+            services.navigation.statusMessage = "Baked navmesh (" +
+                std::to_string(services.navigation.bakedCells.size()) + " cells, " +
+                std::to_string(services.navigation.filteredRuntimeCellCount) + " filtered).";
+            services.navigation.statusIsError = false;
+        } else {
+            services.navigation.statusMessage = error;
+            services.navigation.statusIsError = true;
+        }
+    };
 
     if (ImGui::Button("Save")) {
         std::string error{};
@@ -816,6 +835,10 @@ void drawNavMeshWindow(EngineServices& services) {
                 : services.navigation.statusMessage;
             services.navigation.statusIsError = true;
         }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Bake")) {
+        bakeRuntime();
     }
     ImGui::SameLine();
     if (ImGui::Button("Generate From Tags")) {
@@ -839,9 +862,32 @@ void drawNavMeshWindow(EngineServices& services) {
         setPersistedEditorSessionFlag(services.editorSession.navMeshOverlayVisible, overlayVisible);
     }
     ImGui::SameLine();
+    bool polygonWireframeVisible = services.editorSession.navMeshPolygonWireframeVisible;
+    if (ImGui::Checkbox("Red Polygon Wireframe", &polygonWireframeVisible)) {
+        setPersistedEditorSessionFlag(
+            services.editorSession.navMeshPolygonWireframeVisible,
+            polygonWireframeVisible
+        );
+    }
+
     ImGui::Checkbox("Editor Click Moves Character", &services.navigation.editor.testMoveMode);
     if (services.navigation.editor.testMoveMode) {
         services.navigation.editor.polygonCaptureActive = false;
+    }
+    if (ImGui::DragFloat(
+        "Minimum Runtime Cell Area",
+        &services.navigation.asset.minimumRuntimeCellArea,
+        0.001f,
+        0.0f,
+        100.0f,
+        "%.4f",
+        ImGuiSliderFlags_AlwaysClamp
+    )) {
+        services.navigation.asset.minimumRuntimeCellArea =
+            std::max(services.navigation.asset.minimumRuntimeCellArea, 0.0f);
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        bakeRuntime();
     }
 
     ImGui::SeparatorText("Tagging");

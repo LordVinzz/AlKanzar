@@ -27,6 +27,8 @@ void loadEditorSessionBoolLine(EditorSession& session, const char* line) {
         session.navMeshWindowVisible = value != 0;
     } else if (std::sscanf(line, "NavMeshOverlayVisible=%d", &value) == 1) {
         session.navMeshOverlayVisible = value != 0;
+    } else if (std::sscanf(line, "NavMeshPolygonWireframeVisible=%d", &value) == 1) {
+        session.navMeshPolygonWireframeVisible = value != 0;
     } else if (std::sscanf(line, "ProfilerFollowLatest=%d", &value) == 1) {
         session.profilerFollowLatest = value != 0;
     }
@@ -60,6 +62,10 @@ void editorSessionSettingsWriteAll(ImGuiContext*, ImGuiSettingsHandler* handler,
     outBuffer->appendf("ProfilerWindowVisible=%d\n", session.profilerWindowVisible ? 1 : 0);
     outBuffer->appendf("NavMeshWindowVisible=%d\n", session.navMeshWindowVisible ? 1 : 0);
     outBuffer->appendf("NavMeshOverlayVisible=%d\n", session.navMeshOverlayVisible ? 1 : 0);
+    outBuffer->appendf(
+        "NavMeshPolygonWireframeVisible=%d\n",
+        session.navMeshPolygonWireframeVisible ? 1 : 0
+    );
     outBuffer->appendf("ProfilerFollowLatest=%d\n", session.profilerFollowLatest ? 1 : 0);
     outBuffer->append("\n");
 }

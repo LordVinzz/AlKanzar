@@ -326,6 +326,7 @@ void Application::run() {
             services_.showLightDebug,
             currentMode_ == AppMode::Editor,
             currentMode_ == AppMode::Editor && services_.editorSession.navMeshOverlayVisible,
+            currentMode_ == AppMode::Editor && services_.editorSession.navMeshPolygonWireframeVisible,
         };
         {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Render Frame");

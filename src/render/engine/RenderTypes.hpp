@@ -60,6 +60,7 @@ struct RenderFrameOptions {
     bool showLightDebug{false};
     bool editorEnabled{false};
     bool showNavMeshOverlay{false};
+    bool showNavMeshPolygonWireframe{false};
 };
 
 }  // namespace render

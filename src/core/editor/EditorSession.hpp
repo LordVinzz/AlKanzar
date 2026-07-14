@@ -27,6 +27,7 @@ struct EditorSession {
     bool navMeshWindowVisible{true};
     bool navMeshWindowFocusRequested{false};
     bool navMeshOverlayVisible{true};
+    bool navMeshPolygonWireframeVisible{false};
     bool profilerFollowLatest{true};
     int profilerSelectedFrame{0};
     int animationInspectorSkinIndex{0};
