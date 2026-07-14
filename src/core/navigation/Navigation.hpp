@@ -1,7 +1,9 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -44,6 +46,7 @@ struct NavLink {
 
 struct NavMeshAsset {
     int version{1};
+    float minimumRuntimeCellArea{0.0f};
     std::vector<NavSourceTagOverride> sourceTagOverrides{};
     std::vector<NavPolygon> polygons{};
     std::vector<NavLink> links{};
@@ -76,6 +79,9 @@ struct NavigationSolveSnapshot {
     std::vector<glm::vec2> polygonCenters{};
     std::vector<NavRuntimeCell> bakedCells{};
     std::vector<glm::vec2> bakedCellCenters{};
+    std::vector<glm::vec2> bakedCellMinXZ{};
+    std::vector<glm::vec2> bakedCellMaxXZ{};
+    std::vector<std::vector<std::uint8_t>> bakedCellBoundaryVertices{};
     std::vector<std::vector<std::size_t>> polygonToCellIndices{};
     std::vector<std::vector<std::size_t>> cellToPolygonIndices{};
     std::vector<std::vector<NavGraphEdge>> graph{};
@@ -100,11 +106,15 @@ struct NavigationRuntime {
     std::vector<glm::vec2> polygonCenters{};
     std::vector<NavRuntimeCell> bakedCells{};
     std::vector<glm::vec2> bakedCellCenters{};
+    std::vector<glm::vec2> bakedCellMinXZ{};
+    std::vector<glm::vec2> bakedCellMaxXZ{};
+    std::vector<std::vector<std::uint8_t>> bakedCellBoundaryVertices{};
     std::vector<std::vector<std::size_t>> polygonToCellIndices{};
     std::vector<std::vector<std::size_t>> cellToPolygonIndices{};
     std::vector<std::vector<NavGraphEdge>> graph{};
     std::shared_ptr<const NavigationSolveSnapshot> solveSnapshot{};
     std::uint64_t solveRevision{0u};
+    std::size_t filteredRuntimeCellCount{0u};
     std::string statusMessage{};
     bool statusIsError{false};
     NavigationEditorState editor{};
@@ -170,6 +180,12 @@ public:
     bool commitPendingLink(NavigationRuntime& runtime, std::string* error = nullptr) const;
 
 private:
+    bool rebuildRuntimeInternal(
+        NavigationRuntime& runtime,
+        std::string* error,
+        bool sourcePolygonsAreDisjoint
+    ) const;
+
     struct PathSolveResult {
         EntityId agentEntity{};
         std::uint64_t requestId{0u};
@@ -180,11 +196,26 @@ private:
         std::uint64_t durationUs{0u};
     };
 
+public:
+    struct PartialPathResult {
+        glm::vec3 destination{0.0f};
+        std::vector<glm::vec3> pathCorners{};
+    };
+
+    struct PendingPathProgress {
+        std::mutex mutex{};
+        std::optional<PartialPathResult> partialPath{};
+    };
+
+private:
     struct PendingPathRequest {
         std::uint64_t requestId{0u};
         std::uint64_t solveRevision{0u};
         glm::vec3 startPosition{0.0f};
         glm::vec3 destination{0.0f};
+        std::shared_ptr<PendingPathProgress> progress{};
+        std::shared_ptr<std::atomic<bool>> cancelled{};
+        bool partialPathApplied{false};
         AsyncTaskHandle<PathSolveResult> handle{};
     };
 
