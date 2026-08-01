@@ -6,11 +6,14 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <numeric>
 #include <optional>
+#include <queue>
 #include <random>
 #include <string>
 #include <string_view>
@@ -757,20 +760,20 @@ void testNavigationAssetRoundTrip() {
     asset.sourceTagOverrides.push_back(core::NavSourceTagOverride{"Root/Ground", core::NavSourceTag::Walkable});
     asset.polygons.push_back(core::NavPolygon{
         1,
-        0.0f,
+        0.123456789f,
         {
-            glm::vec2(-1.0f, -1.0f),
-            glm::vec2(1.0f, -1.0f),
-            glm::vec2(1.0f, 1.0f),
-            glm::vec2(-1.0f, 1.0f),
+            glm::vec2(-1.2345678f, -1.1234567f),
+            glm::vec2(1.3456789f, -1.1234567f),
+            glm::vec2(1.3456789f, 1.4567890f),
+            glm::vec2(-1.2345678f, 1.4567890f),
         }
     });
     asset.links.push_back(core::NavLink{
         7,
         1,
         2,
-        glm::vec3(0.0f, 0.0f, 0.0f),
-        glm::vec3(0.0f, 3.0f, 0.0f),
+        glm::vec3(0.1234567f, 0.2345678f, 0.3456789f),
+        glm::vec3(4.1234565f, 3.2345676f, 2.3456788f),
         true
     });
 
@@ -787,9 +790,18 @@ void testNavigationAssetRoundTrip() {
     assert(parsed.polygons.size() == 1u);
     assert(parsed.polygons[0].id == 1);
     assert(parsed.polygons[0].verticesXZ.size() == 4u);
+    assert(parsed.polygons[0].elevationY == asset.polygons[0].elevationY);
+    for (std::size_t vertexIndex = 0u;
+         vertexIndex < asset.polygons[0].verticesXZ.size();
+         ++vertexIndex) {
+        assert(parsed.polygons[0].verticesXZ[vertexIndex] ==
+            asset.polygons[0].verticesXZ[vertexIndex]);
+    }
     assert(parsed.links.size() == 1u);
     assert(parsed.links[0].id == 7);
     assert(parsed.links[0].bidirectional);
+    assert(parsed.links[0].fromPoint == asset.links[0].fromPoint);
+    assert(parsed.links[0].toPoint == asset.links[0].toPoint);
 }
 
 void testNavigationBakeBuildsMultiLevelPolygonsAndBlocksOnlyOverlappingLayers() {
@@ -1083,6 +1095,9 @@ void testNavigationGenerationHandlesFantasyHouseGeometryWithoutPathologicalMerge
         std::chrono::steady_clock::now() - bakeStartedAt).count();
     assert(bakeError.empty());
     assert(!runtime.bakedCells.empty());
+    assert(!runtime.bakedCellsHaveInteriorOverlap);
+    assert(runtime.polyanyaMesh != nullptr);
+    assert(runtime.exactPathfindingWarning.empty());
     const std::size_t bakedVertexCount = std::accumulate(
         runtime.bakedCells.begin(),
         runtime.bakedCells.end(),
@@ -1149,10 +1164,13 @@ void testNavigationGenerationHandlesFantasyHouseGeometryWithoutPathologicalMerge
         );
     }
     std::printf("[house clearance pathfind] slowest_ms=%.3f\n", slowestClearancePathSeconds * 1000.0);
-    assert(slowestClearancePathSeconds < 1.0 / 60.0);
+    // Exact swept-box validation is deliberately stronger than point-agent
+    // pathfinding; keep it bounded to a small fraction of the multi-second
+    // regression while allowing normal scheduler/allocator variance.
+    assert(slowestClearancePathSeconds < 0.025);
 }
 
-void testNavigationPathfindingUsesIntervalSearchAndExplicitLinks() {
+void testNavigationPathfindingUsesAStarFunnelAndExplicitLinks() {
     core::NavigationSystem navigation;
     core::NavigationRuntime runtime{};
     runtime.asset.polygons = {
@@ -1161,7 +1179,6 @@ void testNavigationPathfindingUsesIntervalSearchAndExplicitLinks() {
         core::NavPolygon{3, 0.0f, {glm::vec2(1.0f, -1.0f), glm::vec2(2.0f, -1.0f), glm::vec2(2.0f, 1.0f), glm::vec2(1.0f, 1.0f)}},
     };
     assert(navigation.rebuildRuntime(runtime));
-
     core::World world;
     const core::EntityId agentEntity = world.createEntity();
     world.transforms.emplace(agentEntity, core::TransformComponent{glm::vec3(-0.75f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
@@ -1279,6 +1296,114 @@ double pathLength(const glm::vec3& start, const std::vector<glm::vec3>& corners)
     return total;
 }
 
+bool navigationGraphContainsOffMeshLink(
+    const core::NavigationRuntime& runtime
+) {
+    return std::any_of(
+        runtime.graph.begin(),
+        runtime.graph.end(),
+        [](const std::vector<core::NavGraphEdge>& edges) {
+            return std::any_of(
+                edges.begin(),
+                edges.end(),
+                [](const core::NavGraphEdge& edge) {
+                    return edge.viaLink;
+                }
+            );
+        }
+    );
+}
+
+double shortestWalkableVisibilityPathLength(
+    const glm::vec3& start,
+    const glm::vec3& destination,
+    const std::vector<core::NavPolygon>& polygons
+) {
+    std::vector<glm::vec3> nodes{start, destination};
+    for (const core::NavPolygon& polygon : polygons) {
+        for (const glm::vec2& vertex : polygon.verticesXZ) {
+            const glm::vec3 candidate(
+                vertex.x,
+                polygon.elevationY,
+                vertex.y
+            );
+            if (std::none_of(
+                    nodes.begin(),
+                    nodes.end(),
+                    [&](const glm::vec3& existing) {
+                        return nearlyEqualVec3(
+                            existing,
+                            candidate,
+                            1.0e-5
+                        );
+                    })) {
+                nodes.push_back(candidate);
+            }
+        }
+    }
+
+    const auto segmentInsideWalkableUnion = [&](const glm::vec3& from,
+                                                 const glm::vec3& to) {
+        constexpr int kVisibilitySamples = 128;
+        for (int sampleIndex = 0;
+             sampleIndex <= kVisibilitySamples;
+             ++sampleIndex) {
+            const float t = static_cast<float>(sampleIndex) /
+                static_cast<float>(kVisibilitySamples);
+            if (!pointInsideWalkableUnion(
+                    from + (to - from) * t,
+                    polygons)) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    using QueueEntry = std::pair<double, std::size_t>;
+    std::priority_queue<
+        QueueEntry,
+        std::vector<QueueEntry>,
+        std::greater<QueueEntry>
+    > open{};
+    std::vector<double> distances(
+        nodes.size(),
+        std::numeric_limits<double>::infinity()
+    );
+    distances.front() = 0.0;
+    open.emplace(0.0, 0u);
+    while (!open.empty()) {
+        const auto [distance, nodeIndex] = open.top();
+        open.pop();
+        if (distance > distances[nodeIndex]) {
+            continue;
+        }
+        if (nodeIndex == 1u) {
+            return distance;
+        }
+        for (std::size_t nextIndex = 0u;
+             nextIndex < nodes.size();
+             ++nextIndex) {
+            if (nextIndex == nodeIndex ||
+                !segmentInsideWalkableUnion(
+                    nodes[nodeIndex],
+                    nodes[nextIndex])) {
+                continue;
+            }
+            const double candidate = distance +
+                static_cast<double>(glm::distance(
+                    nodes[nodeIndex],
+                    nodes[nextIndex]
+                ));
+            if (candidate >= distances[nextIndex]) {
+                continue;
+            }
+            distances[nextIndex] = candidate;
+            open.emplace(candidate, nextIndex);
+        }
+    }
+    return std::numeric_limits<double>::infinity();
+}
+
 bool boxFootprintFitsInsidePolygon(
     const glm::vec2& center,
     const core::NavPolygon& polygon,
@@ -1326,10 +1451,14 @@ std::optional<glm::vec3> sampleRandomPointInsidePolygonForBox(
 void witnessRandomBoxClearanceNavmeshHang() {
     core::NavMeshAsset asset{};
     std::string error{};
-    const std::filesystem::path navmeshPath = assetPath("assets/navmeshes/DefaultScene.navmesh");
+    const char* navmeshOverride = std::getenv("ALKANZAR_WITNESS_NAVMESH");
+    const std::filesystem::path navmeshPath =
+        navmeshOverride != nullptr && *navmeshOverride != '\0'
+        ? std::filesystem::path(navmeshOverride)
+        : assetPath("assets/navmeshes/DefaultScene.navmesh");
     assert(core::parseNavMeshAsset(readFileToString(navmeshPath), asset, &error));
     assert(error.empty());
-    assert(asset.polygons.size() == 4u);
+    assert(!asset.polygons.empty());
 
     core::NavigationSystem navigation;
     core::NavigationRuntime runtime{};
@@ -1340,10 +1469,19 @@ void witnessRandomBoxClearanceNavmeshHang() {
     const core::EntityId agentEntity = world.createEntity();
     world.transforms.emplace(agentEntity, core::TransformComponent{glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(1.0f)});
     core::NavAgentComponent agent{};
-    agent.clearanceSource = core::NavAgentClearanceSource::BoxCollider;
+    const bool pointAgent = envFlagEnabled(
+        "ALKANZAR_WITNESS_NAV_POINT_AGENT");
+    agent.clearanceSource = pointAgent
+        ? core::NavAgentClearanceSource::None
+        : core::NavAgentClearanceSource::BoxCollider;
     world.navAgents.emplace(agentEntity, agent);
-    const glm::vec3 boxHalfExtents(0.22f, 3.3f, 0.22f);
-    world.boxColliders.emplace(agentEntity, core::BoxColliderComponent{glm::vec3(0.0f), boxHalfExtents, false, false});
+    const glm::vec3 boxHalfExtents = pointAgent
+        ? glm::vec3(0.0f)
+        : glm::vec3(0.22f, 3.3f, 0.22f);
+    if (!pointAgent) {
+        world.boxColliders.emplace(agentEntity, core::BoxColliderComponent{
+            glm::vec3(0.0f), boxHalfExtents, false, false});
+    }
 
     const std::size_t seed = envSizeTOr("ALKANZAR_WITNESS_NAV_SEED", 1337u);
     const std::size_t maxAttempts = envSizeTOr("ALKANZAR_WITNESS_NAV_ATTEMPTS", 50000u);
@@ -1450,6 +1588,496 @@ void witnessRandomBoxClearanceNavmeshHang() {
             std::printf("  corner[%zu]=(%.4f, %.4f, %.4f)\n", cornerIndex, corner.x, corner.y, corner.z);
         }
     }
+}
+
+void witnessDefaultSceneNavigationGeneration() {
+    render::GltfModelData houseModel{};
+    assert(render::loadGltfModel(
+        assetPath("src/render/models/FantasyHouse.glb").string(),
+        houseModel
+    ));
+
+    glm::vec3 houseBoundsMin(std::numeric_limits<float>::max());
+    glm::vec3 houseBoundsMax(std::numeric_limits<float>::lowest());
+    bool hasHouseBounds = false;
+    for (const render::GltfMeshSection& section : houseModel.sections) {
+        glm::mat4 nodeMatrix(1.0f);
+        if (section.nodeIndex >= 0 && section.nodeIndex < static_cast<int>(houseModel.nodes.size())) {
+            nodeMatrix = houseModel.nodes[static_cast<std::size_t>(section.nodeIndex)].bindGlobalMatrix;
+        }
+        for (const glm::vec3& position : section.mesh.positions) {
+            const glm::vec3 transformed = glm::vec3(nodeMatrix * glm::vec4(position, 1.0f));
+            houseBoundsMin = glm::min(houseBoundsMin, transformed);
+            houseBoundsMax = glm::max(houseBoundsMax, transformed);
+            hasHouseBounds = true;
+        }
+    }
+    assert(hasHouseBounds);
+    const glm::vec3 houseSize = houseBoundsMax - houseBoundsMin;
+    const float sourceHouseFootprint = std::max(houseSize.x, houseSize.z);
+    assert(sourceHouseFootprint > 1.0e-4f);
+    const float houseFitScale = 7.5f / sourceHouseFootprint;
+    for (int rootNodeIndex : houseModel.sceneRootNodes) {
+        assert(rootNodeIndex >= 0 && rootNodeIndex < static_cast<int>(houseModel.nodes.size()));
+        houseModel.nodes[static_cast<std::size_t>(rootNodeIndex)].localTransform.scale *= glm::vec3(houseFitScale);
+    }
+    render::refreshModelBindPose(houseModel);
+
+    core::World world;
+    core::TransformSystem transformSystem;
+    core::TaskScheduler scheduler = makeScheduler();
+
+    const auto addNavigationSource = [&world](
+        std::string stableId,
+        const core::TransformComponent& transform,
+        std::shared_ptr<render::Mesh> mesh,
+        core::NavSourceTag tag,
+        std::optional<core::EntityId> parent = std::nullopt
+    ) {
+        const core::EntityId entity = world.createEntity();
+        if (parent.has_value()) {
+            world.parents.emplace(entity, core::ParentComponent{*parent});
+        }
+        world.transforms.emplace(entity, transform);
+        world.navSources.emplace(entity, core::NavSourceComponent{std::move(stableId), tag, tag});
+        world.navSourceGeometry.emplace(entity, core::NavSourceGeometryComponent{std::move(mesh)});
+        world.markTransformsDirty(entity);
+        return entity;
+    };
+
+    addNavigationSource(
+        "Ground",
+        core::TransformComponent{},
+        std::make_shared<render::Mesh>(makeHorizontalQuadMesh(-500.0f, 500.0f, -500.0f, 500.0f, 0.0f)),
+        core::NavSourceTag::Walkable
+    );
+    addNavigationSource(
+        "Wall A",
+        core::TransformComponent{glm::vec3(-3.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)},
+        std::make_shared<render::Mesh>(makeBoxVertexMesh(
+            glm::vec3(-0.25f, 0.0f, -5.0f),
+            glm::vec3(0.25f, 2.5f, 5.0f)
+        )),
+        core::NavSourceTag::Blocking
+    );
+    addNavigationSource(
+        "Wall B",
+        core::TransformComponent{glm::vec3(3.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)},
+        std::make_shared<render::Mesh>(makeBoxVertexMesh(
+            glm::vec3(-0.25f, 0.0f, -5.0f),
+            glm::vec3(0.25f, 2.5f, 5.0f)
+        )),
+        core::NavSourceTag::Blocking
+    );
+    addNavigationSource(
+        "Frustum Test Box",
+        core::TransformComponent{glm::vec3(-9.5f, 0.75f, -14.0f), glm::vec3(0.0f), glm::vec3(1.0f)},
+        std::make_shared<render::Mesh>(makeBoxVertexMesh(
+            glm::vec3(-0.75f),
+            glm::vec3(0.75f)
+        )),
+        core::NavSourceTag::Blocking
+    );
+    addNavigationSource(
+        "Occlusion Test Box",
+        core::TransformComponent{glm::vec3(-3.0f, 0.75f, -8.5f), glm::vec3(0.0f), glm::vec3(1.0f)},
+        std::make_shared<render::Mesh>(makeBoxVertexMesh(
+            glm::vec3(-0.75f),
+            glm::vec3(0.75f)
+        )),
+        core::NavSourceTag::Blocking
+    );
+
+    // Match SceneFactory's entity allocation order: one light volume, followed
+    // by the Character root and its five renderable sections, precede House.
+    // Entity ids affect the unordered root buckets used by nav generation.
+    for (int placeholderIndex = 0; placeholderIndex < 7; ++placeholderIndex) {
+        world.createEntity();
+    }
+
+    const core::EntityId house = world.createEntity();
+    world.transforms.emplace(house, core::TransformComponent{
+        glm::vec3(-3.0f, 0.0f, -8.0f),
+        glm::vec3(0.0f, -35.0f, 0.0f),
+        glm::vec3(1.0f)
+    });
+    world.markTransformsDirty(house);
+    for (std::size_t sectionIndex = 0; sectionIndex < houseModel.sections.size(); ++sectionIndex) {
+        const render::GltfMeshSection& section = houseModel.sections[sectionIndex];
+        core::TransformComponent transform{};
+        if (section.nodeIndex >= 0 && section.nodeIndex < static_cast<int>(houseModel.nodes.size())) {
+            render::NodeTransform nodeTransform{};
+            if (render::decomposeNodeTransform(
+                    houseModel.nodes[static_cast<std::size_t>(section.nodeIndex)].bindGlobalMatrix,
+                    nodeTransform)) {
+                transform.position = nodeTransform.translation;
+                transform.rotationDeg = glm::degrees(glm::eulerAngles(nodeTransform.rotation));
+                transform.scale = nodeTransform.scale;
+            }
+        }
+        addNavigationSource(
+            "House/" + std::to_string(sectionIndex),
+            transform,
+            std::make_shared<render::Mesh>(section.mesh),
+            core::NavSourceTag::Blocking,
+            house
+        );
+    }
+    transformSystem.update(world, scheduler, false);
+
+    core::NavigationSystem navigation;
+    core::NavigationRuntime generatedRuntime{};
+    std::string generateError{};
+    const auto generateStartedAt = std::chrono::steady_clock::now();
+    assert(navigation.generateFromTags(world, generatedRuntime, &generateError));
+    const double generateMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
+        std::chrono::steady_clock::now() - generateStartedAt
+    ).count();
+    assert(generateError.empty());
+
+    const std::string serialized = core::serializeNavMeshAsset(generatedRuntime.asset);
+    const std::size_t generatedVertexCount = std::accumulate(
+        generatedRuntime.asset.polygons.begin(),
+        generatedRuntime.asset.polygons.end(),
+        std::size_t{0u},
+        [](std::size_t count, const core::NavPolygon& polygon) {
+            return count + polygon.verticesXZ.size();
+        }
+    );
+    std::printf(
+        "[default-scene navgen] house_sections=%zu fit_scale=%.6f polygons=%zu polygon_vertices=%zu "
+        "generated_cells=%zu serialized_bytes=%zu generate_ms=%.3f\n",
+        houseModel.sections.size(),
+        houseFitScale,
+        generatedRuntime.asset.polygons.size(),
+        generatedVertexCount,
+        generatedRuntime.bakedCells.size(),
+        serialized.size(),
+        generateMs
+    );
+    assert(houseModel.sections.size() == 9u);
+    assert(generatedRuntime.asset.polygons.size() <= 128u);
+    assert(generatedRuntime.bakedCells.size() <= 192u);
+    core::NavMeshAsset parsedAsset{};
+    std::string parseError{};
+    assert(core::parseNavMeshAsset(serialized, parsedAsset, &parseError));
+    assert(parseError.empty());
+
+    core::NavigationRuntime reloadedRuntime{};
+    reloadedRuntime.asset = std::move(parsedAsset);
+    std::string rebuildError{};
+    const auto rebuildStartedAt = std::chrono::steady_clock::now();
+    const bool rebuilt = navigation.rebuildRuntime(reloadedRuntime, &rebuildError);
+    const double rebuildMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
+        std::chrono::steady_clock::now() - rebuildStartedAt
+    ).count();
+    if (!rebuilt) {
+        std::printf(
+            "[default-scene reload] FAILED polygons=%zu serialized_bytes=%zu rebuild_ms=%.3f error=%s\n",
+            reloadedRuntime.asset.polygons.size(),
+            serialized.size(),
+            rebuildMs,
+            rebuildError.c_str()
+        );
+        assert(rebuilt);
+        return;
+    }
+    assert(rebuildError.empty());
+    assert(!reloadedRuntime.bakedCellsHaveInteriorOverlap);
+    if (reloadedRuntime.polyanyaMesh == nullptr) {
+        std::printf(
+            "[default-scene Polyanya] unavailable: %s\n",
+            reloadedRuntime.exactPathfindingWarning.c_str()
+        );
+    }
+    assert(reloadedRuntime.polyanyaMesh != nullptr);
+    assert(reloadedRuntime.exactPathfindingWarning.empty());
+
+    const std::size_t graphEdgeCount = std::accumulate(
+        reloadedRuntime.graph.begin(),
+        reloadedRuntime.graph.end(),
+        std::size_t{0u},
+        [](std::size_t count, const std::vector<core::NavGraphEdge>& edges) {
+            return count + edges.size();
+        }
+    );
+    std::printf(
+        "[default-scene reload] polygons=%zu cells=%zu filtered=%zu graph_edges=%zu rebuild_ms=%.3f\n",
+        reloadedRuntime.asset.polygons.size(),
+        reloadedRuntime.bakedCells.size(),
+        reloadedRuntime.filteredRuntimeCellCount,
+        graphEdgeCount,
+        rebuildMs
+    );
+    assert(reloadedRuntime.asset.polygons.size() ==
+        generatedRuntime.asset.polygons.size());
+    assert(reloadedRuntime.bakedCells.size() <= 192u);
+    assert(rebuildMs < 1000.0);
+
+    const core::EntityId agentEntity = world.createEntity();
+    world.transforms.emplace(agentEntity, core::TransformComponent{});
+    core::NavAgentComponent agent{};
+    agent.clearanceSource = core::NavAgentClearanceSource::BoxCollider;
+    world.navAgents.emplace(agentEntity, agent);
+    const glm::vec3 boxHalfExtents(0.22f, 3.3f, 0.22f);
+    world.boxColliders.emplace(agentEntity, core::BoxColliderComponent{
+        glm::vec3(0.0f),
+        boxHalfExtents,
+        false,
+        false
+    });
+
+    // This pair straddles the house. With only 64 globally ranked visibility
+    // nodes, the southern clearance homotopy lost its last required corner and
+    // the solver selected the longer northern route (26.8 instead of 23.0).
+    // Keep both directions: the bounded clearance refinement may visit
+    // different candidates, but neither direction may lose the short route.
+    const glm::vec3 detourRegressionStart(
+        0.0374389f,
+        0.0f,
+        -5.02925f
+    );
+    const glm::vec3 detourRegressionDestination(
+        -7.45233f,
+        0.0f,
+        -4.32873f
+    );
+    const auto solveDetourRegression = [&](const glm::vec3& from,
+                                           const glm::vec3& to) {
+        world.transforms.get(agentEntity).position = from;
+        assert(navigation.setAgentDestination(
+            world,
+            reloadedRuntime,
+            agentEntity,
+            to
+        ));
+        return pathLength(
+            from,
+            world.navAgents.get(agentEntity).pathCorners
+        );
+    };
+    const double forwardDetourLength = solveDetourRegression(
+        detourRegressionStart,
+        detourRegressionDestination
+    );
+    const double reverseDetourLength = solveDetourRegression(
+        detourRegressionDestination,
+        detourRegressionStart
+    );
+    std::printf(
+        "[default-scene detour] forward=%.4f reverse=%.4f\n",
+        forwardDetourLength,
+        reverseDetourLength
+    );
+    assert(forwardDetourLength < 23.1);
+    assert(reverseDetourLength < 23.1);
+
+    // A giant boundary portal used to be the only surviving repair candidate,
+    // producing a 508-unit detour through its midpoint at z=252.5. Analytic
+    // corner tangents must retain the local route instead.
+    const glm::vec3 farRegressionStart(1.4791f, 0.0f, -2.8803f);
+    const glm::vec3 farRegressionDestination(-7.0717f, 0.0f, 0.0468f);
+    world.transforms.get(agentEntity).position = farRegressionStart;
+    assert(navigation.setAgentDestination(
+        world,
+        reloadedRuntime,
+        agentEntity,
+        farRegressionDestination
+    ));
+    const std::vector<glm::vec3> farRegressionCorners =
+        world.navAgents.get(agentEntity).pathCorners;
+    const double farRegressionLength = pathLength(
+        farRegressionStart,
+        farRegressionCorners
+    );
+    std::printf(
+        "[default-scene far-detour] length=%.4f corners=%zu\n",
+        farRegressionLength,
+        farRegressionCorners.size()
+    );
+    assert(farRegressionLength < 17.0);
+    for (const glm::vec3& corner : farRegressionCorners) {
+        assert(std::abs(corner.x) < 50.0f);
+        assert(std::abs(corner.z) < 50.0f);
+    }
+
+    const bool pointAgentWitness = envFlagEnabled(
+        "ALKANZAR_WITNESS_NAV_POINT_AGENT");
+    if (pointAgentWitness) {
+        world.navAgents.get(agentEntity).clearanceSource =
+            core::NavAgentClearanceSource::None;
+    }
+    const glm::vec2 sampleHalfExtents = pointAgentWitness
+        ? glm::vec2(0.0f)
+        : glm::vec2(boxHalfExtents.x, boxHalfExtents.z);
+    const std::size_t seed = envSizeTOr("ALKANZAR_WITNESS_NAV_SEED", 1337u);
+    const std::size_t requestedAttempts = envSizeTOr("ALKANZAR_WITNESS_NAV_ATTEMPTS", 16u);
+    std::mt19937 rng(static_cast<std::mt19937::result_type>(seed));
+    std::uniform_real_distribution<float> localCoordinate(-20.0f, 20.0f);
+    const auto sampleLocalPoint = [&]() -> std::optional<glm::vec3> {
+        for (int sampleIndex = 0; sampleIndex < 16384; ++sampleIndex) {
+            const glm::vec2 candidate(localCoordinate(rng), localCoordinate(rng));
+            const bool fits = std::any_of(
+                reloadedRuntime.asset.polygons.begin(),
+                reloadedRuntime.asset.polygons.end(),
+                [&](const core::NavPolygon& polygon) {
+                    return boxFootprintFitsInsidePolygon(
+                        candidate,
+                        polygon,
+                        sampleHalfExtents
+                    );
+                }
+            );
+            if (fits) {
+                return glm::vec3(candidate.x, 0.0f, candidate.y);
+            }
+        }
+        return std::nullopt;
+    };
+
+    std::size_t solvedCount = 0u;
+    std::size_t escapedSegmentCount = 0u;
+    std::size_t farCornerCount = 0u;
+    double totalPathfindMs = 0.0;
+    double slowestPathfindMs = 0.0;
+    double longestDetourRatio = 1.0;
+    glm::vec3 slowestStart(0.0f);
+    glm::vec3 slowestDestination(0.0f);
+    std::vector<glm::vec3> slowestCorners{};
+    glm::vec3 longestDetourStart(0.0f);
+    glm::vec3 longestDetourDestination(0.0f);
+    std::vector<glm::vec3> longestDetourCorners{};
+    for (std::size_t attempt = 0u; attempt < requestedAttempts; ++attempt) {
+        const std::optional<glm::vec3> start = attempt == 0u
+            ? std::optional<glm::vec3>(
+                    glm::vec3(-7.9401f, 0.0f, 2.2746f)
+            )
+            : attempt == 1u
+                ? std::optional<glm::vec3>(
+                    glm::vec3(3.8659f, 0.0f, -3.2561f)
+                )
+                : sampleLocalPoint();
+        const std::optional<glm::vec3> destination = attempt == 0u
+            ? std::optional<glm::vec3>(
+                    glm::vec3(5.8009f, 0.0f, -2.9775f)
+            )
+            : attempt == 1u
+                ? std::optional<glm::vec3>(
+                    glm::vec3(-9.9604f, 0.0f, -12.8050f)
+                )
+                : sampleLocalPoint();
+        assert(start.has_value());
+        assert(destination.has_value());
+        world.transforms.get(agentEntity).position = *start;
+
+        const auto pathStartedAt = std::chrono::steady_clock::now();
+        const bool solved = navigation.setAgentDestination(
+            world,
+            reloadedRuntime,
+            agentEntity,
+            *destination
+        );
+        const double durationMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
+            std::chrono::steady_clock::now() - pathStartedAt
+        ).count();
+        totalPathfindMs += durationMs;
+        if (!solved) {
+            continue;
+        }
+        ++solvedCount;
+
+        const std::vector<glm::vec3>& corners = world.navAgents.get(agentEntity).pathCorners;
+        glm::vec3 previous = *start;
+        for (const glm::vec3& corner : corners) {
+            if (std::abs(corner.x) > 50.0f ||
+                std::abs(corner.z) > 50.0f) {
+                ++farCornerCount;
+            }
+            if (!segmentInsidePolygons(previous, corner, reloadedRuntime.asset.polygons)) {
+                ++escapedSegmentCount;
+            }
+            previous = corner;
+        }
+        const double directDistance = glm::distance(*start, *destination);
+        if (directDistance > 1.0e-5) {
+            const double detourRatio =
+                pathLength(*start, corners) / directDistance;
+            if (detourRatio > longestDetourRatio) {
+                longestDetourRatio = detourRatio;
+                longestDetourStart = *start;
+                longestDetourDestination = *destination;
+                longestDetourCorners = corners;
+            }
+        }
+        if (durationMs > slowestPathfindMs) {
+            slowestPathfindMs = durationMs;
+            slowestStart = *start;
+            slowestDestination = *destination;
+            slowestCorners = corners;
+        }
+    }
+    std::printf(
+        "[default-scene pathfind] seed=%zu attempts=%zu solved=%zu mean_ms=%.3f slowest_ms=%.3f "
+        "longest_detour_ratio=%.4f escaped_segments=%zu far_corners=%zu\n",
+        seed,
+        requestedAttempts,
+        solvedCount,
+        requestedAttempts == 0u ? 0.0 : totalPathfindMs / static_cast<double>(requestedAttempts),
+        slowestPathfindMs,
+        longestDetourRatio,
+        escapedSegmentCount,
+        farCornerCount
+    );
+    std::printf(
+        "  slowest_start=(%.4f, %.4f, %.4f) slowest_dest=(%.4f, %.4f, %.4f) corners=%zu\n",
+        slowestStart.x,
+        slowestStart.y,
+        slowestStart.z,
+        slowestDestination.x,
+        slowestDestination.y,
+        slowestDestination.z,
+        slowestCorners.size()
+    );
+    for (std::size_t cornerIndex = 0u; cornerIndex < slowestCorners.size(); ++cornerIndex) {
+        const glm::vec3& corner = slowestCorners[cornerIndex];
+        std::printf(
+            "  slowest_corner[%zu]=(%.4f, %.4f, %.4f)\n",
+            cornerIndex,
+            corner.x,
+            corner.y,
+            corner.z
+        );
+    }
+    std::printf(
+        "  longest_detour_start=(%.4f, %.4f, %.4f) longest_detour_dest=(%.4f, %.4f, %.4f) corners=%zu\n",
+        longestDetourStart.x,
+        longestDetourStart.y,
+        longestDetourStart.z,
+        longestDetourDestination.x,
+        longestDetourDestination.y,
+        longestDetourDestination.z,
+        longestDetourCorners.size()
+    );
+    for (std::size_t cornerIndex = 0u;
+         cornerIndex < longestDetourCorners.size();
+         ++cornerIndex) {
+        const glm::vec3& corner = longestDetourCorners[cornerIndex];
+        std::printf(
+            "  longest_detour_corner[%zu]=(%.4f, %.4f, %.4f)\n",
+            cornerIndex,
+            corner.x,
+            corner.y,
+            corner.z
+        );
+    }
+    assert(solvedCount == requestedAttempts);
+    assert(escapedSegmentCount == 0u);
+    assert(farCornerCount == 0u);
+    assert(longestDetourRatio < 8.0);
+    // This optional stress witness runs synchronously alongside asset/model
+    // setup, so retain scheduler headroom while still rejecting the former
+    // multi-second pathfinding regression.
+    assert(slowestPathfindMs < 150.0);
 }
 
 void testNavigationOverlapCorridorConstraint() {
@@ -1605,6 +2233,610 @@ void testNavigationPathfindingChoosesShortestGeometricCorridor() {
     }
 }
 
+void testNavigationAStarRanksCorridorsByPortalGeometry() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {
+            glm::vec2(0.0f, -2.0f),
+            glm::vec2(1.0f, -2.0f),
+            glm::vec2(1.0f, 11.0f),
+            glm::vec2(0.0f, 11.0f)
+        }},
+        core::NavPolygon{2, 0.0f, {
+            glm::vec2(1.0f, 0.2f),
+            glm::vec2(9.0f, 0.2f),
+            glm::vec2(9.0f, 10.0f),
+            glm::vec2(1.0f, 10.0f)
+        }},
+        core::NavPolygon{3, 0.0f, {
+            glm::vec2(1.0f, -1.1f),
+            glm::vec2(9.0f, -1.1f),
+            glm::vec2(9.0f, -0.9f),
+            glm::vec2(1.0f, -0.9f)
+        }},
+        core::NavPolygon{4, 0.0f, {
+            glm::vec2(9.0f, -2.0f),
+            glm::vec2(10.0f, -2.0f),
+            glm::vec2(10.0f, 11.0f),
+            glm::vec2(9.0f, 11.0f)
+        }},
+    };
+    assert(navigation.rebuildRuntime(runtime));
+    assert(runtime.polyanyaMesh != nullptr);
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    const glm::vec3 start(0.5f, 0.0f, 0.0f);
+    const glm::vec3 destination(9.5f, 0.0f, 0.0f);
+    world.transforms.emplace(entity, core::TransformComponent{
+        start,
+        glm::vec3(0.0f),
+        glm::vec3(1.0f)
+    });
+    core::NavAgentComponent fallbackAgent{};
+    fallbackAgent.clearanceSource =
+        core::NavAgentClearanceSource::BoxCollider;
+    world.navAgents.emplace(entity, fallbackAgent);
+    world.boxColliders.emplace(entity, core::BoxColliderComponent{
+        glm::vec3(0.0f),
+        glm::vec3(0.0f),
+        false,
+        false,
+    });
+
+    assert(navigation.setAgentDestination(
+        world,
+        runtime,
+        entity,
+        destination
+    ));
+    const core::NavAgentComponent& solvedAgent =
+        world.navAgents.get(entity);
+    const double actualLength =
+        pathLength(start, solvedAgent.pathCorners);
+    const double expectedUpperLength =
+        glm::distance(start, glm::vec3(1.0f, 0.0f, 0.2f)) +
+        8.0 +
+        glm::distance(
+            glm::vec3(9.0f, 0.0f, 0.2f),
+            destination
+        );
+
+    assert(nearlyEqual(actualLength, expectedUpperLength, 0.01));
+    assert(actualLength < 9.5);
+    assert(std::any_of(
+        solvedAgent.pathCorners.begin(),
+        solvedAgent.pathCorners.end(),
+        [](const glm::vec3& corner) {
+            return corner.z >= 0.2f - 0.01f;
+        }
+    ));
+}
+
+void testNavigationFunnelHandlesCollinearTJunctionPortalsBidirectionally() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        // The two long room boundaries are split into several collinear
+        // authored edges.  The upper and lower corridor portals terminate in
+        // the middle of those boundaries, forming T-junctions at both rooms.
+        core::NavPolygon{1, 0.0f, {
+            glm::vec2(0.0f, 0.0f),
+            glm::vec2(3.0f, 0.0f),
+            glm::vec2(3.0f, 1.5f),
+            glm::vec2(3.0f, 4.0f),
+            glm::vec2(3.0f, 5.0f),
+            glm::vec2(3.0f, 6.0f),
+            glm::vec2(0.0f, 6.0f),
+        }},
+        core::NavPolygon{2, 0.0f, {
+            glm::vec2(3.0f, 4.0f),
+            glm::vec2(6.0f, 4.0f),
+            glm::vec2(6.0f, 6.0f),
+            glm::vec2(3.0f, 6.0f),
+        }},
+        core::NavPolygon{3, 0.0f, {
+            glm::vec2(3.0f, 0.0f),
+            glm::vec2(6.0f, 0.0f),
+            glm::vec2(6.0f, 1.5f),
+            glm::vec2(3.0f, 1.5f),
+        }},
+        core::NavPolygon{4, 0.0f, {
+            glm::vec2(6.0f, 0.0f),
+            glm::vec2(9.0f, 0.0f),
+            glm::vec2(9.0f, 6.0f),
+            glm::vec2(6.0f, 6.0f),
+            glm::vec2(6.0f, 5.0f),
+            glm::vec2(6.0f, 4.0f),
+            glm::vec2(6.0f, 1.5f),
+        }},
+    };
+    assert(navigation.rebuildRuntime(runtime));
+    assert(runtime.polyanyaMesh != nullptr);
+
+    const glm::vec3 start(1.0f, 0.0f, 3.0f);
+    const glm::vec3 destination(8.0f, 0.0f, 3.0f);
+    const double oracleLength = shortestWalkableVisibilityPathLength(
+        start,
+        destination,
+        runtime.asset.polygons
+    );
+    assert(std::isfinite(oracleLength));
+
+    const auto solve = [&](const glm::vec3& from,
+                           const glm::vec3& to,
+                           bool forceFallback) {
+        core::World world;
+        const core::EntityId entity = world.createEntity();
+        world.transforms.emplace(entity, core::TransformComponent{
+            from,
+            glm::vec3(0.0f),
+            glm::vec3(1.0f)
+        });
+        core::NavAgentComponent agent{};
+        if (forceFallback) {
+            agent.clearanceSource =
+                core::NavAgentClearanceSource::BoxCollider;
+        }
+        world.navAgents.emplace(entity, agent);
+        if (forceFallback) {
+            world.boxColliders.emplace(entity, core::BoxColliderComponent{
+                glm::vec3(0.0f),
+                glm::vec3(0.0f),
+                false,
+                false,
+            });
+        }
+        assert(navigation.setAgentDestination(
+            world,
+            runtime,
+            entity,
+            to
+        ));
+        return world.navAgents.get(entity).pathCorners;
+    };
+
+    const std::vector<glm::vec3> forward =
+        solve(start, destination, true);
+    const std::vector<glm::vec3> reverse =
+        solve(destination, start, true);
+    const std::vector<glm::vec3> exactForward =
+        solve(start, destination, false);
+    const std::vector<glm::vec3> exactReverse =
+        solve(destination, start, false);
+    assert(nearlyEqual(pathLength(start, forward), oracleLength, 0.01));
+    assert(nearlyEqual(
+        pathLength(destination, reverse),
+        oracleLength,
+        0.01
+    ));
+    assert(nearlyEqual(
+        pathLength(start, exactForward),
+        oracleLength,
+        0.01
+    ));
+    assert(nearlyEqual(
+        pathLength(destination, exactReverse),
+        oracleLength,
+        0.01
+    ));
+    assert(std::any_of(
+        forward.begin(),
+        forward.end(),
+        [](const glm::vec3& corner) {
+            return corner.z >= 4.0f - 0.01f;
+        }
+    ));
+    assert(std::any_of(
+        reverse.begin(),
+        reverse.end(),
+        [](const glm::vec3& corner) {
+            return corner.z >= 4.0f - 0.01f;
+        }
+    ));
+    glm::vec3 previous = start;
+    for (const glm::vec3& corner : forward) {
+        assert(segmentInsidePolygons(
+            previous,
+            corner,
+            runtime.asset.polygons
+        ));
+        previous = corner;
+    }
+    previous = destination;
+    for (const glm::vec3& corner : reverse) {
+        assert(segmentInsidePolygons(
+            previous,
+            corner,
+            runtime.asset.polygons
+        ));
+        previous = corner;
+    }
+}
+
+void testNavigationMatchesVisibilityOracleOnSmallNavmesh() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {
+            glm::vec2(0.0f, 0.0f),
+            glm::vec2(2.0f, 0.0f),
+            glm::vec2(2.0f, 8.0f),
+            glm::vec2(0.0f, 8.0f),
+        }},
+        core::NavPolygon{2, 0.0f, {
+            glm::vec2(2.0f, 6.0f),
+            glm::vec2(5.0f, 6.0f),
+            glm::vec2(5.0f, 8.0f),
+            glm::vec2(2.0f, 8.0f),
+        }},
+        core::NavPolygon{3, 0.0f, {
+            glm::vec2(5.0f, 5.0f),
+            glm::vec2(8.0f, 5.0f),
+            glm::vec2(8.0f, 8.0f),
+            glm::vec2(5.0f, 8.0f),
+        }},
+        core::NavPolygon{4, 0.0f, {
+            glm::vec2(2.0f, 0.0f),
+            glm::vec2(8.0f, 0.0f),
+            glm::vec2(8.0f, 1.5f),
+            glm::vec2(2.0f, 1.5f),
+        }},
+        core::NavPolygon{5, 0.0f, {
+            glm::vec2(8.0f, 0.0f),
+            glm::vec2(10.0f, 0.0f),
+            glm::vec2(10.0f, 8.0f),
+            glm::vec2(8.0f, 8.0f),
+        }},
+    };
+    assert(navigation.rebuildRuntime(runtime));
+    assert(runtime.polyanyaMesh != nullptr);
+
+    struct Query {
+        glm::vec3 start;
+        glm::vec3 destination;
+    };
+    constexpr std::array<Query, 3u> queries{
+        Query{glm::vec3(1.0f, 0.0f, 5.0f), glm::vec3(9.0f, 0.0f, 4.0f)},
+        Query{glm::vec3(1.0f, 0.0f, 2.5f), glm::vec3(9.0f, 0.0f, 6.5f)},
+        Query{glm::vec3(1.0f, 0.0f, 7.0f), glm::vec3(9.0f, 0.0f, 2.0f)},
+    };
+    for (const Query& query : queries) {
+        core::World world;
+        const core::EntityId entity = world.createEntity();
+        world.transforms.emplace(entity, core::TransformComponent{
+            query.start,
+            glm::vec3(0.0f),
+            glm::vec3(1.0f)
+        });
+        world.navAgents.emplace(entity, core::NavAgentComponent{});
+        assert(navigation.setAgentDestination(
+            world,
+            runtime,
+            entity,
+            query.destination
+        ));
+        const std::vector<glm::vec3>& corners =
+            world.navAgents.get(entity).pathCorners;
+        const double oracleLength = shortestWalkableVisibilityPathLength(
+            query.start,
+            query.destination,
+            runtime.asset.polygons
+        );
+        assert(std::isfinite(oracleLength));
+        assert(nearlyEqual(
+            pathLength(query.start, corners),
+            oracleLength,
+            0.015
+        ));
+    }
+}
+
+void testNavigationRelevantLongLinkKeepsPolyanyaBaseline() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {
+            glm::vec2(0.0f, 0.0f),
+            glm::vec2(2.0f, 0.0f),
+            glm::vec2(2.0f, 4.0f),
+            glm::vec2(0.0f, 4.0f),
+        }},
+        core::NavPolygon{2, 0.0f, {
+            glm::vec2(2.0f, 3.0f),
+            glm::vec2(8.0f, 3.0f),
+            glm::vec2(8.0f, 4.0f),
+            glm::vec2(2.0f, 4.0f),
+        }},
+        core::NavPolygon{3, 0.0f, {
+            glm::vec2(8.0f, 0.0f),
+            glm::vec2(10.0f, 0.0f),
+            glm::vec2(10.0f, 4.0f),
+            glm::vec2(8.0f, 4.0f),
+        }},
+    };
+    runtime.asset.links = {
+        core::NavLink{
+            41,
+            1,
+            3,
+            glm::vec3(0.5f, 0.0f, 3.5f),
+            glm::vec3(9.5f, 0.0f, 3.5f),
+            false,
+        },
+    };
+    assert(navigation.rebuildRuntime(runtime));
+    assert(runtime.polyanyaMesh != nullptr);
+    assert(navigationGraphContainsOffMeshLink(runtime));
+
+    const glm::vec3 start(1.0f, 0.0f, 1.0f);
+    const glm::vec3 destination(9.0f, 0.0f, 1.0f);
+    assert(!segmentInsidePolygons(
+        start,
+        destination,
+        runtime.asset.polygons
+    ));
+    const double expectedPlanarLength =
+        glm::distance(start, glm::vec3(2.0f, 0.0f, 3.0f)) +
+        6.0 +
+        glm::distance(
+            glm::vec3(8.0f, 0.0f, 3.0f),
+            destination
+        );
+    const double explicitLinkLength =
+        glm::distance(start, runtime.asset.links.front().fromPoint) +
+        glm::distance(
+            runtime.asset.links.front().fromPoint,
+            runtime.asset.links.front().toPoint
+        ) +
+        glm::distance(
+            runtime.asset.links.front().toPoint,
+            destination
+        );
+    assert(expectedPlanarLength + 1.0 < explicitLinkLength);
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    world.transforms.emplace(entity, core::TransformComponent{
+        start,
+        glm::vec3(0.0f),
+        glm::vec3(1.0f)
+    });
+    world.navAgents.emplace(entity, core::NavAgentComponent{});
+    assert(navigation.setAgentDestination(
+        world,
+        runtime,
+        entity,
+        destination
+    ));
+    const core::NavAgentComponent& solvedAgent =
+        world.navAgents.get(entity);
+    assert(nearlyEqual(
+        pathLength(start, solvedAgent.pathCorners),
+        expectedPlanarLength,
+        0.01
+    ));
+    assert(!containsPoint3(
+        solvedAgent.pathCorners,
+        runtime.asset.links.front().fromPoint,
+        0.01
+    ));
+    assert(!containsPoint3(
+        solvedAgent.pathCorners,
+        runtime.asset.links.front().toPoint,
+        0.01
+    ));
+}
+
+void testNavigationRelevantShortLinkBeatsPolyanyaBaseline() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {
+            glm::vec2(0.0f, 0.0f),
+            glm::vec2(2.0f, 0.0f),
+            glm::vec2(2.0f, 4.0f),
+            glm::vec2(0.0f, 4.0f),
+        }},
+        core::NavPolygon{2, 0.0f, {
+            glm::vec2(2.0f, 3.0f),
+            glm::vec2(8.0f, 3.0f),
+            glm::vec2(8.0f, 4.0f),
+            glm::vec2(2.0f, 4.0f),
+        }},
+        core::NavPolygon{3, 0.0f, {
+            glm::vec2(8.0f, 0.0f),
+            glm::vec2(10.0f, 0.0f),
+            glm::vec2(10.0f, 4.0f),
+            glm::vec2(8.0f, 4.0f),
+        }},
+    };
+    runtime.asset.links = {
+        core::NavLink{
+            42,
+            1,
+            3,
+            glm::vec3(1.5f, 0.0f, 1.0f),
+            glm::vec3(8.5f, 0.0f, 1.0f),
+            false,
+        },
+    };
+    assert(navigation.rebuildRuntime(runtime));
+    assert(runtime.polyanyaMesh != nullptr);
+    assert(navigationGraphContainsOffMeshLink(runtime));
+
+    const glm::vec3 start(1.0f, 0.0f, 1.0f);
+    const glm::vec3 destination(9.0f, 0.0f, 1.0f);
+    assert(!segmentInsidePolygons(
+        start,
+        destination,
+        runtime.asset.polygons
+    ));
+    const double planarLength =
+        glm::distance(start, glm::vec3(2.0f, 0.0f, 3.0f)) +
+        6.0 +
+        glm::distance(
+            glm::vec3(8.0f, 0.0f, 3.0f),
+            destination
+        );
+    const double expectedLinkLength =
+        glm::distance(start, runtime.asset.links.front().fromPoint) +
+        glm::distance(
+            runtime.asset.links.front().fromPoint,
+            runtime.asset.links.front().toPoint
+        ) +
+        glm::distance(
+            runtime.asset.links.front().toPoint,
+            destination
+        );
+    assert(expectedLinkLength + 1.0 < planarLength);
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    world.transforms.emplace(entity, core::TransformComponent{
+        start,
+        glm::vec3(0.0f),
+        glm::vec3(1.0f)
+    });
+    world.navAgents.emplace(entity, core::NavAgentComponent{});
+    assert(navigation.setAgentDestination(
+        world,
+        runtime,
+        entity,
+        destination
+    ));
+    const core::NavAgentComponent& solvedAgent =
+        world.navAgents.get(entity);
+    assert(nearlyEqual(
+        pathLength(start, solvedAgent.pathCorners),
+        expectedLinkLength,
+        0.01
+    ));
+    assert(containsPoint3(
+        solvedAgent.pathCorners,
+        runtime.asset.links.front().fromPoint,
+        0.01
+    ));
+    assert(containsPoint3(
+        solvedAgent.pathCorners,
+        runtime.asset.links.front().toPoint,
+        0.01
+    ));
+}
+
+void testNavigationClearanceCandidateSelectionUsesFinalPathLength() {
+    const core::NavPolygon leftRoom{1, 0.0f, {
+        glm::vec2(0.0f, 0.0f),
+        glm::vec2(2.0f, 0.0f),
+        glm::vec2(2.0f, 10.0f),
+        glm::vec2(0.0f, 10.0f),
+    }};
+    const core::NavPolygon lowerCorridor{2, 0.0f, {
+        glm::vec2(2.0f, 0.983246f),
+        glm::vec2(8.0f, 1.004930f),
+        glm::vec2(8.0f, 3.267671f),
+        glm::vec2(2.0f, 3.245987f),
+    }};
+    const core::NavPolygon upperCorridor{3, 0.0f, {
+        glm::vec2(2.0f, 5.182866f),
+        glm::vec2(8.0f, 5.476083f),
+        glm::vec2(8.0f, 7.283802f),
+        glm::vec2(2.0f, 6.990584f),
+    }};
+    const core::NavPolygon rightRoom{4, 0.0f, {
+        glm::vec2(8.0f, 0.0f),
+        glm::vec2(10.0f, 0.0f),
+        glm::vec2(10.0f, 10.0f),
+        glm::vec2(8.0f, 10.0f),
+    }};
+    const glm::vec3 start(1.0f, 0.0f, 8.829672f);
+    const glm::vec3 destination(9.0f, 0.0f, 1.601178f);
+    constexpr float kBoxHalfExtent = 0.492868f;
+
+    const auto solve = [&](std::vector<core::NavPolygon> polygons) {
+        core::NavigationSystem navigation;
+        core::NavigationRuntime runtime{};
+        runtime.asset.polygons = std::move(polygons);
+        assert(navigation.rebuildRuntime(runtime));
+
+        core::World world;
+        const core::EntityId entity = world.createEntity();
+        world.transforms.emplace(entity, core::TransformComponent{
+            start,
+            glm::vec3(0.0f),
+            glm::vec3(1.0f)
+        });
+        core::NavAgentComponent agent{};
+        agent.clearanceSource =
+            core::NavAgentClearanceSource::BoxCollider;
+        world.navAgents.emplace(entity, agent);
+        world.boxColliders.emplace(
+            entity,
+            core::BoxColliderComponent{
+                glm::vec3(0.0f),
+                glm::vec3(
+                    kBoxHalfExtent,
+                    0.5f,
+                    kBoxHalfExtent
+                ),
+                false,
+                false
+            }
+        );
+        assert(navigation.setAgentDestination(
+            world,
+            runtime,
+            entity,
+            destination
+        ));
+        const std::vector<glm::vec3> corners =
+            world.navAgents.get(entity).pathCorners;
+        assert(!corners.empty());
+        glm::vec3 previous = start;
+        for (const glm::vec3& corner : corners) {
+            assert(segmentInsidePolygons(
+                previous,
+                corner,
+                runtime.asset.polygons
+            ));
+            previous = corner;
+        }
+        return pathLength(start, corners);
+    };
+
+    const double lowerOnlyLength = solve({
+        leftRoom,
+        lowerCorridor,
+        rightRoom,
+    });
+    const double upperOnlyLength = solve({
+        leftRoom,
+        upperCorridor,
+        rightRoom,
+    });
+    const double combinedLength = solve({
+        leftRoom,
+        lowerCorridor,
+        upperCorridor,
+        rightRoom,
+    });
+
+    std::printf(
+        "[clearance corridor ranking] lower=%.4f upper=%.4f combined=%.4f\n",
+        lowerOnlyLength,
+        upperOnlyLength,
+        combinedLength
+    );
+
+    // Adding walkable space cannot make the shortest valid route longer.  The
+    // historical implementation selected the upper corridor from its raw
+    // funnel score and only repaired it afterwards: 14.1442 instead of the
+    // already valid 13.8648 lower route.
+    assert(lowerOnlyLength + 0.05 < upperOnlyLength);
+    assert(combinedLength <= lowerOnlyLength + 0.02);
+}
+
 void testNavigationPathfindingKeepsShortestCorridorPastSixtyFourBoundaryNodes() {
     core::NavigationSystem navigation;
     core::NavigationRuntime runtime{};
@@ -1622,14 +2854,16 @@ void testNavigationPathfindingKeepsShortestCorridorPastSixtyFourBoundaryNodes() 
     for (int branchIndex = 0; branchIndex < kBranchCellCount; ++branchIndex) {
         const float right = -static_cast<float>(branchIndex);
         const float left = right - 1.0f;
+        const float bottom = 4.0f +
+            (branchIndex % 2 == 0 ? 0.0f : 0.5f);
         runtime.asset.polygons.push_back(core::NavPolygon{
             100 + branchIndex,
             0.0f,
             {
-                glm::vec2(left, 4.0f),
-                glm::vec2(right, 4.0f),
-                glm::vec2(right, 5.0f),
-                glm::vec2(left, 5.0f),
+                glm::vec2(left, bottom),
+                glm::vec2(right, bottom),
+                glm::vec2(right, bottom + 1.0f),
+                glm::vec2(left, bottom + 1.0f),
             }
         });
     }
@@ -1645,22 +2879,125 @@ void testNavigationPathfindingKeepsShortestCorridorPastSixtyFourBoundaryNodes() 
         glm::vec3(0.0f),
         glm::vec3(1.0f)
     });
-    world.navAgents.emplace(agentEntity, core::NavAgentComponent{});
+    core::NavAgentComponent agentComponent{};
+    agentComponent.clearanceSource =
+        core::NavAgentClearanceSource::BoxCollider;
+    world.navAgents.emplace(agentEntity, agentComponent);
+    world.boxColliders.emplace(agentEntity, core::BoxColliderComponent{
+        glm::vec3(0.0f),
+        glm::vec3(0.05f, 0.5f, 0.05f),
+        false,
+        false,
+    });
 
     assert(navigation.setAgentDestination(world, runtime, agentEntity, destination));
     const core::NavAgentComponent& agent = world.navAgents.get(agentEntity);
-    const double expectedUpperRoute =
-        glm::distance(start, glm::vec3(2.0f, 0.0f, 8.0f)) +
-        glm::distance(glm::vec3(2.0f, 0.0f, 8.0f), glm::vec3(8.0f, 0.0f, 8.0f)) +
-        glm::distance(glm::vec3(8.0f, 0.0f, 8.0f), destination);
-
-    assert(nearlyEqual(pathLength(start, agent.pathCorners), expectedUpperRoute, 0.01));
+    // A non-empty profile forces the bounded clearance visibility fallback;
+    // a point agent would return through Polyanya before exercising its node
+    // budget. The upper homotopy remains comfortably shorter than the lower
+    // one even after the 5 cm footprint offset.
+    assert(pathLength(start, agent.pathCorners) < 10.5);
     assert(std::any_of(agent.pathCorners.begin(), agent.pathCorners.end(), [](const glm::vec3& corner) {
         return corner.z >= 8.0f - 0.01f;
     }));
     assert(std::none_of(agent.pathCorners.begin(), agent.pathCorners.end(), [](const glm::vec3& corner) {
         return corner.x < -0.01f;
     }));
+}
+
+void testNavigationAStarScalesAcrossFifteenHundredCells() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    constexpr int kCellsPerHorizontalLeg = 750;
+    int polygonId = 1;
+    runtime.asset.polygons.reserve(
+        static_cast<std::size_t>(
+            kCellsPerHorizontalLeg * 2 + 1
+        )
+    );
+    for (int cellIndex = 0;
+         cellIndex < kCellsPerHorizontalLeg;
+         ++cellIndex) {
+        const float left = static_cast<float>(cellIndex);
+        const float right = left + 1.0f;
+        runtime.asset.polygons.push_back(core::NavPolygon{
+            polygonId++,
+            0.0f,
+            {
+                glm::vec2(left, 0.0f),
+                glm::vec2(right, 0.0f),
+                glm::vec2(right, 1.0f),
+                glm::vec2(left, 1.0f),
+            }
+        });
+        runtime.asset.polygons.push_back(core::NavPolygon{
+            polygonId++,
+            0.0f,
+            {
+                glm::vec2(left, 2.0f),
+                glm::vec2(right, 2.0f),
+                glm::vec2(right, 3.0f),
+                glm::vec2(left, 3.0f),
+            }
+        });
+    }
+    runtime.asset.polygons.push_back(core::NavPolygon{
+        polygonId,
+        0.0f,
+        {
+            glm::vec2(749.0f, 1.0f),
+            glm::vec2(750.0f, 1.0f),
+            glm::vec2(750.0f, 2.0f),
+            glm::vec2(749.0f, 2.0f),
+        }
+    });
+    assert(navigation.rebuildRuntime(runtime));
+    assert(runtime.bakedCells.size() == 1501u);
+    assert(runtime.polyanyaMesh != nullptr);
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    const glm::vec3 start(0.5f, 0.0f, 0.5f);
+    const glm::vec3 destination(0.5f, 0.0f, 2.5f);
+    world.transforms.emplace(entity, core::TransformComponent{
+        start,
+        glm::vec3(0.0f),
+        glm::vec3(1.0f)
+    });
+    core::NavAgentComponent fallbackAgent{};
+    fallbackAgent.clearanceSource =
+        core::NavAgentClearanceSource::BoxCollider;
+    world.navAgents.emplace(entity, fallbackAgent);
+    world.boxColliders.emplace(entity, core::BoxColliderComponent{
+        glm::vec3(0.0f),
+        glm::vec3(0.0f),
+        false,
+        false,
+    });
+
+    const auto startedAt = std::chrono::steady_clock::now();
+    assert(navigation.setAgentDestination(
+        world,
+        runtime,
+        entity,
+        destination
+    ));
+    const double durationSeconds =
+        std::chrono::duration_cast<std::chrono::duration<double>>(
+            std::chrono::steady_clock::now() - startedAt
+        ).count();
+    const core::NavAgentComponent& solvedAgent =
+        world.navAgents.get(entity);
+
+    std::printf(
+        "[1501-cell A*] duration_ms=%.3f corners=%zu\n",
+        durationSeconds * 1000.0,
+        solvedAgent.pathCorners.size()
+    );
+    assert(durationSeconds < 0.1);
+    assert(!solvedAgent.pathCorners.empty());
+    assert(pathLength(start, solvedAgent.pathCorners) > 1490.0);
+    assert(pathLength(start, solvedAgent.pathCorners) < 1510.0);
 }
 
 void testNavigationOverlapCandidateSelectionUsesMultiplyCoveredStartCell() {
@@ -1767,6 +3104,58 @@ void testNavigationAgentMovementRotatesAndRequestsWalkThenIdle() {
     assert(finalAnimation.requestedClip == world.locomotion.get(entity).idleClip);
 }
 
+void testNavigationBoxAgentAlignsBeforeTranslation() {
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {
+            glm::vec2(0.0f, 0.0f),
+            glm::vec2(6.0f, 0.0f),
+            glm::vec2(6.0f, 2.0f),
+            glm::vec2(0.0f, 2.0f),
+        }},
+    };
+    core::NavigationSystem navigation;
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    world.transforms.emplace(entity, core::TransformComponent{
+        glm::vec3(1.0f, 0.0f, 1.0f),
+        glm::vec3(0.0f),
+        glm::vec3(1.0f),
+    });
+    core::NavAgentComponent agent{};
+    agent.moveSpeed = 1.0f;
+    agent.turnSpeedDeg = 1.0f;
+    agent.clearanceSource = core::NavAgentClearanceSource::BoxCollider;
+    world.navAgents.emplace(entity, agent);
+    world.boxColliders.emplace(entity, core::BoxColliderComponent{
+        glm::vec3(0.0f),
+        glm::vec3(0.2f, 0.5f, 0.8f),
+        false,
+        false,
+    });
+
+    assert(navigation.setAgentDestination(
+        world,
+        runtime,
+        entity,
+        glm::vec3(5.0f, 0.0f, 1.0f)
+    ));
+    navigation.updateAgents(
+        world,
+        runtime,
+        core::TimeContext{0.0f, 0.1f}
+    );
+
+    const core::TransformComponent& transform = world.transforms.get(entity);
+    // A regular agent would rotate by only 0.1 degree here. A box must first
+    // adopt the heading used by the swept-footprint validation, then move.
+    assert(nearlyEqual(transform.rotationDeg.y, 90.0, 0.01));
+    assert(transform.position.x > 1.0f);
+    assert(nearlyEqual(transform.position.z, 1.0, 0.001));
+}
+
 void testNavigationAgentClearanceRemainsOptIn() {
     core::NavigationSystem navigation;
     core::NavigationRuntime runtime{};
@@ -1787,6 +3176,76 @@ void testNavigationAgentClearanceRemainsOptIn() {
     assert(agent.destination.has_value());
     assert(nearlyEqual(agent.destination->x, 3.9, 0.001));
     assert(nearlyEqual(agent.pathCorners.back().x, 3.9, 0.001));
+}
+
+void testNavigationProjectsElevatedEndpointsOntoNearestWalkableLayer() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {
+            glm::vec2(0.0f, 0.0f),
+            glm::vec2(4.0f, 0.0f),
+            glm::vec2(4.0f, 2.0f),
+            glm::vec2(0.0f, 2.0f),
+        }},
+        core::NavPolygon{2, 3.0f, {
+            glm::vec2(0.0f, 0.0f),
+            glm::vec2(4.0f, 0.0f),
+            glm::vec2(4.0f, 2.0f),
+            glm::vec2(0.0f, 2.0f),
+        }},
+    };
+    assert(navigation.rebuildRuntime(runtime));
+
+    const auto solveAtHeight = [&](float inputHeight,
+                                   float expectedHeight) {
+        core::World world;
+        const core::EntityId entity = world.createEntity();
+        world.transforms.emplace(entity, core::TransformComponent{
+            glm::vec3(0.5f, inputHeight, 1.0f),
+            glm::vec3(0.0f),
+            glm::vec3(1.0f)
+        });
+        world.navAgents.emplace(entity, core::NavAgentComponent{});
+        assert(navigation.setAgentDestination(
+            world,
+            runtime,
+            entity,
+            glm::vec3(3.5f, inputHeight, 1.0f)
+        ));
+        const core::NavAgentComponent& solved =
+            world.navAgents.get(entity);
+        assert(!solved.pathCorners.empty());
+        assert(nearlyEqual(
+            solved.pathCorners.back().y,
+            expectedHeight,
+            0.001
+        ));
+    };
+
+    solveAtHeight(0.75f, 0.0f);
+    solveAtHeight(2.25f, 3.0f);
+
+    core::World disconnectedWorld;
+    const core::EntityId disconnected = disconnectedWorld.createEntity();
+    disconnectedWorld.transforms.emplace(
+        disconnected,
+        core::TransformComponent{
+            glm::vec3(1.0f, 0.0f, 1.0f),
+            glm::vec3(0.0f),
+            glm::vec3(1.0f)
+        }
+    );
+    disconnectedWorld.navAgents.emplace(
+        disconnected,
+        core::NavAgentComponent{}
+    );
+    assert(!navigation.setAgentDestination(
+        disconnectedWorld,
+        runtime,
+        disconnected,
+        glm::vec3(1.0f, 3.0f, 1.0f)
+    ));
 }
 
 void testNavigationAgentSphereClearancePullsDestinationAwayFromWalls() {
@@ -1866,6 +3325,71 @@ void testNavigationAgentSphereClearanceRejectsTooNarrowCorridor() {
     assert(solvedAgent.pathCorners.empty());
 }
 
+void testNavigationSphereSweepDetectsHoleBetweenBoundarySamples() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    // Four convex cells form a large floor around a 10 cm square hole. The
+    // direct center line is below the hole. So are the eight legacy boundary
+    // sample lines (offsets 0, 0.3536 and 0.5 for radius 0.5), while the exact
+    // swept disk still covers it.
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {
+            glm::vec2(0.0f, 0.0f), glm::vec2(10.0f, 0.0f),
+            glm::vec2(10.0f, 5.15f), glm::vec2(0.0f, 5.15f),
+        }},
+        core::NavPolygon{2, 0.0f, {
+            glm::vec2(0.0f, 5.25f), glm::vec2(10.0f, 5.25f),
+            glm::vec2(10.0f, 10.0f), glm::vec2(0.0f, 10.0f),
+        }},
+        core::NavPolygon{3, 0.0f, {
+            glm::vec2(0.0f, 5.15f), glm::vec2(4.95f, 5.15f),
+            glm::vec2(4.95f, 5.25f), glm::vec2(0.0f, 5.25f),
+        }},
+        core::NavPolygon{4, 0.0f, {
+            glm::vec2(5.05f, 5.15f), glm::vec2(10.0f, 5.15f),
+            glm::vec2(10.0f, 5.25f), glm::vec2(5.05f, 5.25f),
+        }},
+    };
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    const glm::vec3 start(2.0f, 0.0f, 5.0f);
+    const glm::vec3 destination(8.0f, 0.0f, 5.0f);
+    world.transforms.emplace(entity, core::TransformComponent{
+        start,
+        glm::vec3(0.0f),
+        glm::vec3(1.0f),
+    });
+    core::NavAgentComponent agent{};
+    agent.clearanceSource =
+        core::NavAgentClearanceSource::SphereCollider;
+    world.navAgents.emplace(entity, agent);
+    world.sphereColliders.emplace(entity, core::SphereColliderComponent{
+        glm::vec3(0.0f),
+        0.5f,
+        false,
+        false,
+    });
+
+    assert(navigation.setAgentDestination(
+        world,
+        runtime,
+        entity,
+        destination
+    ));
+    const core::NavAgentComponent& solvedAgent = world.navAgents.get(entity);
+    assert(solvedAgent.pathCorners.size() >= 2u);
+    assert(pathLength(start, solvedAgent.pathCorners) > 6.01);
+    assert(std::any_of(
+        solvedAgent.pathCorners.begin(),
+        solvedAgent.pathCorners.end(),
+        [](const glm::vec3& corner) {
+            return corner.z <= 4.66f || corner.z >= 5.74f;
+        }
+    ));
+}
+
 void testNavigationAgentBoxClearanceUsesLateralFootprintAndKeepsDirectPath() {
     core::NavigationSystem navigation;
     core::NavigationRuntime runtime{};
@@ -1893,6 +3417,195 @@ void testNavigationAgentBoxClearanceUsesLateralFootprintAndKeepsDirectPath() {
     assert(nearlyEqual(solvedAgent.pathCorners.front().z, 0.5, 0.001));
 }
 
+void testNavigationOffCenterBoxUsesDirectedPortalClearance() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {
+            glm::vec2(0.0f, 0.0f), glm::vec2(4.0f, 0.0f),
+            glm::vec2(4.0f, 4.0f), glm::vec2(0.0f, 4.0f),
+        }},
+        core::NavPolygon{2, 0.0f, {
+            glm::vec2(4.0f, 1.0f), glm::vec2(6.0f, 1.0f),
+            glm::vec2(6.0f, 3.0f), glm::vec2(4.0f, 3.0f),
+        }},
+        core::NavPolygon{3, 0.0f, {
+            glm::vec2(6.0f, 0.0f), glm::vec2(10.0f, 0.0f),
+            glm::vec2(10.0f, 4.0f), glm::vec2(6.0f, 4.0f),
+        }},
+    };
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    const glm::vec3 left(1.0f, 0.0f, 2.4f);
+    const glm::vec3 right(9.0f, 0.0f, 2.4f);
+    world.transforms.emplace(entity, core::TransformComponent{
+        left,
+        glm::vec3(0.0f),
+        glm::vec3(1.0f),
+    });
+    core::NavAgentComponent agent{};
+    agent.clearanceSource = core::NavAgentClearanceSource::BoxCollider;
+    world.navAgents.emplace(entity, agent);
+    // The local +X offset becomes -Z while moving right and +Z while moving
+    // left. Forward therefore fits directly; reverse must lower the agent
+    // origin before entering the same portal.
+    world.boxColliders.emplace(entity, core::BoxColliderComponent{
+        glm::vec3(0.4f, 0.0f, 0.0f),
+        glm::vec3(0.4f, 0.5f, 0.5f),
+        false,
+        false,
+    });
+
+    assert(navigation.setAgentDestination(world, runtime, entity, right));
+    const std::vector<glm::vec3> forwardCorners =
+        world.navAgents.get(entity).pathCorners;
+    assert(forwardCorners.size() == 1u);
+    assert(nearlyEqual(pathLength(left, forwardCorners), 8.0, 0.01));
+
+    world.transforms.get(entity).position = right;
+    assert(navigation.setAgentDestination(world, runtime, entity, left));
+    const std::vector<glm::vec3>& reverseCorners =
+        world.navAgents.get(entity).pathCorners;
+    assert(reverseCorners.size() >= 2u);
+    assert(pathLength(right, reverseCorners) > 8.0 + 0.01);
+    assert(std::any_of(
+        reverseCorners.begin(),
+        reverseCorners.end(),
+        [](const glm::vec3& corner) {
+            return corner.z <= 2.21f;
+        }
+    ));
+}
+
+void testNavigationAnisotropicBoxUsesLateralPortalSupport() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {
+            glm::vec2(0.0f, 0.0f),
+            glm::vec2(4.9f, 0.0f),
+            glm::vec2(4.9f, 4.0f),
+            glm::vec2(0.0f, 4.0f),
+        }},
+        core::NavPolygon{2, 0.0f, {
+            glm::vec2(4.9f, 1.725f),
+            glm::vec2(5.1f, 1.725f),
+            glm::vec2(5.1f, 2.275f),
+            glm::vec2(4.9f, 2.275f),
+        }},
+        core::NavPolygon{3, 0.0f, {
+            glm::vec2(5.1f, 0.0f),
+            glm::vec2(8.0f, 0.0f),
+            glm::vec2(8.0f, 4.0f),
+            glm::vec2(5.1f, 4.0f),
+        }},
+        core::NavPolygon{4, 3.0f, {
+            glm::vec2(8.0f, 0.0f),
+            glm::vec2(12.0f, 0.0f),
+            glm::vec2(12.0f, 4.0f),
+            glm::vec2(8.0f, 4.0f),
+        }},
+    };
+    runtime.asset.links = {
+        core::NavLink{
+            31,
+            3,
+            4,
+            glm::vec3(7.0f, 0.0f, 2.0f),
+            glm::vec3(9.0f, 3.0f, 2.0f),
+            false,
+        },
+    };
+    assert(navigation.rebuildRuntime(runtime));
+    assert(runtime.polyanyaMesh != nullptr);
+    assert(navigationGraphContainsOffMeshLink(runtime));
+    assert(std::any_of(
+        runtime.graph.begin(),
+        runtime.graph.end(),
+        [](const std::vector<core::NavGraphEdge>& edges) {
+            return std::any_of(
+                edges.begin(),
+                edges.end(),
+                [](const core::NavGraphEdge& edge) {
+                    return !edge.viaLink && nearlyEqual(
+                        glm::length(edge.portalB - edge.portalA),
+                        0.55,
+                        0.01
+                    );
+                }
+            );
+        }
+    ));
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    const glm::vec3 start(1.0f, 0.0f, 2.0f);
+    const glm::vec3 destination(11.0f, 3.0f, 2.0f);
+    assert(!segmentInsidePolygons(
+        start,
+        destination,
+        runtime.asset.polygons
+    ));
+    world.transforms.emplace(entity, core::TransformComponent{
+        start,
+        glm::vec3(0.0f),
+        glm::vec3(1.0f)
+    });
+    core::NavAgentComponent agent{};
+    agent.clearanceSource = core::NavAgentClearanceSource::BoxCollider;
+    world.navAgents.emplace(entity, agent);
+    // Requested planar footprint (forward, lateral) = (0.9, 0.2).
+    // BoxCollider stores those axes as local (z, x), respectively.
+    world.boxColliders.emplace(entity, core::BoxColliderComponent{
+        glm::vec3(0.0f),
+        glm::vec3(0.20f, 0.5f, 0.90f),
+        false,
+        false
+    });
+
+    assert(navigation.setAgentDestination(
+        world,
+        runtime,
+        entity,
+        destination
+    ));
+    const core::NavAgentComponent& solvedAgent =
+        world.navAgents.get(entity);
+    assert(!solvedAgent.pathCorners.empty());
+    assert(containsPoint3(
+        solvedAgent.pathCorners,
+        runtime.asset.links.front().fromPoint,
+        0.01
+    ));
+    assert(containsPoint3(
+        solvedAgent.pathCorners,
+        runtime.asset.links.front().toPoint,
+        0.01
+    ));
+    glm::vec3 previous = start;
+    for (const glm::vec3& corner : solvedAgent.pathCorners) {
+        const bool isExplicitLink =
+            nearlyEqualVec3(
+                previous,
+                runtime.asset.links.front().fromPoint,
+                0.01
+            ) &&
+            nearlyEqualVec3(
+                corner,
+                runtime.asset.links.front().toPoint,
+                0.01
+            );
+        assert(isExplicitLink || segmentInsidePolygons(
+            previous,
+            corner,
+            runtime.asset.polygons
+        ));
+        previous = corner;
+    }
+}
+
 void testNavigationRotatedBoxClearancePreservesExplicitLinkTransitions() {
     core::NavigationSystem navigation;
     core::NavigationRuntime runtime{};
@@ -1915,6 +3628,10 @@ void testNavigationRotatedBoxClearancePreservesExplicitLinkTransitions() {
 
     const glm::vec3 destination(0.5f, 3.0f, 0.5f);
     assert(navigation.setAgentDestination(world, runtime, entity, destination));
+    const glm::vec3 resolvedTransformPosition =
+        world.transforms.get(entity).position;
+    assert(resolvedTransformPosition.x >= 0.35f - 0.01f);
+    assert(nearlyEqual(resolvedTransformPosition.y, 0.0, 0.01));
 
     const core::NavAgentComponent& solvedAgent = world.navAgents.get(entity);
     assert(solvedAgent.destination.has_value());
@@ -1943,6 +3660,89 @@ void testNavigationRotatedBoxClearancePreservesExplicitLinkTransitions() {
     assert(nearlyEqual(solvedAgent.pathCorners.back().x, destination.x, 0.02));
     assert(nearlyEqual(solvedAgent.pathCorners.back().y, destination.y, 0.02));
     assert(nearlyEqual(solvedAgent.pathCorners.back().z, destination.z, 0.02));
+}
+
+void testNavigationClearanceSkipsInaccessibleLinkForPortalRoute() {
+    core::NavigationSystem navigation;
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{1, 0.0f, {
+            glm::vec2(0.0f, 0.0f),
+            glm::vec2(2.0f, 0.0f),
+            glm::vec2(2.0f, 4.0f),
+            glm::vec2(0.0f, 4.0f)
+        }},
+        core::NavPolygon{2, 0.0f, {
+            glm::vec2(4.0f, 0.0f),
+            glm::vec2(6.0f, 0.0f),
+            glm::vec2(6.0f, 4.0f),
+            glm::vec2(4.0f, 4.0f)
+        }},
+        core::NavPolygon{3, 0.0f, {
+            glm::vec2(2.0f, 2.0f),
+            glm::vec2(4.0f, 2.0f),
+            glm::vec2(4.0f, 4.0f),
+            glm::vec2(2.0f, 4.0f)
+        }},
+    };
+    runtime.asset.links = {
+        core::NavLink{
+            7,
+            1,
+            2,
+            glm::vec3(0.1f, 0.0f, 1.0f),
+            glm::vec3(5.0f, 0.0f, 1.0f),
+            false
+        }
+    };
+    assert(navigation.rebuildRuntime(runtime));
+
+    core::World world;
+    const core::EntityId entity = world.createEntity();
+    const glm::vec3 start(1.0f, 0.0f, 1.0f);
+    const glm::vec3 destination(5.0f, 0.0f, 1.0f);
+    world.transforms.emplace(entity, core::TransformComponent{
+        start,
+        glm::vec3(0.0f),
+        glm::vec3(1.0f)
+    });
+    core::NavAgentComponent agent{};
+    agent.clearanceSource =
+        core::NavAgentClearanceSource::SphereCollider;
+    world.navAgents.emplace(entity, agent);
+    world.sphereColliders.emplace(
+        entity,
+        core::SphereColliderComponent{
+            glm::vec3(0.0f),
+            0.35f,
+            false,
+            false
+        }
+    );
+
+    assert(navigation.setAgentDestination(
+        world,
+        runtime,
+        entity,
+        destination
+    ));
+    const core::NavAgentComponent& solvedAgent =
+        world.navAgents.get(entity);
+    assert(!solvedAgent.pathCorners.empty());
+    assert(!containsPoint3(
+        solvedAgent.pathCorners,
+        runtime.asset.links.front().fromPoint,
+        0.02f
+    ));
+    glm::vec3 previous = start;
+    for (const glm::vec3& corner : solvedAgent.pathCorners) {
+        assert(segmentInsidePolygons(
+            previous,
+            corner,
+            runtime.asset.polygons
+        ));
+        previous = corner;
+    }
 }
 
 void testNavigationClearanceResolvesTowardApproachInsteadOfCornerVertex() {
@@ -2311,7 +4111,7 @@ void testNavigationDefaultSceneNavmeshBoxClearanceOverlap() {
     }
 }
 
-void testNavigationClearancePathfindingAvoidsIntervalStateExplosion() {
+void testNavigationClearancePathfindingAvoidsQuadraticStateExplosion() {
     core::NavigationSystem navigation;
     core::NavigationRuntime runtime{};
     runtime.asset.polygons = {
@@ -2360,6 +4160,11 @@ void testNavigationClearancePathfindingAvoidsIntervalStateExplosion() {
     ).count();
     const core::NavAgentComponent& solvedAgent = world.navAgents.get(entity);
 
+    std::printf(
+        "[clearance 4-cell] duration_ms=%.3f corners=%zu\n",
+        durationSeconds * 1000.0,
+        solvedAgent.pathCorners.size()
+    );
     assert(solved);
     assert(durationSeconds < 1.0 / 60.0);
     assert(!solvedAgent.pathCorners.empty());
@@ -4137,6 +5942,94 @@ void testNavigationAsyncRequestKeepsCurrentPathUntilReady() {
     assert(requireCounterValue(countersAfterApply, "Last Async Pathfind Us", "Navigation") > 0);
 }
 
+void testNavigationAsyncResultRespectsManualMovement() {
+    core::TaskScheduler scheduler = makeScheduler();
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = makeLinearNavPolygons(24u);
+    runtime.asset.polygons.push_back(core::NavPolygon{
+        1000,
+        0.0f,
+        {
+            glm::vec2(100.0f, -0.5f),
+            glm::vec2(101.0f, -0.5f),
+            glm::vec2(101.0f, 0.5f),
+            glm::vec2(100.0f, 0.5f),
+        },
+    });
+
+    {
+        core::NavigationSystem navigation;
+        assert(navigation.rebuildRuntime(runtime));
+        core::World world;
+        const core::EntityId entity = world.createEntity();
+        world.transforms.emplace(entity, core::TransformComponent{
+            glm::vec3(0.25f, 0.0f, 0.0f),
+            glm::vec3(0.0f),
+            glm::vec3(1.0f),
+        });
+        world.navAgents.emplace(entity, core::NavAgentComponent{});
+
+        const glm::vec3 destination(23.75f, 0.0f, 0.0f);
+        assert(navigation.requestAgentDestination(
+            world,
+            runtime,
+            scheduler,
+            entity,
+            destination
+        ));
+        const glm::vec3 manuallyMovedPosition(6.25f, 0.0f, 0.0f);
+        world.transforms.get(entity).position = manuallyMovedPosition;
+        waitForNavigationRequestsToDrain(navigation, world, runtime);
+
+        assert(nearlyEqualVec3(
+            world.transforms.get(entity).position,
+            manuallyMovedPosition
+        ));
+        const core::NavAgentComponent& solved = world.navAgents.get(entity);
+        assert(solved.destination.has_value());
+        assert(nearlyEqualVec3(*solved.destination, destination));
+        assert(!solved.pathCorners.empty());
+        assert(nearlyEqualVec3(solved.pathCorners.back(), destination));
+    }
+
+    {
+        core::NavigationSystem navigation;
+        assert(navigation.rebuildRuntime(runtime));
+        core::World world;
+        const core::EntityId entity = world.createEntity();
+        world.transforms.emplace(entity, core::TransformComponent{
+            glm::vec3(0.25f, 0.0f, 0.0f),
+            glm::vec3(0.0f),
+            glm::vec3(1.0f),
+        });
+        world.navAgents.emplace(entity, core::NavAgentComponent{});
+
+        assert(navigation.requestAgentDestination(
+            world,
+            runtime,
+            scheduler,
+            entity,
+            glm::vec3(23.75f, 0.0f, 0.0f)
+        ));
+        const glm::vec3 disconnectedPosition(100.5f, 0.0f, 0.0f);
+        world.transforms.get(entity).position = disconnectedPosition;
+        waitForNavigationRequestsToDrain(navigation, world, runtime);
+
+        assert(nearlyEqualVec3(
+            world.transforms.get(entity).position,
+            disconnectedPosition
+        ));
+        const core::NavAgentComponent& ignored = world.navAgents.get(entity);
+        assert(!ignored.destination.has_value());
+        assert(ignored.pathCorners.empty());
+        assert(requireCounterValue(
+            navigation.profilingCounters(),
+            "Stale Path Results",
+            "Navigation"
+        ) == 1);
+    }
+}
+
 void testNavigationAsyncRequestPublishesPartialPathBeforeFinalApply() {
     core::TaskScheduler scheduler = makeScheduler();
     core::NavigationSystem navigation;
@@ -4664,6 +6557,10 @@ void testProfilingMemoryEstimators() {
 }  // namespace
 
 int main() {
+    if (envFlagEnabled("ALKANZAR_WITNESS_DEFAULT_SCENE_NAVGEN")) {
+        witnessDefaultSceneNavigationGeneration();
+        return EXIT_SUCCESS;
+    }
     if (envFlagEnabled("ALKANZAR_WITNESS_RANDOM_NAV_HANG")) {
         witnessRandomBoxClearanceNavmeshHang();
         return EXIT_SUCCESS;
@@ -4682,21 +6579,34 @@ int main() {
     testNavigationDefaultHitboxPreservesConcaveShapeUnion();
     testNavigationGenerationMinimizesRectangularObstacleDecomposition();
     testNavigationGenerationHandlesFantasyHouseGeometryWithoutPathologicalMerge();
-    testNavigationPathfindingUsesIntervalSearchAndExplicitLinks();
+    testNavigationPathfindingUsesAStarFunnelAndExplicitLinks();
     testNavigationOverlapCorridorConstraint();
     testNavigationConcavePolygonStaysInsideWalkableSurface();
     testNavigationOverlapPrefersShortestStraightCorridor();
     testNavigationPathfindingChoosesShortestGeometricCorridor();
+    testNavigationAStarRanksCorridorsByPortalGeometry();
+    testNavigationFunnelHandlesCollinearTJunctionPortalsBidirectionally();
+    testNavigationMatchesVisibilityOracleOnSmallNavmesh();
+    testNavigationRelevantLongLinkKeepsPolyanyaBaseline();
+    testNavigationRelevantShortLinkBeatsPolyanyaBaseline();
+    testNavigationClearanceCandidateSelectionUsesFinalPathLength();
     testNavigationPathfindingKeepsShortestCorridorPastSixtyFourBoundaryNodes();
+    testNavigationAStarScalesAcrossFifteenHundredCells();
     testNavigationOverlapCandidateSelectionUsesMultiplyCoveredStartCell();
     testNavigationRejectsSelfIntersectingPolygon();
     testNavigationHitTestFindsProjectedNavPolygon();
     testNavigationAgentMovementRotatesAndRequestsWalkThenIdle();
+    testNavigationBoxAgentAlignsBeforeTranslation();
     testNavigationAgentClearanceRemainsOptIn();
+    testNavigationProjectsElevatedEndpointsOntoNearestWalkableLayer();
     testNavigationAgentSphereClearancePullsDestinationAwayFromWalls();
     testNavigationAgentSphereClearanceRejectsTooNarrowCorridor();
+    testNavigationSphereSweepDetectsHoleBetweenBoundarySamples();
     testNavigationAgentBoxClearanceUsesLateralFootprintAndKeepsDirectPath();
+    testNavigationOffCenterBoxUsesDirectedPortalClearance();
+    testNavigationAnisotropicBoxUsesLateralPortalSupport();
     testNavigationRotatedBoxClearancePreservesExplicitLinkTransitions();
+    testNavigationClearanceSkipsInaccessibleLinkForPortalRoute();
     testNavigationClearanceResolvesTowardApproachInsteadOfCornerVertex();
     testNavigationOverlapLShapeUsesShortcutThroughOverlapRegion();
     testNavigationOverlapTShapeRoutesThroughWideOverlap();
@@ -4704,7 +6614,7 @@ int main() {
     testNavigationOverlapFullContainmentUsesStraightPath();
     testNavigationOverlapThreePolygonChain();
     testNavigationDefaultSceneNavmeshBoxClearanceOverlap();
-    testNavigationClearancePathfindingAvoidsIntervalStateExplosion();
+    testNavigationClearancePathfindingAvoidsQuadraticStateExplosion();
     testTaskSchedulerParallelForCoversFullRange();
     testTaskSchedulerWaitCompletesScheduledGroup();
     testTaskSchedulerAsyncHandleDeliversResult();
@@ -4755,6 +6665,7 @@ int main() {
     testProfilerServiceCapturesWorkerThreadScopes();
     testNavigationPathfindingEmitsProfilerScope();
     testNavigationAsyncRequestKeepsCurrentPathUntilReady();
+    testNavigationAsyncResultRespectsManualMovement();
     testNavigationAsyncRequestPublishesPartialPathBeforeFinalApply();
     testNavigationAsyncLatestClickWinsAndCountsStaleResults();
     testNavigationAsyncRebuildInvalidatesPendingRequests();

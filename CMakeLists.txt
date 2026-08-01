@@ -27,6 +27,9 @@ add_library(alkanzar_core STATIC
     src/core/editor/EditorSessionImGuiSettings.cpp
     src/core/physics/PhysicsSystem.cpp
     src/core/navigation/Navigation.cpp
+    src/core/navigation/Polyanya.cpp
+    src/core/navigation/polyanya/expansion.cpp
+    src/core/navigation/polyanya/geometry.cpp
     src/core/scene/Camera.cpp
     src/core/scene/SceneFactory.cpp
     src/core/scene/SceneRegistry.cpp

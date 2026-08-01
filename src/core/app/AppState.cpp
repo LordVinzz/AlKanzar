@@ -803,6 +803,13 @@ void drawNavMeshWindow(EngineServices& services) {
             : ImVec4(0.35f, 0.78f, 0.42f, 1.0f);
         ImGui::TextColored(color, "%s", services.navigation.statusMessage.c_str());
     }
+    if (!services.navigation.exactPathfindingWarning.empty()) {
+        ImGui::TextColored(
+            ImVec4(0.95f, 0.68f, 0.22f, 1.0f),
+            "%s",
+            services.navigation.exactPathfindingWarning.c_str()
+        );
+    }
 
     const auto bakeRuntime = [&services]() {
         std::string error{};

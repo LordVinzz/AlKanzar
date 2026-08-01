@@ -24,6 +24,10 @@ namespace core {
 
 class ProfilerService;
 
+namespace navigation_detail {
+class PolyanyaMesh;
+}
+
 struct NavSourceTagOverride {
     std::string stableId{};
     NavSourceTag tag{NavSourceTag::Ignored};
@@ -67,6 +71,8 @@ struct NavGraphEdge {
     std::size_t targetCellIndex{0u};
     bool viaLink{false};
     int linkId{-1};
+    // Directed planar portals are stored left-to-right as seen while moving
+    // from the owning cell to targetCellIndex.
     glm::vec2 portalA{0.0f};
     glm::vec2 portalB{0.0f};
     glm::vec3 linkStartPoint{0.0f};
@@ -85,6 +91,8 @@ struct NavigationSolveSnapshot {
     std::vector<std::vector<std::size_t>> polygonToCellIndices{};
     std::vector<std::vector<std::size_t>> cellToPolygonIndices{};
     std::vector<std::vector<NavGraphEdge>> graph{};
+    std::shared_ptr<const navigation_detail::PolyanyaMesh> polyanyaMesh{};
+    bool bakedCellsHaveInteriorOverlap{false};
 };
 
 struct NavigationEditorState {
@@ -112,10 +120,13 @@ struct NavigationRuntime {
     std::vector<std::vector<std::size_t>> polygonToCellIndices{};
     std::vector<std::vector<std::size_t>> cellToPolygonIndices{};
     std::vector<std::vector<NavGraphEdge>> graph{};
+    std::shared_ptr<const navigation_detail::PolyanyaMesh> polyanyaMesh{};
+    bool bakedCellsHaveInteriorOverlap{false};
     std::shared_ptr<const NavigationSolveSnapshot> solveSnapshot{};
     std::uint64_t solveRevision{0u};
     std::size_t filteredRuntimeCellCount{0u};
     std::string statusMessage{};
+    std::string exactPathfindingWarning{};
     bool statusIsError{false};
     NavigationEditorState editor{};
 };
@@ -191,6 +202,7 @@ private:
         std::uint64_t requestId{0u};
         std::uint64_t solveRevision{0u};
         glm::vec3 startPosition{0.0f};
+        glm::vec3 resolvedStart{0.0f};
         glm::vec3 destination{0.0f};
         std::optional<std::vector<glm::vec3>> pathCorners{};
         std::uint64_t durationUs{0u};
@@ -198,6 +210,7 @@ private:
 
 public:
     struct PartialPathResult {
+        glm::vec3 resolvedStart{0.0f};
         glm::vec3 destination{0.0f};
         std::vector<glm::vec3> pathCorners{};
     };

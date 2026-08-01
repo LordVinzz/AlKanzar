@@ -1,11 +1,14 @@
 #include "Navigation.hpp"
+#include "Polyanya.hpp"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -16,6 +19,7 @@
 #include <set>
 #include <sstream>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 
 #include <SDL.h>
@@ -32,13 +36,16 @@ namespace {
 
 constexpr float kHorizontalNormalMinDot = 0.9848077f;
 constexpr float kLayerGroupingEpsilon = 0.10f;
+constexpr float kEndpointProjectionTolerance = 1.0f;
 constexpr float kPolygonEpsilon = 1.0e-4f;
+constexpr float kPortalBroadPhaseEpsilon = kPolygonEpsilon * 16.0f;
 constexpr float kPlaneEpsilon = 1.0e-5f;
 constexpr float kTau = 6.283185307179586f;
 constexpr int kClearanceSampleDirections = 24;
 constexpr int kSegmentClearanceSampleDirections = 8;
 constexpr int kClearanceBinarySearchSteps = 10;
 constexpr int kClearanceProjectionIterations = 16;
+constexpr std::size_t kMaxClearanceProjectionCandidateCells = 16u;
 constexpr std::size_t kMaxProjectedCellsPerDefaultHitboxPart = 16u;
 constexpr int kNavAssetVersion = 1;
 const glm::vec4 kWalkableOverlayColor(0.0f, 1.0f, 0.0f, 0.5f);
@@ -76,6 +83,52 @@ struct QuantizedLayerPointHash {
         return result;
     }
 };
+
+struct ExactLayerPoint {
+    std::uint32_t x{0u};
+    std::uint32_t y{0u};
+    std::uint32_t z{0u};
+
+    friend bool operator==(const ExactLayerPoint&, const ExactLayerPoint&) =
+        default;
+};
+
+struct ExactLayerPointHash {
+    std::size_t operator()(const ExactLayerPoint& key) const noexcept {
+        std::size_t result = std::hash<std::uint32_t>{}(key.x);
+        result ^= std::hash<std::uint32_t>{}(key.y) + 0x9e3779b9u +
+            (result << 6u) + (result >> 2u);
+        result ^= std::hash<std::uint32_t>{}(key.z) + 0x9e3779b9u +
+            (result << 6u) + (result >> 2u);
+        return result;
+    }
+};
+
+struct VisibilitySegmentKey {
+    ExactLayerPoint from{};
+    ExactLayerPoint to{};
+
+    friend bool operator==(
+        const VisibilitySegmentKey&,
+        const VisibilitySegmentKey&
+    ) = default;
+};
+
+struct VisibilitySegmentKeyHash {
+    std::size_t operator()(const VisibilitySegmentKey& key) const noexcept {
+        const ExactLayerPointHash hash{};
+        std::size_t result = hash(key.from);
+        result ^= hash(key.to) + 0x9e3779b9u +
+            (result << 6u) + (result >> 2u);
+        return result;
+    }
+};
+
+using VisibilityTraversalCache = std::unordered_map<
+    VisibilitySegmentKey,
+    bool,
+    VisibilitySegmentKeyHash
+>;
 
 struct QuantizedEdge {
     QuantizedVec2 a{};
@@ -152,11 +205,14 @@ struct NavigationSolveView {
     const std::vector<std::vector<std::size_t>>& polygonToCellIndices;
     const std::vector<std::vector<std::size_t>>& cellToPolygonIndices;
     const std::vector<std::vector<NavGraphEdge>>& graph;
+    const navigation_detail::PolyanyaMesh* polyanyaMesh;
+    bool bakedCellsHaveInteriorOverlap;
 };
 
 struct SolvedPath {
     glm::vec3 destination{0.0f};
     std::vector<glm::vec3> corners{};
+    glm::vec3 resolvedStart{0.0f};
 };
 
 struct ResolvedPathEndpoints {
@@ -190,11 +246,20 @@ std::vector<glm::vec2> clipConvexPolygonAgainstHalfPlane(
     const std::vector<glm::vec2>& polygon,
     const glm::vec2& lineA,
     const glm::vec2& lineB,
-    bool keepLeft
+    bool keepLeft,
+    float tolerance = kPolygonEpsilon
 );
 std::string canonicalPolygonKey(const std::vector<glm::vec2>& vertices);
 std::vector<glm::vec2> buildConvexHull(std::vector<glm::vec2> points);
 void mergeAdjacentConvexCells(std::vector<NavRuntimeCell>& cells);
+glm::vec2 closestPointOnPolygonXZ(
+    const glm::vec2& point,
+    const std::vector<glm::vec2>& polygon
+);
+bool pointInOrOnPolygonXZ(
+    const glm::vec2& point,
+    const std::vector<glm::vec2>& polygon
+);
 
 float cross2(const glm::vec2& lhs, const glm::vec2& rhs) {
     return lhs.x * rhs.y - lhs.y * rhs.x;
@@ -202,6 +267,44 @@ float cross2(const glm::vec2& lhs, const glm::vec2& rhs) {
 
 float triArea2(const glm::vec2& a, const glm::vec2& b, const glm::vec2& c) {
     return cross2(b - a, c - a);
+}
+
+double preciseTriArea2(
+    const glm::vec2& a,
+    const glm::vec2& b,
+    const glm::vec2& c
+) {
+    const double abX = static_cast<double>(b.x) - a.x;
+    const double abY = static_cast<double>(b.y) - a.y;
+    const double acX = static_cast<double>(c.x) - a.x;
+    const double acY = static_cast<double>(c.y) - a.y;
+    return abX * acY - abY * acX;
+}
+
+double funnelArea2(
+    const glm::vec2& apex,
+    const glm::vec2& side,
+    const glm::vec2& candidate
+) {
+    const double sideX = static_cast<double>(side.x) - apex.x;
+    const double sideY = static_cast<double>(side.y) - apex.y;
+    const double candidateX = static_cast<double>(candidate.x) - apex.x;
+    const double candidateY = static_cast<double>(candidate.y) - apex.y;
+    return sideX * candidateY - sideY * candidateX;
+}
+
+double funnelAreaTolerance(
+    const glm::vec2& apex,
+    const glm::vec2& side,
+    const glm::vec2& candidate
+) {
+    const double sideLength = glm::distance(
+        glm::dvec2(apex),
+        glm::dvec2(side));
+    const double candidateLength = glm::distance(
+        glm::dvec2(apex),
+        glm::dvec2(candidate));
+    return 1.0e-10 * std::max(1.0, sideLength * candidateLength);
 }
 
 bool nearlyEqual(float lhs, float rhs, float epsilon = kPolygonEpsilon) {
@@ -227,6 +330,14 @@ QuantizedLayerPoint quantizeLayerPoint(const glm::vec2& point, float elevation) 
     return QuantizedLayerPoint{
         quantizeVec2(point),
         static_cast<long long>(std::llround(static_cast<double>(elevation) * 10000.0))
+    };
+}
+
+ExactLayerPoint exactLayerPoint(const glm::vec3& point) {
+    return ExactLayerPoint{
+        std::bit_cast<std::uint32_t>(point.x),
+        std::bit_cast<std::uint32_t>(point.y),
+        std::bit_cast<std::uint32_t>(point.z),
     };
 }
 
@@ -276,6 +387,53 @@ float supportDistance(const AgentClearanceProfile& profile, const glm::vec2& sam
     return std::abs(glm::dot(direction, center)) +
         std::abs(glm::dot(direction, right)) * profile.boxHalfExtentsXZ.x +
         std::abs(glm::dot(direction, forward)) * profile.boxHalfExtentsXZ.y;
+}
+
+template <typename Visitor>
+bool visitClearanceBoundaryOffsets(
+    const AgentClearanceProfile& profile,
+    const glm::vec2& travelDirection,
+    int sphereSampleDirections,
+    Visitor&& visitor
+) {
+    if (profile.empty()) {
+        return true;
+    }
+
+    const glm::vec2 forward = normalizeOrFallback(travelDirection);
+    const glm::vec2 right(forward.y, -forward.x);
+    const glm::vec2 center =
+        rotateLocalXZToPlanar(profile.centerXZ, travelDirection);
+    if (profile.shape == AgentClearanceShape::Sphere) {
+        for (int sampleIndex = 0;
+             sampleIndex < sphereSampleDirections;
+             ++sampleIndex) {
+            const float angle = kTau * static_cast<float>(sampleIndex) /
+                static_cast<float>(sphereSampleDirections);
+            const glm::vec2 offset = center +
+                glm::vec2(std::cos(angle), std::sin(angle)) *
+                    profile.sphereRadius;
+            if (!visitor(offset)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    const glm::vec2 lateral = right * profile.boxHalfExtentsXZ.x;
+    const glm::vec2 longitudinal = forward * profile.boxHalfExtentsXZ.y;
+    const std::array<glm::vec2, 4u> offsets{
+        center + lateral + longitudinal,
+        center + lateral - longitudinal,
+        center - lateral + longitudinal,
+        center - lateral - longitudinal,
+    };
+    for (const glm::vec2& offset : offsets) {
+        if (!visitor(offset)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 AgentClearanceProfile resolveAgentClearanceProfile(const World& world, EntityId entity, const NavAgentComponent& agent) {
@@ -345,6 +503,44 @@ glm::vec2 travelDirectionForSegment(const glm::vec3& from, const glm::vec3& to, 
     return normalizeOrFallback(glm::vec2(to.x - from.x, to.z - from.z), fallback);
 }
 
+float conservativeClearanceRadius(const AgentClearanceProfile& profile) {
+    if (profile.shape == AgentClearanceShape::Sphere) {
+        return glm::length(profile.centerXZ) + profile.sphereRadius;
+    }
+    if (profile.shape == AgentClearanceShape::Box) {
+        return glm::length(profile.centerXZ) + glm::length(profile.boxHalfExtentsXZ);
+    }
+    return 0.0f;
+}
+
+AgentClearanceProfile headingIndependentNodeClearance(
+    const AgentClearanceProfile& profile
+) {
+    if (profile.empty()) {
+        return {};
+    }
+    const float minimumExtent =
+        profile.shape == AgentClearanceShape::Sphere
+        ? profile.sphereRadius
+        : std::min(
+            profile.boxHalfExtentsXZ.x,
+            profile.boxHalfExtentsXZ.y
+        );
+    const float inscribedRadius = std::max(
+        0.0f,
+        minimumExtent - glm::length(profile.centerXZ)
+    );
+    if (inscribedRadius <= kPolygonEpsilon) {
+        return {};
+    }
+    return AgentClearanceProfile{
+        AgentClearanceShape::Sphere,
+        glm::vec2(0.0f),
+        inscribedRadius,
+        glm::vec2(0.0f)
+    };
+}
+
 std::optional<SharedPortalResult> shrinkPortal(
     const glm::vec2& a,
     const glm::vec2& b,
@@ -361,29 +557,60 @@ std::optional<SharedPortalResult> shrinkPortal(
         return std::nullopt;
     }
     const glm::vec2 direction = delta / length;
-    const float clearanceDistance = supportDistance(profile, direction, travelDirection);
-    if (length <= clearanceDistance * 2.0f + kPolygonEpsilon) {
+    const glm::vec2 forward = normalizeOrFallback(travelDirection);
+    const glm::vec2 right(forward.y, -forward.x);
+    const glm::vec2 center =
+        rotateLocalXZToPlanar(profile.centerXZ, forward);
+    const float centerProjection = glm::dot(direction, center);
+    const float symmetricExtent =
+        profile.shape == AgentClearanceShape::Sphere
+        ? profile.sphereRadius
+        : std::abs(glm::dot(direction, right)) *
+                profile.boxHalfExtentsXZ.x +
+            std::abs(glm::dot(direction, forward)) *
+                profile.boxHalfExtentsXZ.y;
+    // The collider center may be offset from the agent origin. Its feasible
+    // origin interval is therefore asymmetric along the portal.
+    const float startInset = std::max(
+        0.0f,
+        symmetricExtent - centerProjection
+    );
+    const float endInset = std::max(
+        0.0f,
+        symmetricExtent + centerProjection
+    );
+    if (length <= startInset + endInset + kPolygonEpsilon) {
         return std::nullopt;
     }
     return SharedPortalResult{
-        a + direction * clearanceDistance,
-        b - direction * clearanceDistance
+        a + direction * startInset,
+        b - direction * endInset
     };
 }
 
-bool cellsShareAuthoredPolygon(
+bool portalIsInternalToSharedAuthoredPolygon(
     const NavigationSolveView& runtime,
     std::size_t cellA,
-    std::size_t cellB
+    std::size_t cellB,
+    const SharedPortalResult& portal
 ) {
     if (cellA >= runtime.cellToPolygonIndices.size() || cellB >= runtime.cellToPolygonIndices.size()) {
         return false;
     }
+    const glm::vec2 portalMidpoint = (portal.a + portal.b) * 0.5f;
     const std::vector<std::size_t>& polyA = runtime.cellToPolygonIndices[cellA];
     const std::vector<std::size_t>& polyB = runtime.cellToPolygonIndices[cellB];
     for (std::size_t indexA : polyA) {
         for (std::size_t indexB : polyB) {
-            if (indexA == indexB) {
+            if (indexA != indexB ||
+                indexA >= runtime.asset.polygons.size()) {
+                continue;
+            }
+            const std::vector<glm::vec2>& authoredVertices =
+                runtime.asset.polygons[indexA].verticesXZ;
+            if (pointInOrOnPolygonXZ(
+                    portalMidpoint,
+                    authoredVertices)) {
                 return true;
             }
         }
@@ -393,6 +620,34 @@ bool cellsShareAuthoredPolygon(
 
 // Forward declarations for functions defined later in the file
 bool pointInsideAuthoredWalkableSurface(const NavigationSolveView& runtime, const glm::vec3& point);
+bool segmentInsideAuthoredWalkableSurface(
+    const NavigationSolveView& runtime,
+    const glm::vec3& from,
+    const glm::vec3& to
+);
+bool boxSweepInsideWalkableSurface(
+    const NavigationSolveView& runtime,
+    const glm::vec3& from,
+    const glm::vec3& to,
+    const AgentClearanceProfile& profile,
+    const glm::vec2& preferredTravelDirection,
+    const std::vector<std::size_t>* candidateCells = nullptr
+);
+bool sphereSweepInsideWalkableSurface(
+    const NavigationSolveView& runtime,
+    const glm::vec3& from,
+    const glm::vec3& to,
+    const AgentClearanceProfile& profile,
+    const glm::vec2& preferredTravelDirection,
+    const std::vector<std::size_t>* candidateCells = nullptr
+);
+template <typename RuntimeView>
+bool segmentInsideBakedWalkableSurface(
+    const RuntimeView& runtime,
+    const glm::vec3& from,
+    const glm::vec3& to,
+    const std::vector<std::size_t>* candidateCells = nullptr
+);
 std::optional<std::size_t> findNearestCell(const NavigationSolveView& runtime, const glm::vec3& point);
 
 glm::vec2 clearanceSampleDirection(int sampleIndex, int sampleCount = kClearanceSampleDirections) {
@@ -413,20 +668,39 @@ bool pointInsideAuthoredWalkableSurfaceWithClearanceSamples(
     if (profile.empty()) {
         return true;
     }
-
-    for (int sampleIndex = 0; sampleIndex < sampleDirections; ++sampleIndex) {
-        const glm::vec2 direction = clearanceSampleDirection(sampleIndex, sampleDirections);
-        const float clearanceDistance = supportDistance(profile, direction, travelDirection);
-        const glm::vec3 samplePoint(
-            point.x + direction.x * clearanceDistance,
-            point.y,
-            point.z + direction.y * clearanceDistance
+    if (profile.shape == AgentClearanceShape::Box) {
+        return boxSweepInsideWalkableSurface(
+            runtime,
+            point,
+            point,
+            profile,
+            travelDirection
         );
-        if (!pointInsideAuthoredWalkableSurface(runtime, samplePoint)) {
-            return false;
-        }
     }
-    return true;
+    if (!visitClearanceBoundaryOffsets(
+            profile,
+            travelDirection,
+            sampleDirections,
+            [&](const glm::vec2& offset) {
+                const glm::vec3 samplePoint(
+                    point.x + offset.x,
+                    point.y,
+                    point.z + offset.y
+                );
+                return pointInsideAuthoredWalkableSurface(
+                    runtime,
+                    samplePoint
+                );
+            })) {
+        return false;
+    }
+    return sphereSweepInsideWalkableSurface(
+        runtime,
+        point,
+        point,
+        profile,
+        travelDirection
+    );
 }
 
 bool pointInsideAuthoredWalkableSurfaceWithClearance(
@@ -448,8 +722,16 @@ std::optional<glm::vec3> resolvePointWithClearance(
     const NavigationSolveView& runtime,
     const glm::vec3& point,
     const AgentClearanceProfile& profile,
-    const glm::vec2& preferredTravelDirection = glm::vec2(0.0f, 1.0f)
+    const glm::vec2& preferredTravelDirection = glm::vec2(0.0f, 1.0f),
+    const std::atomic<bool>* cancelled = nullptr
 ) {
+    const auto isCancelled = [&]() {
+        return cancelled != nullptr &&
+            cancelled->load(std::memory_order_relaxed);
+    };
+    if (isCancelled()) {
+        return std::nullopt;
+    }
     if (profile.empty()) {
         return pointInsideAuthoredWalkableSurface(runtime, point)
             ? std::optional<glm::vec3>(point)
@@ -465,7 +747,16 @@ std::optional<glm::vec3> resolvePointWithClearance(
         if (!nearest.has_value()) {
             return std::nullopt;
         }
-        resolved = cellCenter3(runtime, *nearest);
+        const NavRuntimeCell& nearestCell = runtime.bakedCells[*nearest];
+        const glm::vec2 nearestPoint = closestPointOnPolygonXZ(
+            glm::vec2(point.x, point.z),
+            nearestCell.verticesXZ
+        );
+        resolved = glm::vec3(
+            nearestPoint.x,
+            nearestCell.elevationY,
+            nearestPoint.y
+        );
     }
     const glm::vec2 inwardDirection = travelDirectionForSegment(point, resolved, preferredTravelDirection);
     if (pointInsideAuthoredWalkableSurfaceWithClearance(runtime, resolved, profile, inwardDirection)) {
@@ -473,21 +764,38 @@ std::optional<glm::vec3> resolvePointWithClearance(
     }
 
     for (int iteration = 0; iteration < kClearanceProjectionIterations; ++iteration) {
+        if (isCancelled()) {
+            return std::nullopt;
+        }
         glm::vec2 correction(0.0f);
         bool anyOutside = false;
-        for (int sampleIndex = 0; sampleIndex < kClearanceSampleDirections; ++sampleIndex) {
-            const glm::vec2 direction = clearanceSampleDirection(sampleIndex);
-            const float clearanceDistance = supportDistance(profile, direction, inwardDirection);
+        bool cancelledDuringSamples = false;
+        int boundarySampleCount = 0;
+        visitClearanceBoundaryOffsets(
+            profile,
+            inwardDirection,
+            kClearanceSampleDirections,
+            [&](const glm::vec2& offset) {
+            if (isCancelled()) {
+                cancelledDuringSamples = true;
+                return false;
+            }
+            ++boundarySampleCount;
             const glm::vec3 samplePoint(
-                resolved.x + direction.x * clearanceDistance,
+                resolved.x + offset.x,
                 resolved.y,
-                resolved.z + direction.y * clearanceDistance
+                resolved.z + offset.y
             );
             if (pointInsideAuthoredWalkableSurface(runtime, samplePoint)) {
-                continue;
+                return true;
             }
 
             anyOutside = true;
+            const float clearanceDistance = glm::length(offset);
+            if (clearanceDistance <= kPlaneEpsilon) {
+                return true;
+            }
+            const glm::vec2 direction = offset / clearanceDistance;
             float insideT = 0.0f;
             float outsideT = 1.0f;
             for (int searchStep = 0; searchStep < kClearanceBinarySearchSteps; ++searchStep) {
@@ -504,6 +812,10 @@ std::optional<glm::vec3> resolvePointWithClearance(
                 }
             }
             correction -= direction * (clearanceDistance * (1.0f - insideT));
+            return true;
+        });
+        if (cancelledDuringSamples) {
+            return std::nullopt;
         }
 
         if (!anyOutside) {
@@ -515,7 +827,8 @@ std::optional<glm::vec3> resolvePointWithClearance(
             break;
         }
 
-        const glm::vec2 delta = correction / static_cast<float>(kClearanceSampleDirections);
+        const glm::vec2 delta = correction /
+            static_cast<float>(std::max(boundarySampleCount, 1));
         bool advanced = false;
         float stepScale = 1.0f;
         while (stepScale >= 0.125f) {
@@ -587,8 +900,63 @@ std::optional<glm::vec3> resolvePointWithClearance(
 
     considerCandidate(resolved);
     considerProjectedCandidate(resolved);
-    for (std::size_t cellIndex = 0; cellIndex < runtime.bakedCells.size(); ++cellIndex) {
+
+    std::vector<std::pair<float, std::size_t>> nearestCells{};
+    nearestCells.reserve(runtime.bakedCells.size());
+    const glm::vec2 pointXZ(point.x, point.z);
+    for (std::size_t cellIndex = 0u;
+         cellIndex < runtime.bakedCells.size();
+         ++cellIndex) {
+        const NavRuntimeCell& cell = runtime.bakedCells[cellIndex];
+        const glm::vec2 closest =
+            closestPointOnPolygonXZ(pointXZ, cell.verticesXZ);
+        const float score =
+            glm::distance(pointXZ, closest) +
+            std::abs(point.y - cell.elevationY) * 2.0f;
+        nearestCells.emplace_back(score, cellIndex);
+    }
+    const std::size_t candidateCellCount = std::min(
+        nearestCells.size(),
+        kMaxClearanceProjectionCandidateCells
+    );
+    std::partial_sort(
+        nearestCells.begin(),
+        nearestCells.begin() +
+            static_cast<std::ptrdiff_t>(candidateCellCount),
+        nearestCells.end()
+    );
+    for (std::size_t candidateIndex = 0u;
+         candidateIndex < candidateCellCount;
+         ++candidateIndex) {
+        if (isCancelled()) {
+            return std::nullopt;
+        }
+        const std::size_t cellIndex = nearestCells[candidateIndex].second;
+        const NavRuntimeCell& cell = runtime.bakedCells[cellIndex];
         const glm::vec3 cellCenter = cellCenter3(runtime, cellIndex);
+        const glm::vec2 closest =
+            closestPointOnPolygonXZ(pointXZ, cell.verticesXZ);
+        const glm::vec2 centerXZ(cellCenter.x, cellCenter.z);
+        const glm::vec2 towardCenter = centerXZ - closest;
+        const float distanceToCenter = glm::length(towardCenter);
+        if (distanceToCenter > kPlaneEpsilon) {
+            const float insetDistance = std::min(
+                distanceToCenter,
+                std::max(
+                    conservativeClearanceRadius(profile) * 1.25f,
+                    0.05f
+                )
+            );
+            const glm::vec2 inset =
+                closest + towardCenter / distanceToCenter * insetDistance;
+            const glm::vec3 insetPoint(
+                inset.x,
+                cell.elevationY,
+                inset.y
+            );
+            considerCandidate(insetPoint);
+            considerProjectedCandidate(insetPoint);
+        }
         considerCandidate(cellCenter);
         considerProjectedCandidate(cellCenter);
     }
@@ -599,11 +967,26 @@ std::optional<glm::vec3> resolvePointWithClearance(
     );
     float searchLimit = std::max(nominalClearance * 4.0f, 1.0f);
     if (const std::optional<std::size_t> nearest = findNearestCell(runtime, point); nearest.has_value()) {
-        searchLimit = std::max(searchLimit, glm::distance(point, cellCenter3(runtime, *nearest)) + nominalClearance * 2.0f);
+        const NavRuntimeCell& cell = runtime.bakedCells[*nearest];
+        const glm::vec2 closest =
+            closestPointOnPolygonXZ(pointXZ, cell.verticesXZ);
+        const glm::vec3 closestPoint(
+            closest.x,
+            cell.elevationY,
+            closest.y
+        );
+        searchLimit = std::max(
+            searchLimit,
+            glm::distance(point, closestPoint) +
+                nominalClearance * 2.0f
+        );
     }
 
     const float radiusStep = std::max(nominalClearance * 0.25f, 0.05f);
     for (float radius = radiusStep; radius <= searchLimit; radius += radiusStep) {
+        if (isCancelled()) {
+            return std::nullopt;
+        }
         for (int sampleIndex = 0; sampleIndex < kClearanceSampleDirections; ++sampleIndex) {
             const glm::vec2 direction = clearanceSampleDirection(sampleIndex);
             considerCandidate(glm::vec3(
@@ -614,6 +997,44 @@ std::optional<glm::vec3> resolvePointWithClearance(
         }
     }
     return bestCandidate;
+}
+
+std::optional<glm::vec3> projectEndpointOntoWalkableLayer(
+    const NavigationSolveView& runtime,
+    const glm::vec3& point
+) {
+    const glm::vec2 pointXZ(point.x, point.z);
+    std::optional<glm::vec3> projected{};
+    float nearestVerticalDistance = kEndpointProjectionTolerance +
+        kPolygonEpsilon;
+    for (std::size_t cellIndex = 0u;
+         cellIndex < runtime.bakedCells.size();
+         ++cellIndex) {
+        const NavRuntimeCell& cell = runtime.bakedCells[cellIndex];
+        const float verticalDistance =
+            std::abs(point.y - cell.elevationY);
+        if (verticalDistance > nearestVerticalDistance) {
+            continue;
+        }
+        if (cellIndex < runtime.bakedCellMinXZ.size() &&
+            cellIndex < runtime.bakedCellMaxXZ.size() &&
+            (pointXZ.x < runtime.bakedCellMinXZ[cellIndex].x -
+                    kPolygonEpsilon ||
+             pointXZ.x > runtime.bakedCellMaxXZ[cellIndex].x +
+                    kPolygonEpsilon ||
+             pointXZ.y < runtime.bakedCellMinXZ[cellIndex].y -
+                    kPolygonEpsilon ||
+             pointXZ.y > runtime.bakedCellMaxXZ[cellIndex].y +
+                    kPolygonEpsilon)) {
+            continue;
+        }
+        if (!pointInOrOnPolygonXZ(pointXZ, cell.verticesXZ)) {
+            continue;
+        }
+        nearestVerticalDistance = verticalDistance;
+        projected = glm::vec3(point.x, cell.elevationY, point.z);
+    }
+    return projected;
 }
 
 NavigationSolveView makeSolveView(const NavigationRuntime& runtime) {
@@ -628,7 +1049,9 @@ NavigationSolveView makeSolveView(const NavigationRuntime& runtime) {
         runtime.bakedCellBoundaryVertices,
         runtime.polygonToCellIndices,
         runtime.cellToPolygonIndices,
-        runtime.graph
+        runtime.graph,
+        runtime.polyanyaMesh.get(),
+        runtime.bakedCellsHaveInteriorOverlap
     };
 }
 
@@ -644,7 +1067,9 @@ NavigationSolveView makeSolveView(const NavigationSolveSnapshot& snapshot) {
         snapshot.bakedCellBoundaryVertices,
         snapshot.polygonToCellIndices,
         snapshot.cellToPolygonIndices,
-        snapshot.graph
+        snapshot.graph,
+        snapshot.polyanyaMesh.get(),
+        snapshot.bakedCellsHaveInteriorOverlap
     };
 }
 
@@ -660,7 +1085,9 @@ std::shared_ptr<const NavigationSolveSnapshot> buildSolveSnapshot(const Navigati
         runtime.bakedCellBoundaryVertices,
         runtime.polygonToCellIndices,
         runtime.cellToPolygonIndices,
-        runtime.graph
+        runtime.graph,
+        runtime.polyanyaMesh,
+        runtime.bakedCellsHaveInteriorOverlap
     });
 }
 
@@ -671,6 +1098,19 @@ void appendPathCorner(std::vector<glm::vec3>& corners, const glm::vec3& point, f
     corners.push_back(point);
 }
 
+float pathLength(
+    const glm::vec3& start,
+    const std::vector<glm::vec3>& corners
+) {
+    float length = 0.0f;
+    glm::vec3 previous = start;
+    for (const glm::vec3& corner : corners) {
+        length += glm::distance(previous, corner);
+        previous = corner;
+    }
+    return length;
+}
+
 render::FrameCounterRecord makeNavigationCounter(const char* name, std::int64_t value) {
     return render::FrameCounterRecord{name, value, "Navigation"};
 }
@@ -679,6 +1119,22 @@ void applyPathResult(NavAgentComponent& agent, const glm::vec3& destination, std
     agent.pathCorners = std::move(corners);
     agent.destination = destination;
     agent.moving = !agent.pathCorners.empty();
+}
+
+void snapAgentToResolvedStart(
+    World& world,
+    EntityId entity,
+    TransformComponent& transform,
+    const glm::vec3& resolvedStart
+) {
+    if (nearlyEqualVec3(
+            transform.position,
+            resolvedStart,
+            kPolygonEpsilon)) {
+        return;
+    }
+    transform.position = resolvedStart;
+    world.markTransformsDirty(entity);
 }
 
 std::optional<NavigationSystem::PartialPathResult> consumePartialPathResult(
@@ -833,6 +1289,50 @@ bool pointInOrOnPolygonXZ(const glm::vec2& point, const std::vector<glm::vec2>& 
         }
     }
     return pointInPolygonXZ(point, polygon);
+}
+
+glm::vec2 closestPointOnSegmentXZ(
+    const glm::vec2& point,
+    const glm::vec2& segmentStart,
+    const glm::vec2& segmentEnd
+) {
+    const glm::vec2 segment = segmentEnd - segmentStart;
+    const float segmentLengthSquared = glm::dot(segment, segment);
+    const float segmentT = segmentLengthSquared > kPlaneEpsilon
+        ? std::clamp(
+            glm::dot(point - segmentStart, segment) /
+                segmentLengthSquared,
+            0.0f,
+            1.0f
+        )
+        : 0.0f;
+    return segmentStart + segment * segmentT;
+}
+
+glm::vec2 closestPointOnPolygonXZ(
+    const glm::vec2& point,
+    const std::vector<glm::vec2>& polygon
+) {
+    if (polygon.empty() || pointInOrOnPolygonXZ(point, polygon)) {
+        return point;
+    }
+
+    glm::vec2 closest = polygon.front();
+    float closestDistanceSquared =
+        glm::dot(point - closest, point - closest);
+    for (std::size_t index = 0u; index < polygon.size(); ++index) {
+        const glm::vec2& edgeStart = polygon[index];
+        const glm::vec2& edgeEnd = polygon[(index + 1u) % polygon.size()];
+        const glm::vec2 candidate =
+            closestPointOnSegmentXZ(point, edgeStart, edgeEnd);
+        const float distanceSquared =
+            glm::dot(point - candidate, point - candidate);
+        if (distanceSquared < closestDistanceSquared) {
+            closest = candidate;
+            closestDistanceSquared = distanceSquared;
+        }
+    }
+    return closest;
 }
 
 bool pointInTriangleXZ(const glm::vec2& point, const WalkableTriangle& tri) {
@@ -1114,13 +1614,19 @@ std::pair<glm::vec2, glm::vec2> polygonBoundsXZ(const std::vector<glm::vec2>& po
 
 std::vector<std::vector<glm::vec2>> subtractConvexPolygon(
     const std::vector<glm::vec2>& subject,
-    const BlockingFootprint& clipper
+    const std::vector<glm::vec2>& clipperVertices,
+    const glm::vec2& clipperMin,
+    const glm::vec2& clipperMax
 ) {
     if (!polygonHasArea(subject)) {
         return {};
     }
     const auto [subjectMin, subjectMax] = polygonBoundsXZ(subject);
-    if (!boundsOverlapXZ(subjectMin, subjectMax, clipper.minXZ, clipper.maxXZ)) {
+    if (!boundsOverlapXZ(
+            subjectMin,
+            subjectMax,
+            clipperMin,
+            clipperMax)) {
         return {subject};
     }
 
@@ -1128,20 +1634,114 @@ std::vector<std::vector<glm::vec2>> subtractConvexPolygon(
     std::vector<glm::vec2> intersection = subject;
     // Each outside piece satisfies all prior clipper half-planes, so the
     // pieces are convex and non-overlapping while their union is subject - clipper.
-    for (std::size_t edgeIndex = 0; edgeIndex < clipper.verticesXZ.size(); ++edgeIndex) {
-        const glm::vec2& edgeA = clipper.verticesXZ[edgeIndex];
-        const glm::vec2& edgeB = clipper.verticesXZ[(edgeIndex + 1u) % clipper.verticesXZ.size()];
+    for (std::size_t edgeIndex = 0; edgeIndex < clipperVertices.size(); ++edgeIndex) {
+        const glm::vec2& edgeA = clipperVertices[edgeIndex];
+        const glm::vec2& edgeB = clipperVertices[
+            (edgeIndex + 1u) % clipperVertices.size()
+        ];
 
-        std::vector<glm::vec2> outside = clipConvexPolygonAgainstHalfPlane(intersection, edgeA, edgeB, false);
+        std::vector<glm::vec2> outside =
+            clipConvexPolygonAgainstHalfPlane(
+                intersection,
+                edgeA,
+                edgeB,
+                false,
+                0.0f
+            );
         if (polygonHasArea(outside)) {
             outsidePieces.push_back(std::move(outside));
         }
-        intersection = clipConvexPolygonAgainstHalfPlane(intersection, edgeA, edgeB, true);
+        intersection = clipConvexPolygonAgainstHalfPlane(
+            intersection,
+            edgeA,
+            edgeB,
+            true,
+            0.0f
+        );
         if (!polygonHasArea(intersection)) {
             break;
         }
     }
     return outsidePieces;
+}
+
+std::vector<std::vector<glm::vec2>> subtractConvexPolygon(
+    const std::vector<glm::vec2>& subject,
+    const BlockingFootprint& clipper
+) {
+    return subtractConvexPolygon(
+        subject,
+        clipper.verticesXZ,
+        clipper.minXZ,
+        clipper.maxXZ
+    );
+}
+
+bool convexPolygonsHaveInteriorOverlap(
+    const std::vector<glm::vec2>& lhs,
+    const std::vector<glm::vec2>& rhs
+) {
+    if (!polygonHasArea(lhs) || !polygonHasArea(rhs)) {
+        return false;
+    }
+    const auto removedArea = [](
+        const std::vector<glm::vec2>& subject,
+        const std::vector<glm::vec2>& clipper
+    ) {
+        const auto [clipperMin, clipperMax] = polygonBoundsXZ(clipper);
+        const double subjectArea = std::abs(
+            static_cast<double>(polygonSignedArea(subject))
+        );
+        double outsideArea = 0.0;
+        for (const std::vector<glm::vec2>& piece : subtractConvexPolygon(
+                 subject,
+                 clipper,
+                 clipperMin,
+                 clipperMax)) {
+            outsideArea += std::abs(
+                static_cast<double>(polygonSignedArea(piece))
+            );
+        }
+        return std::max(0.0, subjectArea - outsideArea);
+    };
+    const auto perimeter = [](const std::vector<glm::vec2>& polygon) {
+        double result = 0.0;
+        for (std::size_t index = 0u; index < polygon.size(); ++index) {
+            result += glm::distance(
+                polygon[index],
+                polygon[(index + 1u) % polygon.size()]
+            );
+        }
+        return result;
+    };
+    const double areaTolerance = static_cast<double>(kPolygonEpsilon) *
+        std::max({1.0, perimeter(lhs), perimeter(rhs)}) * 2.0;
+    return std::max(removedArea(lhs, rhs), removedArea(rhs, lhs)) >
+        areaTolerance;
+}
+
+bool convexCellSetHasInteriorOverlap(
+    const std::vector<NavRuntimeCell>& cells
+) {
+    for (std::size_t lhs = 0u; lhs < cells.size(); ++lhs) {
+        const auto [lhsMin, lhsMax] =
+            polygonBoundsXZ(cells[lhs].verticesXZ);
+        for (std::size_t rhs = lhs + 1u; rhs < cells.size(); ++rhs) {
+            if (std::abs(cells[lhs].elevationY - cells[rhs].elevationY) >
+                    kLayerGroupingEpsilon) {
+                continue;
+            }
+            const auto [rhsMin, rhsMax] =
+                polygonBoundsXZ(cells[rhs].verticesXZ);
+            if (boundsOverlapXZ(lhsMin, lhsMax, rhsMin, rhsMax) &&
+                convexPolygonsHaveInteriorOverlap(
+                    cells[lhs].verticesXZ,
+                    cells[rhs].verticesXZ)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 glm::vec3 transformPoint3(const glm::mat4& matrix, const glm::vec3& point) {
@@ -1478,122 +2078,6 @@ void addTriangleToLayer(
     layers.push_back(LayerBuildData{elevationY, {triangle}, {}});
 }
 
-std::optional<SharedPortalResult> sharedPortal(const NavPolygon& lhs, const NavPolygon& rhs) {
-    auto appendUnique = [](std::vector<glm::vec2>& points, const glm::vec2& point) {
-        for (const glm::vec2& existing : points) {
-            if (nearlyEqualVec2(existing, point)) {
-                return;
-            }
-        }
-        points.push_back(point);
-    };
-
-    auto appendSegmentIntersections = [&](std::vector<glm::vec2>& points,
-                                          const glm::vec2& a,
-                                          const glm::vec2& b,
-                                          const glm::vec2& c,
-                                          const glm::vec2& d) {
-        const glm::vec2 r = b - a;
-        const glm::vec2 s = d - c;
-        const float rxs = cross2(r, s);
-        const float qpxr = cross2(c - a, r);
-
-        if (std::abs(rxs) <= kPolygonEpsilon && std::abs(qpxr) <= kPolygonEpsilon) {
-            for (const glm::vec2& candidate : {a, b, c, d}) {
-                if (pointOnSegmentXZ(candidate, a, b) && pointOnSegmentXZ(candidate, c, d)) {
-                    appendUnique(points, candidate);
-                }
-            }
-            return;
-        }
-        if (std::abs(rxs) <= kPolygonEpsilon) {
-            return;
-        }
-
-        const float t = cross2(c - a, s) / rxs;
-        const float u = cross2(c - a, r) / rxs;
-        if (t < -kPolygonEpsilon || t > 1.0f + kPolygonEpsilon || u < -kPolygonEpsilon || u > 1.0f + kPolygonEpsilon) {
-            return;
-        }
-        appendUnique(points, a + r * t);
-    };
-
-    std::vector<glm::vec2> shared{};
-    shared.reserve(lhs.verticesXZ.size() + rhs.verticesXZ.size());
-    for (const glm::vec2& lhsVertex : lhs.verticesXZ) {
-        if (pointInOrOnPolygonXZ(lhsVertex, rhs.verticesXZ)) {
-            appendUnique(shared, lhsVertex);
-        }
-    }
-    for (const glm::vec2& rhsVertex : rhs.verticesXZ) {
-        if (pointInOrOnPolygonXZ(rhsVertex, lhs.verticesXZ)) {
-            appendUnique(shared, rhsVertex);
-        }
-    }
-    for (std::size_t lhsIndex = 0; lhsIndex < lhs.verticesXZ.size(); ++lhsIndex) {
-        const glm::vec2& lhsA = lhs.verticesXZ[lhsIndex];
-        const glm::vec2& lhsB = lhs.verticesXZ[(lhsIndex + 1u) % lhs.verticesXZ.size()];
-        for (std::size_t rhsIndex = 0; rhsIndex < rhs.verticesXZ.size(); ++rhsIndex) {
-            const glm::vec2& rhsA = rhs.verticesXZ[rhsIndex];
-            const glm::vec2& rhsB = rhs.verticesXZ[(rhsIndex + 1u) % rhs.verticesXZ.size()];
-            appendSegmentIntersections(shared, lhsA, lhsB, rhsA, rhsB);
-        }
-    }
-    if (shared.empty()) {
-        return std::nullopt;
-    }
-    if (shared.size() == 1u) {
-        return std::nullopt;
-    }
-
-    const glm::vec2 origin = shared.front();
-    std::optional<glm::vec2> axisPoint{};
-    bool allColinear = true;
-    for (std::size_t index = 1; index < shared.size(); ++index) {
-        if (nearlyEqualVec2(origin, shared[index])) {
-            continue;
-        }
-        axisPoint = shared[index];
-        break;
-    }
-    if (axisPoint.has_value()) {
-        const glm::vec2 axis = *axisPoint - origin;
-        for (std::size_t index = 1; index < shared.size(); ++index) {
-            if (std::abs(cross2(axis, shared[index] - origin)) > kPolygonEpsilon) {
-                allColinear = false;
-                break;
-            }
-        }
-    }
-
-    if (!allColinear) {
-        return std::nullopt;
-    }
-
-    glm::vec2 bestA = shared[0];
-    glm::vec2 bestB = shared[1];
-    float bestDistance = glm::dot(bestB - bestA, bestB - bestA);
-    for (std::size_t i = 0; i < shared.size(); ++i) {
-        for (std::size_t j = i + 1u; j < shared.size(); ++j) {
-            const float distance = glm::dot(shared[j] - shared[i], shared[j] - shared[i]);
-            if (distance > bestDistance) {
-                bestDistance = distance;
-                bestA = shared[i];
-                bestB = shared[j];
-            }
-        }
-    }
-    if (nearlyEqualVec2(bestA, bestB)) {
-        return std::nullopt;
-    }
-    return SharedPortalResult{bestA, bestB};
-}
-
-std::optional<SharedPortalResult> sharedPortal(const NavRuntimeCell& lhs, const NavRuntimeCell& rhs) {
-    const NavPolygon lhsPolygon{-1, lhs.elevationY, lhs.verticesXZ};
-    const NavPolygon rhsPolygon{-1, rhs.elevationY, rhs.verticesXZ};
-    return sharedPortal(lhsPolygon, rhsPolygon);
-}
 
 void ensureCCW(std::vector<glm::vec2>& vertices) {
     if (vertices.size() < 3u) {
@@ -1664,7 +2148,8 @@ std::vector<glm::vec2> clipConvexPolygonAgainstHalfPlane(
     const std::vector<glm::vec2>& polygon,
     const glm::vec2& lineA,
     const glm::vec2& lineB,
-    bool keepLeft
+    bool keepLeft,
+    float tolerance
 ) {
     if (polygon.size() < 3u) {
         return {};
@@ -1687,8 +2172,8 @@ std::vector<glm::vec2> clipConvexPolygonAgainstHalfPlane(
         const glm::vec2& previous = polygon[(index + polygon.size() - 1u) % polygon.size()];
         const float currentSide = signedSide(current);
         const float previousSide = signedSide(previous);
-        const bool currentInside = currentSide >= -kPolygonEpsilon;
-        const bool previousInside = previousSide >= -kPolygonEpsilon;
+        const bool currentInside = currentSide >= -tolerance;
+        const bool previousInside = previousSide >= -tolerance;
 
         if (currentInside != previousInside) {
             const glm::vec2 segmentDir = current - previous;
@@ -1706,32 +2191,243 @@ std::vector<glm::vec2> clipConvexPolygonAgainstHalfPlane(
     return normalizePolygonVertices(output);
 }
 
-std::vector<std::vector<glm::vec2>> splitConvexPolygonByLine(
-    const std::vector<glm::vec2>& polygon,
-    const glm::vec2& lineA,
-    const glm::vec2& lineB
+bool convexFootprintInsideWalkableSurface(
+    const NavigationSolveView& runtime,
+    const std::vector<glm::vec2>& footprint,
+    float elevationY,
+    const std::vector<std::size_t>* candidateCells
 ) {
-    if (polygon.size() < 3u || nearlyEqualVec2(lineA, lineB)) {
-        return {polygon};
+    const float sweptArea = std::abs(polygonSignedArea(footprint));
+    if (sweptArea <= kPolygonEpsilon) {
+        return true;
     }
 
-    bool hasPositive = false;
-    bool hasNegative = false;
-    for (const glm::vec2& vertex : polygon) {
-        const float side = cross2(lineB - lineA, vertex - lineA);
-        hasPositive |= side > kPolygonEpsilon;
-        hasNegative |= side < -kPolygonEpsilon;
+    glm::vec2 boundsMin(std::numeric_limits<float>::max());
+    glm::vec2 boundsMax(std::numeric_limits<float>::lowest());
+    for (const glm::vec2& point : footprint) {
+        boundsMin = glm::min(boundsMin, point);
+        boundsMax = glm::max(boundsMax, point);
     }
-    if (!(hasPositive && hasNegative)) {
-        return {polygon};
+    // Subtract the walkable cells from the footprint instead of adding clipped
+    // areas. The latter double-counts overlaps in imported/authored meshes and
+    // can accept a footprint that actually crosses a hole.
+    std::vector<std::vector<glm::vec2>> uncovered{footprint};
+    const double coverageTolerance = std::max(
+        static_cast<double>(kPolygonEpsilon) * 0.25,
+        static_cast<double>(sweptArea) * 1.0e-6
+    );
+    const auto cellCouldOverlapFootprint = [&](std::size_t cellIndex) {
+        if (cellIndex >= runtime.bakedCells.size()) {
+            return false;
+        }
+        const NavRuntimeCell& cell = runtime.bakedCells[cellIndex];
+        return std::abs(elevationY - cell.elevationY) <=
+                kLayerGroupingEpsilon &&
+            (cellIndex >= runtime.bakedCellMinXZ.size() ||
+             cellIndex >= runtime.bakedCellMaxXZ.size() ||
+             boundsOverlapXZ(
+                 boundsMin,
+                 boundsMax,
+                 runtime.bakedCellMinXZ[cellIndex],
+                 runtime.bakedCellMaxXZ[cellIndex]));
+    };
+    if (!runtime.bakedCellsHaveInteriorOverlap) {
+        double coveredArea = 0.0;
+        const auto accumulateCell = [&](std::size_t cellIndex) {
+            if (!cellCouldOverlapFootprint(cellIndex)) {
+                return;
+            }
+            const std::vector<glm::vec2> clipped = clipConvexPolygons(
+                footprint,
+                runtime.bakedCells[cellIndex].verticesXZ
+            );
+            if (clipped.size() >= 3u) {
+                coveredArea += std::abs(
+                    static_cast<double>(polygonSignedArea(clipped))
+                );
+            }
+        };
+        if (candidateCells != nullptr) {
+            for (std::size_t cellIndex : *candidateCells) {
+                accumulateCell(cellIndex);
+            }
+        } else {
+            for (std::size_t cellIndex = 0u;
+                 cellIndex < runtime.bakedCells.size();
+                 ++cellIndex) {
+                accumulateCell(cellIndex);
+            }
+        }
+        return coveredArea + coverageTolerance >=
+            static_cast<double>(sweptArea);
+    }
+    const auto subtractCell = [&](std::size_t cellIndex) {
+        if (uncovered.empty() || !cellCouldOverlapFootprint(cellIndex)) {
+            return;
+        }
+        const NavRuntimeCell& cell = runtime.bakedCells[cellIndex];
+        const glm::vec2 cellMin = cellIndex < runtime.bakedCellMinXZ.size()
+            ? runtime.bakedCellMinXZ[cellIndex]
+            : polygonBoundsXZ(cell.verticesXZ).first;
+        const glm::vec2 cellMax = cellIndex < runtime.bakedCellMaxXZ.size()
+            ? runtime.bakedCellMaxXZ[cellIndex]
+            : polygonBoundsXZ(cell.verticesXZ).second;
+        std::vector<std::vector<glm::vec2>> remaining{};
+        for (const std::vector<glm::vec2>& piece : uncovered) {
+            std::vector<std::vector<glm::vec2>> pieces =
+                subtractConvexPolygon(
+                    piece,
+                    cell.verticesXZ,
+                    cellMin,
+                    cellMax
+                );
+            for (std::vector<glm::vec2>& outside : pieces) {
+                remaining.push_back(std::move(outside));
+            }
+        }
+        uncovered = std::move(remaining);
+    };
+    if (candidateCells != nullptr) {
+        for (std::size_t cellIndex : *candidateCells) {
+            subtractCell(cellIndex);
+            if (uncovered.empty()) {
+                break;
+            }
+        }
+    } else {
+        for (std::size_t cellIndex = 0u;
+             cellIndex < runtime.bakedCells.size() && !uncovered.empty();
+             ++cellIndex) {
+            subtractCell(cellIndex);
+        }
+    }
+    double uncoveredArea = 0.0;
+    for (const std::vector<glm::vec2>& piece : uncovered) {
+        uncoveredArea += std::abs(
+            static_cast<double>(polygonSignedArea(piece))
+        );
+        if (uncoveredArea > coverageTolerance) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool boxSweepInsideWalkableSurface(
+    const NavigationSolveView& runtime,
+    const glm::vec3& from,
+    const glm::vec3& to,
+    const AgentClearanceProfile& profile,
+    const glm::vec2& preferredTravelDirection,
+    const std::vector<std::size_t>* candidateCells
+) {
+    if (profile.shape != AgentClearanceShape::Box ||
+        std::abs(from.y - to.y) > kLayerGroupingEpsilon) {
+        return false;
     }
 
-    std::vector<glm::vec2> lhs = clipConvexPolygonAgainstHalfPlane(polygon, lineA, lineB, true);
-    std::vector<glm::vec2> rhs = clipConvexPolygonAgainstHalfPlane(polygon, lineA, lineB, false);
-    if (!polygonHasArea(lhs) || !polygonHasArea(rhs)) {
-        return {polygon};
+    const glm::vec2 forward = travelDirectionForSegment(
+        from,
+        to,
+        preferredTravelDirection
+    );
+    const glm::vec2 right(forward.y, -forward.x);
+    const glm::vec2 centerOffset =
+        rotateLocalXZToPlanar(profile.centerXZ, forward);
+    const glm::vec2 startCenter(from.x, from.z);
+    const glm::vec2 endCenter(to.x, to.z);
+    const glm::vec2 lateral = right * profile.boxHalfExtentsXZ.x;
+    const glm::vec2 longitudinal = forward * profile.boxHalfExtentsXZ.y;
+    const glm::vec2 back = startCenter + centerOffset - longitudinal;
+    const glm::vec2 front = endCenter + centerOffset + longitudinal;
+    const std::vector<glm::vec2> swept{
+        back + lateral,
+        front + lateral,
+        front - lateral,
+        back - lateral,
+    };
+    for (std::size_t edgeIndex = 0u;
+         edgeIndex < swept.size();
+         ++edgeIndex) {
+        const glm::vec2& edgeStart = swept[edgeIndex];
+        const glm::vec2& edgeEnd =
+            swept[(edgeIndex + 1u) % swept.size()];
+        if (!segmentInsideBakedWalkableSurface(
+                runtime,
+                glm::vec3(edgeStart.x, from.y, edgeStart.y),
+                glm::vec3(edgeEnd.x, from.y, edgeEnd.y),
+                candidateCells)) {
+            return false;
+        }
     }
-    return {lhs, rhs};
+    return convexFootprintInsideWalkableSurface(
+        runtime,
+        swept,
+        from.y,
+        candidateCells
+    );
+}
+
+bool sphereSweepInsideWalkableSurface(
+    const NavigationSolveView& runtime,
+    const glm::vec3& from,
+    const glm::vec3& to,
+    const AgentClearanceProfile& profile,
+    const glm::vec2& preferredTravelDirection,
+    const std::vector<std::size_t>* candidateCells
+) {
+    if (profile.shape != AgentClearanceShape::Sphere ||
+        std::abs(from.y - to.y) > kLayerGroupingEpsilon) {
+        return false;
+    }
+
+    constexpr int kCapsuleSides = 32;
+    const glm::vec2 forward = travelDirectionForSegment(
+        from,
+        to,
+        preferredTravelDirection
+    );
+    const glm::vec2 centerOffset =
+        rotateLocalXZToPlanar(profile.centerXZ, forward);
+    const glm::vec2 startCenter(from.x, from.z);
+    const glm::vec2 endCenter(to.x, to.z);
+    const float radius = std::max(0.0f, profile.sphereRadius);
+    if (radius <= kPolygonEpsilon) {
+        return true;
+    }
+
+    // A regular polygon whose inradius is the collider radius contains the
+    // exact disk. Its Minkowski sum with the travelled segment is therefore a
+    // conservative capsule: area coverage cannot miss a hole between samples.
+    const float circumradius = radius / std::cos(
+        3.14159265358979323846f / static_cast<float>(kCapsuleSides)
+    );
+    std::vector<glm::vec2> capsulePoints{};
+    capsulePoints.reserve(static_cast<std::size_t>(kCapsuleSides) * 2u);
+    for (int index = 0; index < kCapsuleSides; ++index) {
+        // Half-step rotation makes the polygon sides (rather than protruding
+        // vertices) tangent on the world axes. The polygon still contains the
+        // exact disk, while an exact circle tangent to an axis-aligned navmesh
+        // boundary remains a valid placement.
+        const float angle = kTau *
+            (static_cast<float>(index) + 0.5f) /
+            static_cast<float>(kCapsuleSides);
+        const glm::vec2 radial(
+            std::cos(angle) * circumradius,
+            std::sin(angle) * circumradius
+        );
+        capsulePoints.push_back(startCenter + centerOffset + radial);
+        capsulePoints.push_back(endCenter + centerOffset + radial);
+    }
+    const std::vector<glm::vec2> capsule = buildConvexHull(
+        std::move(capsulePoints)
+    );
+    return convexFootprintInsideWalkableSurface(
+        runtime,
+        capsule,
+        from.y,
+        candidateCells
+    );
 }
 
 std::string canonicalPolygonKey(const std::vector<glm::vec2>& vertices) {
@@ -1767,24 +2463,6 @@ std::string canonicalPolygonKey(const std::vector<glm::vec2>& vertices) {
         key << vertex.x << "," << vertex.y << ";";
     }
     return key.str();
-}
-
-std::vector<std::size_t> authoredPolygonsContainingPoint(const BakeLayerData& layer, const glm::vec2& point) {
-    std::vector<std::size_t> containing{};
-    for (const AuthoredBakePolygon& polygon : layer.polygons) {
-        if (pointInOrOnPolygonXZ(point, polygon.verticesXZ)) {
-            containing.push_back(polygon.assetIndex);
-        }
-    }
-    return containing;
-}
-
-void appendUniqueIndices(std::vector<std::size_t>& dst, const std::vector<std::size_t>& src) {
-    for (std::size_t value : src) {
-        if (std::find(dst.begin(), dst.end(), value) == dst.end()) {
-            dst.push_back(value);
-        }
-    }
 }
 
 std::vector<glm::vec2> buildConvexHull(std::vector<glm::vec2> points) {
@@ -1829,10 +2507,11 @@ std::vector<glm::vec2> buildConvexHull(std::vector<glm::vec2> points) {
     return normalizePolygonVertices(lower);
 }
 
-std::optional<SharedPortalResult> sharedBoundaryPortal(
+std::vector<SharedPortalResult> sharedBoundaryPortals(
     const NavRuntimeCell& lhs,
     const NavRuntimeCell& rhs
 ) {
+    std::vector<SharedPortalResult> portals{};
     for (std::size_t lhsIndex = 0; lhsIndex < lhs.verticesXZ.size(); ++lhsIndex) {
         const glm::vec2& lhsA = lhs.verticesXZ[lhsIndex];
         const glm::vec2& lhsB = lhs.verticesXZ[(lhsIndex + 1u) % lhs.verticesXZ.size()];
@@ -1858,16 +2537,31 @@ std::optional<SharedPortalResult> sharedBoundaryPortal(
             const float rhsEnd = glm::dot(rhsB - lhsA, axis);
             const float overlapStart = std::max(0.0f, std::min(rhsStart, rhsEnd));
             const float overlapEnd = std::min(lhsLength, std::max(rhsStart, rhsEnd));
-            if (overlapEnd - overlapStart <= kPolygonEpsilon) {
+            // Sub-millimetric overlaps are numerical slivers, not useful
+            // traversable portals. Keeping them can make several faces appear
+            // incident to the same edge after the conforming Polyanya split.
+            if (overlapEnd - overlapStart <= kPortalBroadPhaseEpsilon) {
                 continue;
             }
-            return SharedPortalResult{
+            portals.push_back(SharedPortalResult{
                 lhsA + axis * overlapStart,
                 lhsA + axis * overlapEnd
-            };
+            });
         }
     }
-    return std::nullopt;
+    return portals;
+}
+
+std::optional<SharedPortalResult> sharedBoundaryPortal(
+    const NavRuntimeCell& lhs,
+    const NavRuntimeCell& rhs
+) {
+    std::vector<SharedPortalResult> portals =
+        sharedBoundaryPortals(lhs, rhs);
+    if (portals.empty()) {
+        return std::nullopt;
+    }
+    return portals.front();
 }
 
 std::optional<std::vector<glm::vec2>> tryMergeConvexCells(
@@ -1893,6 +2587,28 @@ std::optional<std::vector<glm::vec2>> tryMergeConvexCells(
     std::vector<glm::vec2> hull = buildConvexHull(points);
     if (!polygonHasArea(hull)) {
         return std::nullopt;
+    }
+
+    // The monotone hull is assembled from float geometry. With very long
+    // world-boundary edges, float cross products can retain a point that is
+    // microscopically inside the true double-precision hull. Polyanya performs
+    // its predicates in double, so remove those non-left turns before a merged
+    // cell becomes part of the runtime mesh.
+    bool removedImpreciseTurn = true;
+    while (removedImpreciseTurn && hull.size() > 3u) {
+        removedImpreciseTurn = false;
+        for (std::size_t index = 0u; index < hull.size(); ++index) {
+            if (preciseTriArea2(
+                    hull[(index + hull.size() - 1u) % hull.size()],
+                    hull[index],
+                    hull[(index + 1u) % hull.size()]) <=
+                static_cast<double>(kPolygonEpsilon)) {
+                hull.erase(
+                    hull.begin() + static_cast<std::ptrdiff_t>(index));
+                removedImpreciseTurn = true;
+                break;
+            }
+        }
     }
 
     const float mergedArea = std::abs(polygonSignedArea(hull));
@@ -2033,6 +2749,33 @@ void mergeAdjacentConvexCellsInternal(
             continue;
         }
 
+        const auto [mergedMinXZ, mergedMaxXZ] =
+            polygonBoundsXZ(candidate.mergedVertices);
+        bool overlapsThirdCell = false;
+        for (std::size_t otherIndex = 0u;
+             otherIndex < cells.size();
+             ++otherIndex) {
+            if (otherIndex == candidate.lhs ||
+                otherIndex == candidate.rhs ||
+                active[otherIndex] == 0u ||
+                !boundsOverlapXZ(
+                    mergedMinXZ,
+                    mergedMaxXZ,
+                    bounds[otherIndex].minXZ,
+                    bounds[otherIndex].maxXZ)) {
+                continue;
+            }
+            if (convexPolygonsHaveInteriorOverlap(
+                    candidate.mergedVertices,
+                    cells[otherIndex].verticesXZ)) {
+                overlapsThirdCell = true;
+                break;
+            }
+        }
+        if (overlapsThirdCell) {
+            continue;
+        }
+
         cells[candidate.lhs].verticesXZ = std::move(candidate.mergedVertices);
         ++versions[candidate.lhs];
         active[candidate.rhs] = 0u;
@@ -2069,79 +2812,84 @@ void mergeAdjacentConvexCells(std::vector<NavRuntimeCell>& cells) {
     mergeAdjacentConvexCellsInternal(cells, nullptr);
 }
 
-void mergeAdjacentBakeCells(
-    std::vector<NavRuntimeCell>& cells,
-    std::vector<std::vector<std::size_t>>& cellToPolygonIndices
-) {
-    mergeAdjacentConvexCellsInternal(cells, &cellToPolygonIndices);
-}
-
 std::vector<NavRuntimeCell> bakeLayerRuntimeCells(
     const BakeLayerData& layer,
     std::vector<std::vector<std::size_t>>& outCellToPolygonIndices
 ) {
-    std::vector<std::pair<glm::vec2, glm::vec2>> splitLines{};
-    splitLines.reserve(layer.triangles.size() * 3u);
-    for (const BakedTriangle& triangle : layer.triangles) {
-        for (std::size_t edgeIndex = 0; edgeIndex < 3u; ++edgeIndex) {
-            splitLines.emplace_back(
-                triangle.verticesXZ[edgeIndex],
-                triangle.verticesXZ[(edgeIndex + 1u) % 3u]
-            );
-        }
-    }
-
-    std::unordered_map<std::string, std::size_t> cellIndexByKey{};
+    // Build the geometric union incrementally.  The previous implementation
+    // extended every triangle edge into an infinite split line and applied all
+    // of those lines to every triangle.  Tiny overlaps introduced by asset
+    // serialization therefore turned a few dozen authored polygons into
+    // thousands of runtime cells.
     std::vector<NavRuntimeCell> cells{};
     for (const BakedTriangle& triangle : layer.triangles) {
-        std::vector<std::vector<glm::vec2>> fragments{
+        appendConvexPolygonToUnion(
+            cells,
             {
                 triangle.verticesXZ[0],
                 triangle.verticesXZ[1],
                 triangle.verticesXZ[2],
-            }
-        };
+            },
+            layer.elevationY
+        );
+    }
+    mergeAdjacentConvexCells(cells);
 
-        for (const auto& [lineA, lineB] : splitLines) {
-            std::vector<std::vector<glm::vec2>> nextFragments{};
-            nextFragments.reserve(fragments.size() * 2u);
-            for (const std::vector<glm::vec2>& fragment : fragments) {
-                const std::vector<std::vector<glm::vec2>> split = splitConvexPolygonByLine(fragment, lineA, lineB);
-                nextFragments.insert(nextFragments.end(), split.begin(), split.end());
-            }
-            fragments = std::move(nextFragments);
+    // Normalize once after the first greedy pass. Imported/generated input can
+    // already contain overlapping convex pieces; the guarded merge above can
+    // only preserve disjointness when its input is a partition.
+    std::vector<NavRuntimeCell> disjointCells{};
+    disjointCells.reserve(cells.size());
+    for (const NavRuntimeCell& cell : cells) {
+        appendConvexPolygonToUnion(
+            disjointCells,
+            cell.verticesXZ,
+            layer.elevationY
+        );
+    }
+    mergeAdjacentConvexCells(disjointCells);
+    cells = std::move(disjointCells);
+    if (convexCellSetHasInteriorOverlap(cells)) {
+        std::vector<NavRuntimeCell> finalDisjointCells{};
+        finalDisjointCells.reserve(cells.size());
+        for (const NavRuntimeCell& cell : cells) {
+            appendConvexPolygonToUnion(
+                finalDisjointCells,
+                cell.verticesXZ,
+                layer.elevationY
+            );
         }
-
-        for (std::vector<glm::vec2>& fragment : fragments) {
-            fragment = normalizePolygonVertices(fragment);
-            if (!polygonHasArea(fragment)) {
-                continue;
-            }
-
-            const glm::vec2 centroid = polygonCentroidXZ(fragment);
-            std::vector<std::size_t> memberships = authoredPolygonsContainingPoint(layer, centroid);
-            if (memberships.empty()) {
-                continue;
-            }
-            std::sort(memberships.begin(), memberships.end());
-
-            const std::string key = canonicalPolygonKey(fragment);
-            if (key.empty()) {
-                continue;
-            }
-
-            const auto [it, inserted] = cellIndexByKey.emplace(key, cells.size());
-            if (inserted) {
-                cells.push_back(NavRuntimeCell{layer.elevationY, fragment});
-                outCellToPolygonIndices.push_back(std::move(memberships));
-            } else {
-                appendUniqueIndices(outCellToPolygonIndices[it->second], memberships);
-                std::sort(outCellToPolygonIndices[it->second].begin(), outCellToPolygonIndices[it->second].end());
-            }
-        }
+        cells = std::move(finalDisjointCells);
     }
 
-    mergeAdjacentBakeCells(cells, outCellToPolygonIndices);
+    // Membership is metadata used by authored links and by clearance handling.
+    // A runtime cell can cross an authored-polygon boundary after union/merge,
+    // so determine membership from positive-area triangle intersections rather
+    // than from the centroid alone.
+    outCellToPolygonIndices.clear();
+    outCellToPolygonIndices.resize(cells.size());
+    for (std::size_t cellIndex = 0u; cellIndex < cells.size(); ++cellIndex) {
+        std::vector<std::size_t>& memberships = outCellToPolygonIndices[cellIndex];
+        for (const BakedTriangle& triangle : layer.triangles) {
+            const std::vector<glm::vec2> triangleVertices{
+                triangle.verticesXZ[0],
+                triangle.verticesXZ[1],
+                triangle.verticesXZ[2],
+            };
+            if (!polygonHasArea(clipConvexPolygons(
+                    cells[cellIndex].verticesXZ,
+                    triangleVertices))) {
+                continue;
+            }
+            if (std::find(
+                    memberships.begin(),
+                    memberships.end(),
+                    triangle.authoredPolygonIndex) == memberships.end()) {
+                memberships.push_back(triangle.authoredPolygonIndex);
+            }
+        }
+        std::sort(memberships.begin(), memberships.end());
+    }
     return cells;
 }
 
@@ -2221,7 +2969,58 @@ bool bakeLayerHasInteriorPolygonOverlap(const BakeLayerData& layer) {
                 !boundsOverlapXZ(lhs.minXZ, lhs.maxXZ, rhs.minXZ, rhs.maxXZ)) {
                 continue;
             }
-            if (polygonHasArea(clipConvexPolygons(lhs.verticesXZ, rhs.verticesXZ))) {
+            if (convexPolygonsHaveInteriorOverlap(
+                    lhs.verticesXZ,
+                    rhs.verticesXZ)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool runtimeCellsHaveInteriorOverlap(
+    const std::vector<NavRuntimeCell>& cells,
+    const std::vector<glm::vec2>& cellMinXZ,
+    const std::vector<glm::vec2>& cellMaxXZ
+) {
+    if (cellMinXZ.size() != cells.size() || cellMaxXZ.size() != cells.size()) {
+        return true;
+    }
+    std::vector<std::size_t> sweepOrder(cells.size());
+    for (std::size_t index = 0u; index < sweepOrder.size(); ++index) {
+        sweepOrder[index] = index;
+    }
+    std::sort(
+        sweepOrder.begin(),
+        sweepOrder.end(),
+        [&](std::size_t lhs, std::size_t rhs) {
+            return cellMinXZ[lhs].x < cellMinXZ[rhs].x;
+        }
+    );
+    for (std::size_t orderIndex = 0u;
+         orderIndex < sweepOrder.size();
+         ++orderIndex) {
+        const std::size_t lhs = sweepOrder[orderIndex];
+        for (std::size_t candidateOrder = orderIndex + 1u;
+             candidateOrder < sweepOrder.size();
+             ++candidateOrder) {
+            const std::size_t rhs = sweepOrder[candidateOrder];
+            if (cellMinXZ[rhs].x > cellMaxXZ[lhs].x + kPolygonEpsilon) {
+                break;
+            }
+            if (std::abs(cells[lhs].elevationY - cells[rhs].elevationY) >
+                    kLayerGroupingEpsilon ||
+                !boundsOverlapXZ(
+                    cellMinXZ[lhs],
+                    cellMaxXZ[lhs],
+                    cellMinXZ[rhs],
+                    cellMaxXZ[rhs])) {
+                continue;
+            }
+            if (convexPolygonsHaveInteriorOverlap(
+                    cells[lhs].verticesXZ,
+                    cells[rhs].verticesXZ)) {
                 return true;
             }
         }
@@ -2234,7 +3033,15 @@ std::vector<std::size_t> findContainingCells(const NavigationRuntime& runtime, c
     const glm::vec2 pointXZ(point.x, point.z);
     for (std::size_t index = 0; index < runtime.bakedCells.size(); ++index) {
         const NavRuntimeCell& cell = runtime.bakedCells[index];
-        if (std::abs(point.y - cell.elevationY) > 1.0f) {
+        if (std::abs(point.y - cell.elevationY) > kLayerGroupingEpsilon) {
+            continue;
+        }
+        if (index < runtime.bakedCellMinXZ.size() &&
+            index < runtime.bakedCellMaxXZ.size() &&
+            (pointXZ.x < runtime.bakedCellMinXZ[index].x - kPolygonEpsilon ||
+             pointXZ.x > runtime.bakedCellMaxXZ[index].x + kPolygonEpsilon ||
+             pointXZ.y < runtime.bakedCellMinXZ[index].y - kPolygonEpsilon ||
+             pointXZ.y > runtime.bakedCellMaxXZ[index].y + kPolygonEpsilon)) {
             continue;
         }
         if (pointInOrOnPolygonXZ(pointXZ, cell.verticesXZ)) {
@@ -2251,12 +3058,12 @@ bool containsCellIndex(const std::vector<std::size_t>& indices, std::size_t cell
 std::optional<std::size_t> findNearestCell(const NavigationRuntime& runtime, const glm::vec3& point) {
     std::optional<std::size_t> bestIndex{};
     float bestDistance = std::numeric_limits<float>::max();
+    const glm::vec2 pointXZ(point.x, point.z);
     for (std::size_t index = 0; index < runtime.bakedCells.size(); ++index) {
         const NavRuntimeCell& cell = runtime.bakedCells[index];
-        const glm::vec2 center = index < runtime.bakedCellCenters.size()
-            ? runtime.bakedCellCenters[index]
-            : polygonCentroidXZ(cell.verticesXZ);
-        const float planarDistance = glm::distance(center, glm::vec2(point.x, point.z));
+        const glm::vec2 closest =
+            closestPointOnPolygonXZ(pointXZ, cell.verticesXZ);
+        const float planarDistance = glm::distance(closest, pointXZ);
         const float verticalDistance = std::abs(point.y - cell.elevationY);
         const float score = planarDistance + verticalDistance * 2.0f;
         if (score < bestDistance) {
@@ -2283,7 +3090,7 @@ std::vector<std::size_t> findLinkEndpointCells(
             continue;
         }
         const NavRuntimeCell& cell = runtime.bakedCells[cellIndex];
-        if (std::abs(point.y - cell.elevationY) > 1.0f) {
+        if (std::abs(point.y - cell.elevationY) > kLayerGroupingEpsilon) {
             continue;
         }
         if (pointInOrOnPolygonXZ(pointXZ, cell.verticesXZ)) {
@@ -2322,7 +3129,7 @@ bool pointInsideAuthoredWalkableSurface(const NavigationRuntime& runtime, const 
     const glm::vec2 pointXZ(point.x, point.z);
     for (std::size_t index = 0u; index < runtime.bakedCells.size(); ++index) {
         const NavRuntimeCell& cell = runtime.bakedCells[index];
-        if (std::abs(point.y - cell.elevationY) > 1.0f) {
+        if (std::abs(point.y - cell.elevationY) > kLayerGroupingEpsilon) {
             continue;
         }
         if (index < runtime.bakedCellMinXZ.size() && index < runtime.bakedCellMaxXZ.size() &&
@@ -2343,7 +3150,8 @@ template <typename RuntimeView>
 bool segmentInsideBakedWalkableSurface(
     const RuntimeView& runtime,
     const glm::vec3& from,
-    const glm::vec3& to
+    const glm::vec3& to,
+    const std::vector<std::size_t>* candidateCells
 ) {
     if (std::abs(from.y - to.y) > kLayerGroupingEpsilon) {
         return false;
@@ -2353,17 +3161,43 @@ bool segmentInsideBakedWalkableSurface(
     const glm::vec2 segmentEnd(to.x, to.z);
     const glm::vec2 segmentDelta = segmentEnd - segmentStart;
     if (glm::dot(segmentDelta, segmentDelta) <= kPlaneEpsilon * kPlaneEpsilon) {
+        if (candidateCells != nullptr) {
+            for (std::size_t cellIndex : *candidateCells) {
+                if (cellIndex >= runtime.bakedCells.size()) {
+                    continue;
+                }
+                const NavRuntimeCell& cell = runtime.bakedCells[cellIndex];
+                if (std::abs(from.y - cell.elevationY) <=
+                        kLayerGroupingEpsilon &&
+                    pointInOrOnPolygonXZ(segmentStart, cell.verticesXZ)) {
+                    return true;
+                }
+            }
+            return false;
+        }
         return pointInsideAuthoredWalkableSurface(runtime, from);
     }
 
     const glm::vec2 segmentMin = glm::min(segmentStart, segmentEnd);
     const glm::vec2 segmentMax = glm::max(segmentStart, segmentEnd);
-    std::vector<std::pair<float, float>> coveredIntervals{};
-    coveredIntervals.reserve(runtime.bakedCells.size());
-    for (std::size_t cellIndex = 0u; cellIndex < runtime.bakedCells.size(); ++cellIndex) {
+    // This predicate is the hot inner loop of clearance visibility searches.
+    // Reusing one scratch buffer per worker avoids thousands of heap
+    // allocations per request while remaining safe for concurrent tasks.
+    thread_local std::vector<std::pair<float, float>> coveredIntervals{};
+    coveredIntervals.clear();
+    const std::size_t candidateCount = candidateCells != nullptr
+        ? candidateCells->size()
+        : runtime.bakedCells.size();
+    if (coveredIntervals.capacity() < candidateCount) {
+        coveredIntervals.reserve(candidateCount);
+    }
+    const auto collectCoveredInterval = [&](std::size_t cellIndex) {
+        if (cellIndex >= runtime.bakedCells.size()) {
+            return;
+        }
         const NavRuntimeCell& cell = runtime.bakedCells[cellIndex];
-        if (std::abs(from.y - cell.elevationY) > 1.0f) {
-            continue;
+        if (std::abs(from.y - cell.elevationY) > kLayerGroupingEpsilon) {
+            return;
         }
         if (cellIndex < runtime.bakedCellMinXZ.size() && cellIndex < runtime.bakedCellMaxXZ.size() &&
             !boundsOverlapXZ(
@@ -2371,7 +3205,7 @@ bool segmentInsideBakedWalkableSurface(
                 segmentMax,
                 runtime.bakedCellMinXZ[cellIndex],
                 runtime.bakedCellMaxXZ[cellIndex])) {
-            continue;
+            return;
         }
 
         const float orientation = polygonSignedArea(cell.verticesXZ) >= 0.0f ? 1.0f : -1.0f;
@@ -2408,6 +3242,17 @@ bool segmentInsideBakedWalkableSurface(
                 std::clamp(entryT, 0.0f, 1.0f),
                 std::clamp(exitT, 0.0f, 1.0f)
             );
+        }
+    };
+    if (candidateCells != nullptr) {
+        for (std::size_t cellIndex : *candidateCells) {
+            collectCoveredInterval(cellIndex);
+        }
+    } else {
+        for (std::size_t cellIndex = 0u;
+             cellIndex < runtime.bakedCells.size();
+             ++cellIndex) {
+            collectCoveredInterval(cellIndex);
         }
     }
 
@@ -2451,7 +3296,15 @@ std::vector<std::size_t> findContainingCells(const NavigationSolveView& runtime,
     const glm::vec2 pointXZ(point.x, point.z);
     for (std::size_t index = 0; index < runtime.bakedCells.size(); ++index) {
         const NavRuntimeCell& cell = runtime.bakedCells[index];
-        if (std::abs(point.y - cell.elevationY) > 1.0f) {
+        if (std::abs(point.y - cell.elevationY) > kLayerGroupingEpsilon) {
+            continue;
+        }
+        if (index < runtime.bakedCellMinXZ.size() &&
+            index < runtime.bakedCellMaxXZ.size() &&
+            (pointXZ.x < runtime.bakedCellMinXZ[index].x - kPolygonEpsilon ||
+             pointXZ.x > runtime.bakedCellMaxXZ[index].x + kPolygonEpsilon ||
+             pointXZ.y < runtime.bakedCellMinXZ[index].y - kPolygonEpsilon ||
+             pointXZ.y > runtime.bakedCellMaxXZ[index].y + kPolygonEpsilon)) {
             continue;
         }
         if (pointInOrOnPolygonXZ(pointXZ, cell.verticesXZ)) {
@@ -2464,12 +3317,12 @@ std::vector<std::size_t> findContainingCells(const NavigationSolveView& runtime,
 std::optional<std::size_t> findNearestCell(const NavigationSolveView& runtime, const glm::vec3& point) {
     std::optional<std::size_t> bestIndex{};
     float bestDistance = std::numeric_limits<float>::max();
+    const glm::vec2 pointXZ(point.x, point.z);
     for (std::size_t index = 0; index < runtime.bakedCells.size(); ++index) {
         const NavRuntimeCell& cell = runtime.bakedCells[index];
-        const glm::vec2 center = index < runtime.bakedCellCenters.size()
-            ? runtime.bakedCellCenters[index]
-            : polygonCentroidXZ(cell.verticesXZ);
-        const float planarDistance = glm::distance(center, glm::vec2(point.x, point.z));
+        const glm::vec2 closest =
+            closestPointOnPolygonXZ(pointXZ, cell.verticesXZ);
+        const float planarDistance = glm::distance(closest, pointXZ);
         const float verticalDistance = std::abs(point.y - cell.elevationY);
         const float score = planarDistance + verticalDistance * 2.0f;
         if (score < bestDistance) {
@@ -2504,7 +3357,7 @@ std::vector<std::size_t> findLinkEndpointCells(
             continue;
         }
         const NavRuntimeCell& cell = runtime.bakedCells[cellIndex];
-        if (std::abs(point.y - cell.elevationY) > 1.0f) {
+        if (std::abs(point.y - cell.elevationY) > kLayerGroupingEpsilon) {
             continue;
         }
         if (pointInOrOnPolygonXZ(pointXZ, cell.verticesXZ)) {
@@ -2543,7 +3396,7 @@ bool pointInsideAuthoredWalkableSurface(const NavigationSolveView& runtime, cons
     const glm::vec2 pointXZ(point.x, point.z);
     for (std::size_t index = 0u; index < runtime.bakedCells.size(); ++index) {
         const NavRuntimeCell& cell = runtime.bakedCells[index];
-        if (std::abs(point.y - cell.elevationY) > 1.0f) {
+        if (std::abs(point.y - cell.elevationY) > kLayerGroupingEpsilon) {
             continue;
         }
         if (index < runtime.bakedCellMinXZ.size() && index < runtime.bakedCellMaxXZ.size() &&
@@ -2580,20 +3433,96 @@ bool segmentInsideAuthoredWalkableSurfaceWithClearance(
     if (!segmentInsideAuthoredWalkableSurface(runtime, from, to)) {
         return false;
     }
-
     const glm::vec2 travelDirection = travelDirectionForSegment(from, to);
-    for (int sampleIndex = 0; sampleIndex < kSegmentClearanceSampleDirections; ++sampleIndex) {
-        const glm::vec2 direction = clearanceSampleDirection(
-            sampleIndex,
-            kSegmentClearanceSampleDirections
+    if (profile.shape == AgentClearanceShape::Box) {
+        return boxSweepInsideWalkableSurface(
+            runtime,
+            from,
+            to,
+            profile,
+            travelDirection
         );
-        const float distance = supportDistance(profile, direction, travelDirection);
-        const glm::vec3 offset(direction.x * distance, 0.0f, direction.y * distance);
-        if (!segmentInsideAuthoredWalkableSurface(runtime, from + offset, to + offset)) {
-            return false;
-        }
     }
-    return true;
+
+    if (!visitClearanceBoundaryOffsets(
+            profile,
+            travelDirection,
+            kSegmentClearanceSampleDirections,
+            [&](const glm::vec2& planarOffset) {
+                const glm::vec3 offset(
+                    planarOffset.x,
+                    0.0f,
+                    planarOffset.y
+                );
+                return segmentInsideAuthoredWalkableSurface(
+                    runtime,
+                    from + offset,
+                    to + offset
+                );
+            })) {
+        return false;
+    }
+    return sphereSweepInsideWalkableSurface(
+        runtime,
+        from,
+        to,
+        profile,
+        travelDirection
+    );
+}
+
+bool segmentInsideSelectedWalkableCellsWithClearance(
+    const NavigationSolveView& runtime,
+    const glm::vec3& from,
+    const glm::vec3& to,
+    const AgentClearanceProfile& profile,
+    const std::vector<std::size_t>& candidateCells
+) {
+    if (!segmentInsideBakedWalkableSurface(
+            runtime,
+            from,
+            to,
+            &candidateCells)) {
+        return false;
+    }
+    const glm::vec2 travelDirection = travelDirectionForSegment(from, to);
+    if (profile.shape == AgentClearanceShape::Box) {
+        return boxSweepInsideWalkableSurface(
+            runtime,
+            from,
+            to,
+            profile,
+            travelDirection,
+            &candidateCells
+        );
+    }
+    if (!visitClearanceBoundaryOffsets(
+            profile,
+            travelDirection,
+            kSegmentClearanceSampleDirections,
+            [&](const glm::vec2& planarOffset) {
+                const glm::vec3 offset(
+                    planarOffset.x,
+                    0.0f,
+                    planarOffset.y
+                );
+                return segmentInsideBakedWalkableSurface(
+                    runtime,
+                    from + offset,
+                    to + offset,
+                    &candidateCells
+                );
+            })) {
+        return false;
+    }
+    return sphereSweepInsideWalkableSurface(
+        runtime,
+        from,
+        to,
+        profile,
+        travelDirection,
+        &candidateCells
+    );
 }
 
 std::vector<glm::vec3> shortcutPathCorners(
@@ -2622,262 +3551,64 @@ std::vector<glm::vec3> shortcutPathCorners(
     return optimized;
 }
 
-std::optional<std::vector<glm::vec3>> solveVisibilityPath(
-    const NavigationSolveView& runtime,
-    const glm::vec3& start,
-    const glm::vec3& destination,
-    const AgentClearanceProfile& profile,
-    const std::vector<std::size_t>& startCells
-) {
-    if (std::abs(start.y - destination.y) > kLayerGroupingEpsilon) {
-        return std::nullopt;
-    }
-    std::vector<glm::vec3> nodes{};
-    const auto addNode = [&](const glm::vec3& point) {
-        if (std::abs(point.y - start.y) > kLayerGroupingEpsilon) {
-            return;
-        }
-        if (!pointInsideAuthoredWalkableSurfaceWithClearance(
-                runtime,
-                point,
-                profile,
-                travelDirectionForSegment(start, destination))) {
-            return;
-        }
-        const auto existing = std::find_if(nodes.begin(), nodes.end(), [&](const glm::vec3& node) {
-            return nearlyEqualVec3(node, point);
-        });
-        if (existing == nodes.end()) {
-            nodes.push_back(point);
-        }
-    };
-
-    // Enumerate the same-layer component used by the visibility search.
-    std::vector<std::uint8_t> visibilityCells(runtime.bakedCells.size(), 0u);
-    std::vector<std::size_t> pendingCells{};
-    for (std::size_t startCell : startCells) {
-        if (startCell >= runtime.bakedCells.size() || visibilityCells[startCell] != 0u) {
-            continue;
-        }
-        visibilityCells[startCell] = 1u;
-        pendingCells.push_back(startCell);
-    }
-    while (!pendingCells.empty()) {
-        const std::size_t cellIndex = pendingCells.back();
-        pendingCells.pop_back();
-        for (const NavGraphEdge& edge : runtime.graph[cellIndex]) {
-            if (edge.viaLink ||
-                edge.targetCellIndex >= runtime.bakedCells.size() ||
-                visibilityCells[edge.targetCellIndex] != 0u ||
-                std::abs(runtime.bakedCells[edge.targetCellIndex].elevationY - start.y) > kLayerGroupingEpsilon) {
-                continue;
-            }
-            if (!shrinkPortal(
-                    edge.portalA,
-                    edge.portalB,
-                    profile,
-                    runtime.bakedCellCenters[edge.targetCellIndex] - runtime.bakedCellCenters[cellIndex]
-                ).has_value() &&
-                !cellsShareAuthoredPolygon(runtime, cellIndex, edge.targetCellIndex)) {
-                continue;
-            }
-            visibilityCells[edge.targetCellIndex] = 1u;
-            pendingCells.push_back(edge.targetCellIndex);
-        }
-    }
-
-    std::unordered_map<QuantizedLayerPoint, bool, QuantizedLayerPointHash> boundaryByPoint{};
-    const auto touchesWalkableBoundary = [&](const glm::vec2& point,
-                                             std::size_t cellIndex,
-                                             std::size_t vertexIndex) {
-        if (cellIndex < runtime.bakedCellBoundaryVertices.size() &&
-            vertexIndex < runtime.bakedCellBoundaryVertices[cellIndex].size()) {
-            return runtime.bakedCellBoundaryVertices[cellIndex][vertexIndex] != 0u;
-        }
-
-        const QuantizedLayerPoint key = quantizeLayerPoint(point, start.y);
-        if (const auto found = boundaryByPoint.find(key); found != boundaryByPoint.end()) {
-            return found->second;
-        }
-
-        constexpr float kBoundaryProbeDistance = kPolygonEpsilon * 8.0f;
-        bool boundary = false;
-        for (int directionIndex = 0; directionIndex < kSegmentClearanceSampleDirections; ++directionIndex) {
-            const glm::vec2 probe = point +
-                clearanceSampleDirection(directionIndex, kSegmentClearanceSampleDirections) * kBoundaryProbeDistance;
-            if (!pointInsideAuthoredWalkableSurface(runtime, glm::vec3(probe.x, start.y, probe.y))) {
-                boundary = true;
-                break;
-            }
-        }
-        boundaryByPoint.emplace(key, boundary);
-        return boundary;
-    };
-
-    addNode(start);
-    addNode(destination);
-    if (nodes.size() < 2u) {
-        return std::nullopt;
-    }
-
-    for (std::size_t cellIndex = 0; cellIndex < runtime.bakedCells.size(); ++cellIndex) {
-        if (visibilityCells[cellIndex] == 0u) {
-            continue;
-        }
-        const NavRuntimeCell& cell = runtime.bakedCells[cellIndex];
-        if (std::abs(cell.elevationY - start.y) > kLayerGroupingEpsilon) {
-            continue;
-        }
-        for (std::size_t vertexIndex = 0u; vertexIndex < cell.verticesXZ.size(); ++vertexIndex) {
-            const glm::vec2& vertex = cell.verticesXZ[vertexIndex];
-            if (touchesWalkableBoundary(vertex, cellIndex, vertexIndex)) {
-                addNode(glm::vec3(vertex.x, cell.elevationY, vertex.y));
-            }
-        }
-    }
-
-    for (std::size_t fromCell = 0u; !profile.empty() && fromCell < runtime.bakedCells.size(); ++fromCell) {
-        if (visibilityCells[fromCell] == 0u) {
-            continue;
-        }
-        for (const NavGraphEdge& edge : runtime.graph[fromCell]) {
-            const std::size_t toCell = edge.targetCellIndex;
-            if (edge.viaLink ||
-                toCell >= runtime.bakedCells.size() ||
-                fromCell >= toCell ||
-                visibilityCells[toCell] == 0u) {
-                continue;
-            }
-
-            std::optional<SharedPortalResult> portal = shrinkPortal(
-                edge.portalA,
-                edge.portalB,
-                profile,
-                runtime.bakedCellCenters[toCell] - runtime.bakedCellCenters[fromCell]
-            );
-            if (!portal.has_value() && cellsShareAuthoredPolygon(runtime, fromCell, toCell)) {
-                portal = SharedPortalResult{edge.portalA, edge.portalB};
-            }
-            if (!portal.has_value()) {
-                continue;
-            }
-            addNode(glm::vec3(portal->a.x, runtime.bakedCells[fromCell].elevationY, portal->a.y));
-            addNode(glm::vec3(portal->b.x, runtime.bakedCells[fromCell].elevationY, portal->b.y));
-        }
-    }
-
-    const std::size_t nodeCount = nodes.size();
-    std::unordered_map<std::uint64_t, bool> visibilityCache{};
-    visibilityCache.reserve(nodeCount * 4u);
-    const auto canTraverse = [&](std::size_t lhs, std::size_t rhs) {
-        const std::size_t lower = std::min(lhs, rhs);
-        const std::size_t upper = std::max(lhs, rhs);
-        const std::uint64_t key =
-            (static_cast<std::uint64_t>(lower) << 32u) |
-            static_cast<std::uint64_t>(upper);
-        if (const auto found = visibilityCache.find(key); found != visibilityCache.end()) {
-            return found->second;
-        }
-        const bool visible = segmentInsideAuthoredWalkableSurfaceWithClearance(
-            runtime,
-            nodes[lhs],
-            nodes[rhs],
-            profile
-        );
-        visibilityCache.emplace(key, visible);
-        return visible;
-    };
-
-    struct QueueItem {
-        float fScore{0.0f};
-        float gScore{0.0f};
-        std::size_t nodeIndex{0u};
-
-        bool operator<(const QueueItem& other) const {
-            return fScore > other.fScore;
-        }
-    };
-
-    std::vector<float> distances(nodeCount, std::numeric_limits<float>::max());
-    std::vector<int> parents(nodeCount, -1);
-    std::vector<std::uint8_t> closed(nodeCount, 0u);
-    std::priority_queue<QueueItem> open{};
-    distances[0] = 0.0f;
-    open.push(QueueItem{glm::distance(nodes[0], nodes[1]), 0.0f, 0u});
-    while (!open.empty()) {
-        const QueueItem current = open.top();
-        open.pop();
-        if (current.gScore > distances[current.nodeIndex] + kPolygonEpsilon || closed[current.nodeIndex] != 0u) {
-            continue;
-        }
-        closed[current.nodeIndex] = 1u;
-        if (current.nodeIndex == 1u) {
-            break;
-        }
-
-        // The Euclidean heuristic becomes the exact remaining cost when the
-        // destination is visible, so no queued route can produce a shorter path.
-        if (canTraverse(current.nodeIndex, 1u)) {
-            parents[1] = static_cast<int>(current.nodeIndex);
-            distances[1] = distances[current.nodeIndex] + glm::distance(nodes[current.nodeIndex], nodes[1]);
-            break;
-        }
-
-        for (std::size_t nextNode = 1u; nextNode < nodeCount; ++nextNode) {
-            if (nextNode == current.nodeIndex || closed[nextNode] != 0u) {
-                continue;
-            }
-            const float edgeDistance = glm::distance(nodes[current.nodeIndex], nodes[nextNode]);
-            const float candidate = distances[current.nodeIndex] + edgeDistance;
-            if (candidate >= distances[nextNode]) {
-                continue;
-            }
-            if (!canTraverse(current.nodeIndex, nextNode)) {
-                continue;
-            }
-            distances[nextNode] = candidate;
-            parents[nextNode] = static_cast<int>(current.nodeIndex);
-            open.push(QueueItem{candidate + glm::distance(nodes[nextNode], nodes[1]), candidate, nextNode});
-        }
-    }
-    if (parents[1] < 0 && !nearlyEqualVec3(start, destination)) {
-        return std::nullopt;
-    }
-
-    std::vector<glm::vec3> reversed{};
-    for (std::size_t nodeIndex = 1u; nodeIndex != 0u;) {
-        reversed.push_back(nodes[nodeIndex]);
-        const int parent = parents[nodeIndex];
-        if (parent < 0) {
-            return std::nullopt;
-        }
-        nodeIndex = static_cast<std::size_t>(parent);
-    }
-    std::reverse(reversed.begin(), reversed.end());
-    return reversed;
-}
-
 // --- Pathfinding pipeline ---
 
 std::optional<ResolvedPathEndpoints> resolvePathEndpoints(
     const NavigationSolveView& runtime,
     const glm::vec3& start,
     const glm::vec3& destination,
-    const AgentClearanceProfile& profile
+    const AgentClearanceProfile& profile,
+    const std::atomic<bool>* cancelled
 ) {
+    const auto isCancelled = [&]() {
+        return cancelled != nullptr &&
+            cancelled->load(std::memory_order_relaxed);
+    };
+    if (isCancelled()) {
+        return std::nullopt;
+    }
     ResolvedPathEndpoints endpoints{};
+    const glm::vec3 projectedStart = projectEndpointOntoWalkableLayer(
+        runtime,
+        start
+    ).value_or(start);
+    const glm::vec3 projectedDestination =
+        projectEndpointOntoWalkableLayer(runtime, destination)
+            .value_or(destination);
     if (!profile.empty()) {
-        const glm::vec2 travelDir = travelDirectionForSegment(start, destination, glm::vec2(0.0f, 1.0f));
-        endpoints.resolvedStart = resolvePointWithClearance(runtime, start, profile, travelDir).value_or(start);
+        const glm::vec2 travelDir = travelDirectionForSegment(
+            projectedStart,
+            projectedDestination,
+            glm::vec2(0.0f, 1.0f)
+        );
+        endpoints.resolvedStart = resolvePointWithClearance(
+            runtime,
+            projectedStart,
+            profile,
+            travelDir,
+            cancelled
+        ).value_or(projectedStart);
+        if (isCancelled()) {
+            return std::nullopt;
+        }
 
         // Destination: prefer approach-line projection for natural corner clearance.
         // Walk from click along reverse-approach direction until a safe position is found,
         // then binary-search back to find the nearest safe point along that line.
         const glm::vec2 approachDir = -travelDir;
-        if (pointInsideAuthoredWalkableSurfaceWithClearance(runtime, destination, profile, approachDir)) {
-            endpoints.resolvedDestination = destination;
+        if (pointInsideAuthoredWalkableSurfaceWithClearance(
+                runtime,
+                projectedDestination,
+                profile,
+                approachDir)) {
+            endpoints.resolvedDestination = projectedDestination;
         } else {
-            const float maxSearch = glm::distance(glm::vec2(start.x, start.z), glm::vec2(destination.x, destination.z));
+            const float maxSearch = glm::distance(
+                glm::vec2(projectedStart.x, projectedStart.z),
+                glm::vec2(
+                    projectedDestination.x,
+                    projectedDestination.z)
+            );
             const float nominalClearance = std::max(
                 supportDistance(profile, glm::vec2(1.0f, 0.0f), approachDir),
                 supportDistance(profile, glm::vec2(0.0f, 1.0f), approachDir)
@@ -2886,10 +3617,13 @@ std::optional<ResolvedPathEndpoints> resolvePathEndpoints(
             glm::vec3 safeFar{};
             bool foundSafe = false;
             for (float t = step; t <= maxSearch; t += step) {
+                if (isCancelled()) {
+                    return std::nullopt;
+                }
                 safeFar = glm::vec3(
-                    destination.x + approachDir.x * t,
-                    destination.y,
-                    destination.z + approachDir.y * t
+                    projectedDestination.x + approachDir.x * t,
+                    projectedDestination.y,
+                    projectedDestination.z + approachDir.y * t
                 );
                 if (pointInsideAuthoredWalkableSurface(runtime, safeFar) &&
                     pointInsideAuthoredWalkableSurfaceWithClearance(runtime, safeFar, profile, approachDir)) {
@@ -2902,7 +3636,8 @@ std::optional<ResolvedPathEndpoints> resolvePathEndpoints(
                 float safeT = 1.0f;
                 for (int s = 0; s < kClearanceBinarySearchSteps; ++s) {
                     const float midT = (unsafeT + safeT) * 0.5f;
-                    const glm::vec3 mid = destination + (safeFar - destination) * midT;
+                    const glm::vec3 mid = projectedDestination +
+                        (safeFar - projectedDestination) * midT;
                     if (pointInsideAuthoredWalkableSurface(runtime, mid) &&
                         pointInsideAuthoredWalkableSurfaceWithClearance(runtime, mid, profile, approachDir)) {
                         safeT = midT;
@@ -2910,17 +3645,36 @@ std::optional<ResolvedPathEndpoints> resolvePathEndpoints(
                         unsafeT = midT;
                     }
                 }
-                endpoints.resolvedDestination = destination + (safeFar - destination) * safeT;
+                endpoints.resolvedDestination = projectedDestination +
+                    (safeFar - projectedDestination) * safeT;
             } else {
-                endpoints.resolvedDestination = resolvePointWithClearance(runtime, destination, profile, -travelDir).value_or(destination);
+                endpoints.resolvedDestination = resolvePointWithClearance(
+                    runtime,
+                    projectedDestination,
+                    profile,
+                    -travelDir,
+                    cancelled
+                ).value_or(projectedDestination);
             }
         }
     } else {
-        endpoints.resolvedStart = start;
-        endpoints.resolvedDestination = destination;
+        endpoints.resolvedStart = projectedStart;
+        endpoints.resolvedDestination = projectedDestination;
     }
     endpoints.rawStartCells = findContainingCells(runtime, start);
     endpoints.rawTargetCells = findContainingCells(runtime, destination);
+    if (endpoints.rawStartCells.empty()) {
+        endpoints.rawStartCells = findContainingCells(
+            runtime,
+            projectedStart
+        );
+    }
+    if (endpoints.rawTargetCells.empty()) {
+        endpoints.rawTargetCells = findContainingCells(
+            runtime,
+            projectedDestination
+        );
+    }
     endpoints.startCells = findContainingCells(runtime, endpoints.resolvedStart);
     endpoints.targetCells = findContainingCells(runtime, endpoints.resolvedDestination);
     if (endpoints.startCells.empty()) {
@@ -2958,263 +3712,1106 @@ bool canSolveDirectPath(
     );
 }
 
-// Polyanya-style interval A*: a node represents every visible crossing point
-// on one portal, rooted at the last real turn in the geometric path.
-constexpr std::size_t kInvalidIntervalNode = std::numeric_limits<std::size_t>::max();
-
-struct IntervalTransition {
-    std::array<glm::vec3, 3u> points{};
-    std::uint8_t count{0u};
+struct NavCorridorStep {
+    std::size_t fromCellIndex{0u};
+    std::size_t toCellIndex{0u};
+    std::size_t edgeIndex{0u};
+    std::optional<SharedPortalResult> safePortal{};
 };
 
-struct IntervalSearchNode {
-    glm::vec3 root{0.0f};
-    glm::vec2 entryA{0.0f};
-    glm::vec2 entryB{0.0f};
-    glm::vec2 entryPortalA{0.0f};
-    glm::vec2 entryPortalB{0.0f};
-    std::size_t cellIndex{0u};
-    std::size_t previousCellIndex{kInvalidIntervalNode};
-    std::size_t parentIndex{kInvalidIntervalNode};
-    bool hasEntryInterval{false};
-    float gScore{0.0f};
-    float fScore{0.0f};
-    IntervalTransition transition{};
+struct NavTraversalState {
+    std::size_t fromCellIndex{0u};
+    std::size_t toCellIndex{0u};
+    std::size_t edgeIndex{0u};
+    glm::vec3 anchor{0.0f};
+    std::optional<SharedPortalResult> safePortal{};
+    bool traversable{false};
 };
 
-struct IntervalStateKey {
-    QuantizedVec2 root{};
-    QuantizedVec2 entryPortalA{};
-    QuantizedVec2 entryPortalB{};
-    std::size_t cellIndex{0u};
-    std::size_t previousCellIndex{kInvalidIntervalNode};
-    bool hasEntryInterval{false};
-
-    friend bool operator==(const IntervalStateKey&, const IntervalStateKey&) = default;
+enum class PortalSamplingMode {
+    Midpoint,
+    Geometry,
 };
 
-struct IntervalStateKeyHash {
-    std::size_t operator()(const IntervalStateKey& key) const noexcept {
-        QuantizedVec2Hash pointHash{};
-        std::size_t result = pointHash(key.root);
-        result ^= pointHash(key.entryPortalA) + 0x9e3779b9u + (result << 6u) + (result >> 2u);
-        result ^= pointHash(key.entryPortalB) + 0x9e3779b9u + (result << 6u) + (result >> 2u);
-        result ^= std::hash<std::size_t>{}(key.cellIndex) + 0x9e3779b9u + (result << 6u) + (result >> 2u);
-        result ^= std::hash<std::size_t>{}(key.previousCellIndex) + 0x9e3779b9u + (result << 6u) + (result >> 2u);
-        result ^= static_cast<std::size_t>(key.hasEntryInterval);
-        return result;
-    }
-};
-
-IntervalStateKey makeIntervalStateKey(const IntervalSearchNode& node) {
-    IntervalStateKey key{};
-    key.root = quantizeVec2(glm::vec2(node.root.x, node.root.z));
-    key.cellIndex = node.cellIndex;
-    key.previousCellIndex = node.previousCellIndex;
-    key.hasEntryInterval = node.hasEntryInterval;
-    if (node.hasEntryInterval) {
-        key.entryPortalA = quantizeVec2(node.entryPortalA);
-        key.entryPortalB = quantizeVec2(node.entryPortalB);
-        if (key.entryPortalB < key.entryPortalA) {
-            std::swap(key.entryPortalA, key.entryPortalB);
-        }
-    }
-    return key;
-}
-
-IntervalTransition makeIntervalTransition(
-    const glm::vec3& first,
-    const std::optional<glm::vec3>& second = std::nullopt,
-    const std::optional<glm::vec3>& third = std::nullopt
-) {
-    IntervalTransition transition{};
-    transition.points[transition.count++] = first;
-    if (second.has_value()) {
-        transition.points[transition.count++] = *second;
-    }
-    if (third.has_value()) {
-        transition.points[transition.count++] = *third;
-    }
-    return transition;
-}
-
-glm::vec2 intervalProbeInsideCell(
+std::optional<SharedPortalResult> safePortalForTraversal(
     const NavigationSolveView& runtime,
-    const IntervalSearchNode& node
-) {
-    const glm::vec2 midpoint = (node.entryA + node.entryB) * 0.5f;
-    glm::vec2 inward = runtime.bakedCellCenters[node.cellIndex] - midpoint;
-    const float inwardLength = glm::length(inward);
-    if (inwardLength <= kPlaneEpsilon) {
-        const glm::vec2 edge = node.entryB - node.entryA;
-        inward = normalizeOrFallback(glm::vec2(-edge.y, edge.x));
-    } else {
-        inward /= inwardLength;
-    }
-    return midpoint + inward * std::max(kPolygonEpsilon * 8.0f, 0.001f);
-}
-
-bool pointInsideIntervalCone(
-    const NavigationSolveView& runtime,
-    const IntervalSearchNode& node,
-    const glm::vec2& point
-) {
-    if (!node.hasEntryInterval || pointOnSegmentXZ(
-            glm::vec2(node.root.x, node.root.z), node.entryA, node.entryB)) {
-        return true;
-    }
-
-    const glm::vec2 root(node.root.x, node.root.z);
-    const glm::vec2 probe = intervalProbeInsideCell(runtime, node);
-    for (const glm::vec2& boundary : {node.entryA, node.entryB}) {
-        const glm::vec2 ray = boundary - root;
-        if (glm::dot(ray, ray) <= kPlaneEpsilon * kPlaneEpsilon) {
-            continue;
-        }
-        const float probeSide = cross2(ray, probe - root);
-        if (std::abs(probeSide) <= kPlaneEpsilon) {
-            return false;
-        }
-        const float pointSide = cross2(ray, point - root);
-        if ((probeSide > 0.0f ? pointSide : -pointSide) < -kPolygonEpsilon) {
-            return false;
-        }
-    }
-    return true;
-}
-
-std::optional<SharedPortalResult> clipPortalToIntervalCone(
-    const NavigationSolveView& runtime,
-    const IntervalSearchNode& node,
-    const SharedPortalResult& portal
-) {
-    if (!node.hasEntryInterval || pointOnSegmentXZ(
-            glm::vec2(node.root.x, node.root.z), node.entryA, node.entryB)) {
-        return portal;
-    }
-
-    const glm::vec2 root(node.root.x, node.root.z);
-    const glm::vec2 probe = intervalProbeInsideCell(runtime, node);
-    const glm::vec2 delta = portal.b - portal.a;
-    float minimumT = 0.0f;
-    float maximumT = 1.0f;
-    for (const glm::vec2& boundary : {node.entryA, node.entryB}) {
-        const glm::vec2 ray = boundary - root;
-        if (glm::dot(ray, ray) <= kPlaneEpsilon * kPlaneEpsilon) {
-            continue;
-        }
-        const float probeSide = cross2(ray, probe - root);
-        if (std::abs(probeSide) <= kPlaneEpsilon) {
-            return std::nullopt;
-        }
-        const float sign = probeSide > 0.0f ? 1.0f : -1.0f;
-        const float sideAtStart = sign * cross2(ray, portal.a - root);
-        const float sideDelta = sign * cross2(ray, delta);
-        if (std::abs(sideDelta) <= kPlaneEpsilon) {
-            if (sideAtStart < -kPolygonEpsilon) {
-                return std::nullopt;
-            }
-            continue;
-        }
-
-        const float boundaryT = (-kPolygonEpsilon - sideAtStart) / sideDelta;
-        if (sideDelta > 0.0f) {
-            minimumT = std::max(minimumT, boundaryT);
-        } else {
-            maximumT = std::min(maximumT, boundaryT);
-        }
-        if (minimumT > maximumT + kPolygonEpsilon) {
-            return std::nullopt;
-        }
-    }
-
-    minimumT = std::clamp(minimumT, 0.0f, 1.0f);
-    maximumT = std::clamp(maximumT, 0.0f, 1.0f);
-    if (minimumT > maximumT + kPolygonEpsilon) {
-        return std::nullopt;
-    }
-    return SharedPortalResult{
-        portal.a + delta * minimumT,
-        portal.a + delta * maximumT
-    };
-}
-
-bool portalsNearlyEqual(const SharedPortalResult& lhs, const SharedPortalResult& rhs) {
-    return (nearlyEqualVec2(lhs.a, rhs.a) && nearlyEqualVec2(lhs.b, rhs.b)) ||
-        (nearlyEqualVec2(lhs.a, rhs.b) && nearlyEqualVec2(lhs.b, rhs.a));
-}
-
-std::optional<SharedPortalResult> intervalPortalForEdge(
-    const NavigationSolveView& runtime,
-    const IntervalSearchNode& node,
+    std::size_t fromCellIndex,
     const NavGraphEdge& edge,
     const AgentClearanceProfile& profile
 ) {
-    if (edge.viaLink) {
+    if (edge.viaLink || edge.targetCellIndex >= runtime.bakedCells.size()) {
         return std::nullopt;
     }
-    if (profile.empty() || cellsShareAuthoredPolygon(runtime, node.cellIndex, edge.targetCellIndex)) {
-        return SharedPortalResult{edge.portalA, edge.portalB};
+    const SharedPortalResult rawPortal{edge.portalA, edge.portalB};
+    if (profile.empty() ||
+        portalIsInternalToSharedAuthoredPolygon(
+            runtime,
+            fromCellIndex,
+            edge.targetCellIndex,
+            rawPortal
+        )) {
+        return rawPortal;
     }
-
-    const glm::vec2 midpoint = (edge.portalA + edge.portalB) * 0.5f;
-    const glm::vec2 root(node.root.x, node.root.z);
-    const glm::vec2 edgeDirection = edge.portalB - edge.portalA;
-    const glm::vec2 fallbackDirection = normalizeOrFallback(glm::vec2(-edgeDirection.y, edgeDirection.x));
+    if (profile.shape == AgentClearanceShape::Box ||
+        profile.shape == AgentClearanceShape::Sphere) {
+        const glm::vec2 delta = edge.portalB - edge.portalA;
+        const float length = glm::length(delta);
+        // The heading at a graph portal is not known until an actual segment
+        // is tested. Use a superset of every heading's feasible interval here;
+        // exact swept-box validation below rejects unsafe arcs. This keeps an
+        // anisotropic or off-centre box from losing its only valid heading.
+        const float minimumExtent =
+            profile.shape == AgentClearanceShape::Sphere
+            ? profile.sphereRadius
+            : std::min(
+                profile.boxHalfExtentsXZ.x,
+                profile.boxHalfExtentsXZ.y
+            );
+        const float minimumInset = std::max(
+            0.0f,
+            minimumExtent - glm::length(profile.centerXZ)
+        );
+        if (length <= minimumInset * 2.0f + kPolygonEpsilon) {
+            return std::nullopt;
+        }
+        const glm::vec2 direction = delta / length;
+        return SharedPortalResult{
+            edge.portalA + direction * minimumInset,
+            edge.portalB - direction * minimumInset,
+        };
+    }
     return shrinkPortal(
         edge.portalA,
         edge.portalB,
         profile,
-        normalizeOrFallback(midpoint - root, fallbackDirection)
+        runtime.bakedCellCenters[edge.targetCellIndex] -
+            runtime.bakedCellCenters[fromCellIndex]
     );
 }
 
-struct IntervalPointReach {
-    float cost{0.0f};
-    std::optional<glm::vec3> turn{};
+std::optional<std::vector<NavCorridorStep>> findAStarCorridor(
+    const NavigationSolveView& runtime,
+    const ResolvedPathEndpoints& endpoints,
+    const AgentClearanceProfile& profile,
+    const std::atomic<bool>* cancelled,
+    PortalSamplingMode samplingMode,
+    const std::vector<std::pair<std::size_t, std::size_t>>&
+        blockedTraversals
+) {
+    if (runtime.bakedCells.empty() || runtime.graph.size() != runtime.bakedCells.size()) {
+        return std::nullopt;
+    }
+
+    // A state is an arrival sample on one directed portal (or link).  Keeping
+    // arrivals distinct avoids the classic centroid-A* bug where reaching a
+    // large polygon through the wrong side hides a shorter corridor.  Portal
+    // endpoints are essential: shortest paths bend at boundary vertices, while
+    // using only a portal midpoint can rank the wrong corridor before funneling.
+    std::size_t graphEdgeCount = 0u;
+    for (const std::vector<NavGraphEdge>& edges : runtime.graph) {
+        graphEdgeCount += edges.size();
+    }
+    std::vector<NavTraversalState> traversals{};
+    traversals.reserve(graphEdgeCount * 5u);
+    std::vector<std::vector<std::size_t>> outgoingTraversals(
+        runtime.graph.size()
+    );
+    const glm::vec2 startXZ(
+        endpoints.resolvedStart.x,
+        endpoints.resolvedStart.z
+    );
+    const glm::vec2 destinationXZ(
+        endpoints.resolvedDestination.x,
+        endpoints.resolvedDestination.z
+    );
+    for (std::size_t fromCellIndex = 0u;
+         fromCellIndex < runtime.graph.size();
+         ++fromCellIndex) {
+        for (std::size_t edgeIndex = 0u;
+             edgeIndex < runtime.graph[fromCellIndex].size();
+             ++edgeIndex) {
+            if (std::find(
+                    blockedTraversals.begin(),
+                    blockedTraversals.end(),
+                    std::pair{fromCellIndex, edgeIndex}
+                ) != blockedTraversals.end()) {
+                continue;
+            }
+            const NavGraphEdge& edge = runtime.graph[fromCellIndex][edgeIndex];
+            if (edge.targetCellIndex >= runtime.bakedCells.size()) {
+                continue;
+            }
+            if (edge.viaLink) {
+                if (!pointInsideAuthoredWalkableSurface(
+                        runtime,
+                        edge.linkStartPoint) ||
+                    !pointInsideAuthoredWalkableSurface(
+                        runtime,
+                        edge.linkEndPoint)) {
+                    continue;
+                }
+                if (!profile.empty()) {
+                    const glm::vec2 linkDirection =
+                        travelDirectionForSegment(
+                            edge.linkStartPoint,
+                            edge.linkEndPoint
+                        );
+                    if (!pointInsideAuthoredWalkableSurfaceWithClearance(
+                            runtime,
+                            edge.linkStartPoint,
+                            profile,
+                            linkDirection) ||
+                        !pointInsideAuthoredWalkableSurfaceWithClearance(
+                            runtime,
+                            edge.linkEndPoint,
+                            profile,
+                            linkDirection)) {
+                        continue;
+                    }
+                }
+                outgoingTraversals[fromCellIndex].push_back(
+                    traversals.size()
+                );
+                traversals.push_back(NavTraversalState{
+                    fromCellIndex,
+                    edge.targetCellIndex,
+                    edgeIndex,
+                    edge.linkEndPoint,
+                    std::nullopt,
+                    true
+                });
+                continue;
+            }
+            const std::optional<SharedPortalResult> safePortal =
+                safePortalForTraversal(
+                    runtime,
+                    fromCellIndex,
+                    edge,
+                    profile
+                );
+            if (!safePortal.has_value()) {
+                continue;
+            }
+
+            const glm::vec2 midpoint =
+                (safePortal->a + safePortal->b) * 0.5f;
+            std::vector<glm::vec2> portalSamples{midpoint};
+            if (samplingMode == PortalSamplingMode::Geometry) {
+                portalSamples = {
+                    safePortal->a,
+                    midpoint,
+                    safePortal->b,
+                    closestPointOnSegmentXZ(
+                        startXZ,
+                        safePortal->a,
+                        safePortal->b
+                    ),
+                    closestPointOnSegmentXZ(
+                        destinationXZ,
+                        safePortal->a,
+                        safePortal->b
+                    ),
+                };
+            }
+            std::vector<glm::vec2> uniqueSamples{};
+            uniqueSamples.reserve(portalSamples.size());
+            for (const glm::vec2& sample : portalSamples) {
+                if (std::none_of(
+                        uniqueSamples.begin(),
+                        uniqueSamples.end(),
+                        [&](const glm::vec2& existing) {
+                            return nearlyEqualVec2(existing, sample);
+                        })) {
+                    uniqueSamples.push_back(sample);
+                }
+            }
+            for (const glm::vec2& sample : uniqueSamples) {
+                outgoingTraversals[fromCellIndex].push_back(
+                    traversals.size()
+                );
+                traversals.push_back(NavTraversalState{
+                    fromCellIndex,
+                    edge.targetCellIndex,
+                    edgeIndex,
+                    glm::vec3(
+                        sample.x,
+                        runtime.bakedCells[
+                            edge.targetCellIndex
+                        ].elevationY,
+                        sample.y
+                    ),
+                    safePortal,
+                    true
+                });
+            }
+        }
+    }
+    const std::size_t traversalCount = traversals.size();
+    const std::size_t stateCount =
+        traversalCount + runtime.bakedCells.size();
+    const std::size_t invalidState =
+        std::numeric_limits<std::size_t>::max();
+
+    std::vector<std::uint8_t> targetCells(runtime.bakedCells.size(), 0u);
+    for (std::size_t targetCellIndex : endpoints.targetCells) {
+        if (targetCellIndex < targetCells.size()) {
+            targetCells[targetCellIndex] = 1u;
+        }
+    }
+
+    struct QueueItem {
+        float fScore{0.0f};
+        float gScore{0.0f};
+        std::size_t stateIndex{0u};
+
+        bool operator<(const QueueItem& other) const {
+            if (fScore != other.fScore) {
+                return fScore > other.fScore;
+            }
+            return gScore < other.gScore;
+        }
+    };
+
+    const auto stateCell = [&](std::size_t stateIndex) {
+        return stateIndex < traversalCount
+            ? traversals[stateIndex].toCellIndex
+            : stateIndex - traversalCount;
+    };
+    const auto stateAnchor = [&](std::size_t stateIndex) {
+        return stateIndex < traversalCount
+            ? traversals[stateIndex].anchor
+            : endpoints.resolvedStart;
+    };
+
+    std::vector<float> gScores(stateCount, std::numeric_limits<float>::max());
+    std::vector<std::size_t> parents(stateCount, invalidState);
+    std::priority_queue<QueueItem> open{};
+    for (std::size_t startCellIndex : endpoints.startCells) {
+        if (startCellIndex >= runtime.bakedCells.size()) {
+            continue;
+        }
+        const std::size_t startState = traversalCount + startCellIndex;
+        gScores[startState] = 0.0f;
+        open.push(QueueItem{
+            glm::distance(endpoints.resolvedStart, endpoints.resolvedDestination),
+            0.0f,
+            startState
+        });
+    }
+    if (open.empty()) {
+        return std::nullopt;
+    }
+
+    float bestGoalCost = std::numeric_limits<float>::max();
+    std::size_t bestGoalState = invalidState;
+    std::size_t expansionCount = 0u;
+    while (!open.empty()) {
+        if ((expansionCount++ & 31u) == 0u &&
+            cancelled != nullptr &&
+            cancelled->load(std::memory_order_relaxed)) {
+            return std::nullopt;
+        }
+
+        const QueueItem current = open.top();
+        open.pop();
+        if (current.fScore >= bestGoalCost - kPolygonEpsilon) {
+            break;
+        }
+        if (current.stateIndex >= stateCount ||
+            current.gScore > gScores[current.stateIndex] + kPolygonEpsilon) {
+            continue;
+        }
+
+        const std::size_t currentCellIndex = stateCell(current.stateIndex);
+        if (currentCellIndex >= runtime.bakedCells.size()) {
+            continue;
+        }
+        const glm::vec3 currentAnchor = stateAnchor(current.stateIndex);
+        if (targetCells[currentCellIndex] != 0u) {
+            const float goalCost =
+                current.gScore +
+                glm::distance(currentAnchor, endpoints.resolvedDestination);
+            if (goalCost < bestGoalCost) {
+                bestGoalCost = goalCost;
+                bestGoalState = current.stateIndex;
+            }
+        }
+
+        for (std::size_t traversalIndex :
+             outgoingTraversals[currentCellIndex]) {
+            const NavTraversalState& traversal = traversals[traversalIndex];
+            if (!traversal.traversable) {
+                continue;
+            }
+            const NavGraphEdge& edge =
+                runtime.graph[currentCellIndex][traversal.edgeIndex];
+            if (edge.viaLink &&
+                !segmentInsideAuthoredWalkableSurfaceWithClearance(
+                    runtime,
+                    currentAnchor,
+                    edge.linkStartPoint,
+                    profile)) {
+                continue;
+            }
+            const float stepCost = edge.viaLink
+                ? glm::distance(currentAnchor, edge.linkStartPoint) +
+                    glm::distance(edge.linkStartPoint, edge.linkEndPoint)
+                : glm::distance(currentAnchor, traversal.anchor);
+            const float candidateG = current.gScore + stepCost;
+            if (candidateG >= gScores[traversalIndex] - kPolygonEpsilon) {
+                continue;
+            }
+            gScores[traversalIndex] = candidateG;
+            parents[traversalIndex] = current.stateIndex;
+            open.push(QueueItem{
+                candidateG +
+                    glm::distance(traversal.anchor, endpoints.resolvedDestination),
+                candidateG,
+                traversalIndex
+            });
+        }
+    }
+    if (bestGoalState == invalidState) {
+        return std::nullopt;
+    }
+
+    std::vector<NavCorridorStep> reversed{};
+    for (std::size_t stateIndex = bestGoalState;
+         stateIndex < traversalCount;
+         stateIndex = parents[stateIndex]) {
+        const NavTraversalState& traversal = traversals[stateIndex];
+        reversed.push_back(NavCorridorStep{
+            traversal.fromCellIndex,
+            traversal.toCellIndex,
+            traversal.edgeIndex,
+            traversal.safePortal
+        });
+        if (parents[stateIndex] == invalidState) {
+            return std::nullopt;
+        }
+    }
+    std::reverse(reversed.begin(), reversed.end());
+    return reversed;
+}
+
+struct OrientedFunnelPortal {
+    glm::vec2 left{0.0f};
+    glm::vec2 right{0.0f};
 };
 
-std::vector<IntervalPointReach> intervalPointReaches(
-    const NavigationSolveView& runtime,
-    const IntervalSearchNode& node,
-    const glm::vec3& point,
-    const AgentClearanceProfile& profile,
-    bool requireSegmentValidation
+OrientedFunnelPortal orientPortalForCorridor(
+    const NavigationSolveView&,
+    std::size_t,
+    std::size_t,
+    const SharedPortalResult& portal
 ) {
-    std::vector<IntervalPointReach> reaches{};
-    reaches.reserve(2u);
-    const bool direct = !node.hasEntryInterval ||
-        pointInsideIntervalCone(runtime, node, glm::vec2(point.x, point.z));
-    if (direct && (!requireSegmentValidation ||
-        segmentInsideAuthoredWalkableSurfaceWithClearance(runtime, node.root, point, profile))) {
-        reaches.push_back(IntervalPointReach{
-            node.gScore + glm::distance(node.root, point),
-            std::nullopt
-        });
-        return reaches;
+    return OrientedFunnelPortal{portal.a, portal.b};
+}
+
+std::vector<glm::vec2> pullFunnelCorners(
+    const glm::vec2& start,
+    const std::vector<OrientedFunnelPortal>& corridorPortals,
+    const glm::vec2& destination
+) {
+    std::vector<OrientedFunnelPortal> portals{};
+    portals.reserve(corridorPortals.size() + 2u);
+    portals.push_back(OrientedFunnelPortal{start, start});
+    for (const OrientedFunnelPortal& portal : corridorPortals) {
+        if (nearlyEqualVec2(portal.left, portal.right)) {
+            continue;
+        }
+        if (!portals.empty() &&
+            nearlyEqualVec2(portals.back().left, portal.left) &&
+            nearlyEqualVec2(portals.back().right, portal.right)) {
+            continue;
+        }
+        portals.push_back(portal);
     }
-    if (!node.hasEntryInterval) {
-        return reaches;
+    portals.push_back(OrientedFunnelPortal{destination, destination});
+
+    std::vector<glm::vec2> corners{start};
+    glm::vec2 apex = start;
+    glm::vec2 left = start;
+    glm::vec2 right = start;
+    std::size_t apexIndex = 0u;
+    std::size_t leftIndex = 0u;
+    std::size_t rightIndex = 0u;
+
+    for (std::size_t portalIndex = 1u; portalIndex < portals.size(); ++portalIndex) {
+        const glm::vec2 candidateLeft = portals[portalIndex].left;
+        const glm::vec2 candidateRight = portals[portalIndex].right;
+
+        if (funnelArea2(apex, right, candidateRight) >=
+            -funnelAreaTolerance(apex, right, candidateRight)) {
+            if (nearlyEqualVec2(apex, right) ||
+                funnelArea2(apex, left, candidateRight) <=
+                    funnelAreaTolerance(apex, left, candidateRight)) {
+                right = candidateRight;
+                rightIndex = portalIndex;
+            } else {
+                if (!nearlyEqualVec2(corners.back(), left)) {
+                    corners.push_back(left);
+                }
+                apex = left;
+                apexIndex = leftIndex;
+                left = apex;
+                right = apex;
+                leftIndex = apexIndex;
+                rightIndex = apexIndex;
+                portalIndex = apexIndex;
+                continue;
+            }
+        }
+
+        if (funnelArea2(apex, left, candidateLeft) <=
+            funnelAreaTolerance(apex, left, candidateLeft)) {
+            if (nearlyEqualVec2(apex, left) ||
+                funnelArea2(apex, right, candidateLeft) >=
+                    -funnelAreaTolerance(apex, right, candidateLeft)) {
+                left = candidateLeft;
+                leftIndex = portalIndex;
+            } else {
+                if (!nearlyEqualVec2(corners.back(), right)) {
+                    corners.push_back(right);
+                }
+                apex = right;
+                apexIndex = rightIndex;
+                left = apex;
+                right = apex;
+                leftIndex = apexIndex;
+                rightIndex = apexIndex;
+                portalIndex = apexIndex;
+            }
+        }
     }
 
-    const float elevation = runtime.bakedCells[node.cellIndex].elevationY;
-    for (const glm::vec2& endpoint : {node.entryA, node.entryB}) {
-        const glm::vec3 turn(endpoint.x, elevation, endpoint.y);
-        if (!reaches.empty() && reaches.back().turn.has_value() &&
-            nearlyEqualVec3(*reaches.back().turn, turn)) {
-            continue;
-        }
-        if (requireSegmentValidation &&
-            (!segmentInsideAuthoredWalkableSurfaceWithClearance(runtime, node.root, turn, profile) ||
-             !segmentInsideAuthoredWalkableSurfaceWithClearance(runtime, turn, point, profile))) {
-            continue;
-        }
-        reaches.push_back(IntervalPointReach{
-            node.gScore + glm::distance(node.root, turn) + glm::distance(turn, point),
-            nearlyEqualVec3(node.root, turn) ? std::optional<glm::vec3>{} : std::optional<glm::vec3>{turn}
-        });
+    if (!nearlyEqualVec2(corners.back(), destination)) {
+        corners.push_back(destination);
     }
-    return reaches;
+    return corners;
+}
+
+std::optional<std::vector<glm::vec3>> buildFunnelPath(
+    const NavigationSolveView& runtime,
+    const ResolvedPathEndpoints& endpoints,
+    const std::vector<NavCorridorStep>& corridor
+) {
+    std::vector<glm::vec3> corners{};
+    glm::vec3 segmentStart = endpoints.resolvedStart;
+    float segmentElevation = segmentStart.y;
+    std::vector<OrientedFunnelPortal> portals{};
+
+    const auto flushFunnel = [&](const glm::vec3& segmentEnd) {
+        const std::vector<glm::vec2> pulled = pullFunnelCorners(
+            glm::vec2(segmentStart.x, segmentStart.z),
+            portals,
+            glm::vec2(segmentEnd.x, segmentEnd.z)
+        );
+        for (std::size_t pointIndex = 1u; pointIndex < pulled.size(); ++pointIndex) {
+            const bool isEndpoint = pointIndex + 1u == pulled.size();
+            const float elevation = isEndpoint ? segmentEnd.y : segmentElevation;
+            appendPathCorner(
+                corners,
+                glm::vec3(pulled[pointIndex].x, elevation, pulled[pointIndex].y),
+                kPolygonEpsilon
+            );
+        }
+    };
+
+    for (const NavCorridorStep& step : corridor) {
+        if (step.fromCellIndex >= runtime.graph.size() ||
+            step.edgeIndex >= runtime.graph[step.fromCellIndex].size()) {
+            return std::nullopt;
+        }
+        const NavGraphEdge& edge =
+            runtime.graph[step.fromCellIndex][step.edgeIndex];
+        if (!edge.viaLink) {
+            if (!step.safePortal.has_value()) {
+                return std::nullopt;
+            }
+            portals.push_back(orientPortalForCorridor(
+                runtime,
+                step.fromCellIndex,
+                step.toCellIndex,
+                *step.safePortal
+            ));
+            continue;
+        }
+
+        flushFunnel(edge.linkStartPoint);
+        appendPathCorner(corners, edge.linkEndPoint, kPolygonEpsilon);
+        segmentStart = edge.linkEndPoint;
+        segmentElevation = edge.linkEndPoint.y;
+        portals.clear();
+    }
+
+    flushFunnel(endpoints.resolvedDestination);
+    return corners;
+}
+
+std::optional<std::vector<glm::vec3>> solveCorridorClearancePath(
+    const NavigationSolveView& runtime,
+    const ResolvedPathEndpoints& endpoints,
+    const std::vector<NavCorridorStep>& corridor,
+    const AgentClearanceProfile& profile,
+    const std::atomic<bool>* cancelled,
+    bool allowVisibilityFallback,
+    bool restrictToCorridor = true,
+    VisibilityTraversalCache* sharedVisibilityCache = nullptr
+) {
+    const auto isCancelled = [&]() {
+        return cancelled != nullptr &&
+            cancelled->load(std::memory_order_relaxed);
+    };
+    if (profile.empty() || isCancelled() || !allowVisibilityFallback) {
+        return std::nullopt;
+    }
+
+    constexpr std::size_t kMaximumRankedNodes = 512u;
+    constexpr std::size_t kInitialLocalVisibilityNodes = 64u;
+    constexpr std::size_t kMaximumLocalVisibilityNodes = 72u;
+    constexpr std::size_t kMaximumRefinedVisibilityNodes = 96u;
+    constexpr float kMaximumUnrefinedStretch = 1.5f;
+    std::vector<std::uint8_t> corridorCells(runtime.bakedCells.size(), 0u);
+    for (std::size_t cell : endpoints.startCells) {
+        if (cell < corridorCells.size()) {
+            corridorCells[cell] = 1u;
+        }
+    }
+    for (std::size_t cell : endpoints.targetCells) {
+        if (cell < corridorCells.size()) {
+            corridorCells[cell] = 1u;
+        }
+    }
+    for (const NavCorridorStep& step : corridor) {
+        if (step.fromCellIndex < corridorCells.size()) {
+            corridorCells[step.fromCellIndex] = 1u;
+        }
+        if (step.toCellIndex < corridorCells.size()) {
+            corridorCells[step.toCellIndex] = 1u;
+        }
+    }
+    if (!restrictToCorridor) {
+        std::fill(corridorCells.begin(), corridorCells.end(), 0u);
+        std::vector<std::size_t> pendingCells{};
+        for (std::size_t cell : endpoints.startCells) {
+            if (cell < corridorCells.size() && corridorCells[cell] == 0u) {
+                corridorCells[cell] = 1u;
+                pendingCells.push_back(cell);
+            }
+        }
+        while (!pendingCells.empty()) {
+            const std::size_t cell = pendingCells.back();
+            pendingCells.pop_back();
+            for (const NavGraphEdge& edge : runtime.graph[cell]) {
+                if (edge.viaLink ||
+                    edge.targetCellIndex >= corridorCells.size() ||
+                    corridorCells[edge.targetCellIndex] != 0u) {
+                    continue;
+                }
+                corridorCells[edge.targetCellIndex] = 1u;
+                pendingCells.push_back(edge.targetCellIndex);
+            }
+        }
+    }
+    std::vector<glm::vec3> nodes{
+        endpoints.resolvedStart,
+        endpoints.resolvedDestination,
+    };
+    const AgentClearanceProfile nodeClearance =
+        headingIndependentNodeClearance(profile);
+    const auto nodeCanParticipate = [&](const glm::vec3& point) {
+        if (nodeClearance.empty()) {
+            return true;
+        }
+        return visitClearanceBoundaryOffsets(
+            nodeClearance,
+            glm::vec2(0.0f, 1.0f),
+            kSegmentClearanceSampleDirections,
+            [&](const glm::vec2& offset) {
+                const glm::vec3 sample(
+                    point.x + offset.x,
+                    point.y,
+                    point.z + offset.y
+                );
+                return segmentInsideBakedWalkableSurface(
+                    runtime,
+                    sample,
+                    sample
+                );
+            }
+        );
+    };
+    std::unordered_set<QuantizedLayerPoint, QuantizedLayerPointHash> emitted{
+        quantizeLayerPoint(
+            glm::vec2(endpoints.resolvedStart.x, endpoints.resolvedStart.z),
+            endpoints.resolvedStart.y
+        ),
+        quantizeLayerPoint(
+            glm::vec2(
+                endpoints.resolvedDestination.x,
+                endpoints.resolvedDestination.z
+            ),
+            endpoints.resolvedDestination.y
+        ),
+    };
+    const auto addNode = [&](const glm::vec3& point) {
+        if (isCancelled() ||
+            std::abs(point.y - endpoints.resolvedStart.y) >
+                kLayerGroupingEpsilon ||
+            !segmentInsideBakedWalkableSurface(
+                runtime,
+                point,
+                point)) {
+            return;
+        }
+        const QuantizedLayerPoint key =
+            quantizeLayerPoint(glm::vec2(point.x, point.z), point.y);
+        if (emitted.insert(key).second) {
+            nodes.push_back(point);
+        }
+    };
+
+    for (const NavCorridorStep& step : corridor) {
+        if (isCancelled()) {
+            return std::nullopt;
+        }
+        if (!step.safePortal.has_value()) {
+            continue;
+        }
+        const glm::vec2 midpoint =
+            (step.safePortal->a + step.safePortal->b) * 0.5f;
+        const float elevation =
+            step.fromCellIndex < runtime.bakedCells.size()
+            ? runtime.bakedCells[step.fromCellIndex].elevationY
+            : endpoints.resolvedStart.y;
+        addNode(glm::vec3(midpoint.x, elevation, midpoint.y));
+        addNode(glm::vec3(
+            step.safePortal->a.x,
+            elevation,
+            step.safePortal->a.y
+        ));
+        addNode(glm::vec3(
+            step.safePortal->b.x,
+            elevation,
+            step.safePortal->b.y
+        ));
+    }
+
+    const float clearanceRadius =
+        conservativeClearanceRadius(profile) * 1.05f;
+    constexpr int kCornerCandidateDirections = 8;
+    for (std::size_t cellIndex = 0u;
+         cellIndex < runtime.bakedCells.size();
+         ++cellIndex) {
+        if (isCancelled()) {
+            return std::nullopt;
+        }
+        if (corridorCells[cellIndex] == 0u) {
+            continue;
+        }
+        const NavRuntimeCell& cell = runtime.bakedCells[cellIndex];
+        for (std::size_t vertexIndex = 0u;
+             vertexIndex < cell.verticesXZ.size();
+             ++vertexIndex) {
+            if ((vertexIndex & 7u) == 0u && isCancelled()) {
+                return std::nullopt;
+            }
+            if (cellIndex < runtime.bakedCellBoundaryVertices.size() &&
+                vertexIndex <
+                    runtime.bakedCellBoundaryVertices[cellIndex].size() &&
+                runtime.bakedCellBoundaryVertices[cellIndex][vertexIndex] == 0u) {
+                continue;
+            }
+            const glm::vec2 vertex = cell.verticesXZ[vertexIndex];
+            for (int directionIndex = 0;
+                 directionIndex < kCornerCandidateDirections;
+                 ++directionIndex) {
+                const glm::vec2 direction = clearanceSampleDirection(
+                    directionIndex,
+                    kCornerCandidateDirections
+                );
+                addNode(glm::vec3(
+                    vertex.x + direction.x * clearanceRadius,
+                    cell.elevationY,
+                    vertex.y + direction.y * clearanceRadius
+                ));
+            }
+        }
+    }
+
+    if (isCancelled()) {
+        return std::nullopt;
+    }
+    if (nodes.size() > 2u) {
+        std::stable_sort(
+            nodes.begin() + 2,
+            nodes.end(),
+            [&](const glm::vec3& lhs, const glm::vec3& rhs) {
+                const float lhsScore =
+                    glm::distance(endpoints.resolvedStart, lhs) +
+                    glm::distance(lhs, endpoints.resolvedDestination);
+                const float rhsScore =
+                    glm::distance(endpoints.resolvedStart, rhs) +
+                    glm::distance(rhs, endpoints.resolvedDestination);
+                return lhsScore < rhsScore;
+            }
+        );
+        // Apply the collection budget only after global ranking. Capping while
+        // iterating cells made the result depend on cell index and could keep
+        // a 500-unit portal midpoint while dropping nearby obstacle-corner
+        // offsets owned by a later cell.
+        if (nodes.size() > kMaximumRankedNodes) {
+            nodes.resize(kMaximumRankedNodes);
+        }
+    }
+
+    // Candidate generation can emit hundreds of corner offsets. Validate
+    // clearance only after ranking them, and keep scanning until the bounded
+    // visibility graph is full. Previously every collected point paid for an
+    // exact footprint/union test before most of them were discarded.
+    std::vector<glm::vec3> rankedNodes = std::move(nodes);
+    nodes.clear();
+    nodes.reserve(std::min(
+        rankedNodes.size(),
+        kMaximumLocalVisibilityNodes
+    ));
+    nodes.push_back(rankedNodes[0]);
+    nodes.push_back(rankedNodes[1]);
+    std::size_t nextRankedNodeIndex = 2u;
+    const auto appendRankedNodes = [&](std::size_t limit) {
+        while (nextRankedNodeIndex < rankedNodes.size() &&
+               nodes.size() < limit) {
+            if (isCancelled()) {
+                return false;
+            }
+            // Segment validation below performs the exact swept-footprint
+            // test for every accepted edge. Node admission only needs a
+            // conservative boundary prefilter; applying a circumscribed
+            // capsule to an isolated node rejected valid tangent junctions
+            // before any edge was tested.
+            const glm::vec3& candidate =
+                rankedNodes[nextRankedNodeIndex++];
+            if (nodeCanParticipate(candidate)) {
+                nodes.push_back(candidate);
+            }
+        }
+        return true;
+    };
+    if (!appendRankedNodes(kInitialLocalVisibilityNodes)) {
+        return std::nullopt;
+    }
+
+    struct QueueItem {
+        float fScore{0.0f};
+        float gScore{0.0f};
+        std::size_t nodeIndex{0u};
+
+        bool operator<(const QueueItem& other) const {
+            return fScore > other.fScore;
+        }
+    };
+    std::unordered_map<std::uint64_t, bool> visibilityCache{};
+    visibilityCache.reserve(kMaximumRefinedVisibilityNodes * 32u);
+    const auto canTraverse = [&](std::size_t lhs, std::size_t rhs) {
+        const std::uint64_t key =
+            (static_cast<std::uint64_t>(lhs) << 32u) |
+            static_cast<std::uint64_t>(rhs);
+        if (const auto found = visibilityCache.find(key);
+            found != visibilityCache.end()) {
+            return found->second;
+        }
+        const VisibilitySegmentKey sharedKey{
+            exactLayerPoint(nodes[lhs]),
+            exactLayerPoint(nodes[rhs]),
+        };
+        // Every corridor in this query uses the same immutable runtime and
+        // clearance profile. Keep the key directed (box offsets can make a
+        // sweep direction-sensitive) and use exact float bits so caching can
+        // never merge two merely-near tangent segments.
+        if (sharedVisibilityCache != nullptr) {
+            if (const auto shared = sharedVisibilityCache->find(sharedKey);
+                shared != sharedVisibilityCache->end()) {
+                visibilityCache.emplace(key, shared->second);
+                return shared->second;
+            }
+        }
+        const bool visible =
+            segmentInsideAuthoredWalkableSurfaceWithClearance(
+                runtime,
+                nodes[lhs],
+                nodes[rhs],
+                profile
+            );
+        if (sharedVisibilityCache != nullptr) {
+            sharedVisibilityCache->emplace(sharedKey, visible);
+        }
+        visibilityCache.emplace(key, visible);
+        return visible;
+    };
+
+    struct VisibilitySearchResult {
+        float length{std::numeric_limits<float>::max()};
+        std::vector<std::size_t> path{};
+    };
+    const auto searchVisibilityGraph = [&]()
+        -> std::optional<VisibilitySearchResult> {
+        const std::size_t nodeCount = nodes.size();
+        std::vector<float> distances(
+            nodeCount,
+            std::numeric_limits<float>::max());
+        std::vector<std::size_t> parents(
+            nodeCount,
+            std::numeric_limits<std::size_t>::max());
+        std::vector<std::uint8_t> closed(nodeCount, 0u);
+        std::priority_queue<QueueItem> open{};
+        distances[0] = 0.0f;
+        open.push(QueueItem{
+            glm::distance(nodes[0], nodes[1]),
+            0.0f,
+            0u,
+        });
+        std::optional<VisibilitySearchResult> best{};
+        std::size_t expansionCount = 0u;
+        while (!open.empty()) {
+            if ((expansionCount++ & 15u) == 0u && isCancelled()) {
+                return std::nullopt;
+            }
+            const QueueItem current = open.top();
+            open.pop();
+            if (best.has_value() &&
+                current.fScore >= best->length - kPolygonEpsilon) {
+                break;
+            }
+            if (current.gScore >
+                    distances[current.nodeIndex] + kPolygonEpsilon ||
+                closed[current.nodeIndex] != 0u) {
+                continue;
+            }
+            closed[current.nodeIndex] = 1u;
+
+            const auto considerNode = [&](std::size_t nextNode) {
+                if (nextNode == 0u || nextNode == current.nodeIndex ||
+                    nextNode >= nodeCount || closed[nextNode] != 0u) {
+                    return;
+                }
+                const float candidate =
+                    distances[current.nodeIndex] +
+                    glm::distance(nodes[current.nodeIndex], nodes[nextNode]);
+                const float estimate = candidate +
+                    (nextNode == 1u
+                        ? 0.0f
+                        : glm::distance(nodes[nextNode], nodes[1]));
+                if ((best.has_value() &&
+                     estimate >= best->length - kPolygonEpsilon) ||
+                    (nextNode != 1u &&
+                     candidate >= distances[nextNode] - kPolygonEpsilon) ||
+                    !canTraverse(current.nodeIndex, nextNode)) {
+                    return;
+                }
+                if (nextNode == 1u) {
+                    VisibilitySearchResult result{};
+                    result.length = candidate;
+                    result.path.push_back(1u);
+                    for (std::size_t pathNode = current.nodeIndex;;) {
+                        result.path.push_back(pathNode);
+                        if (pathNode == 0u) {
+                            break;
+                        }
+                        pathNode = parents[pathNode];
+                        if (pathNode ==
+                            std::numeric_limits<std::size_t>::max()) {
+                            return;
+                        }
+                    }
+                    std::reverse(result.path.begin(), result.path.end());
+                    best = std::move(result);
+                    return;
+                }
+                distances[nextNode] = candidate;
+                parents[nextNode] = current.nodeIndex;
+                open.push(QueueItem{estimate, candidate, nextNode});
+            };
+
+            for (std::size_t nextNode = 1u;
+                 nextNode < nodeCount;
+                 ++nextNode) {
+                considerNode(nextNode);
+            }
+        }
+        return best;
+    };
+
+    std::optional<VisibilitySearchResult> visibilityResult =
+        searchVisibilityGraph();
+    if (!visibilityResult.has_value() &&
+        nodes.size() < kMaximumLocalVisibilityNodes &&
+        nextRankedNodeIndex < rankedNodes.size()) {
+        if (!appendRankedNodes(kMaximumLocalVisibilityNodes)) {
+            return std::nullopt;
+        }
+        visibilityResult = searchVisibilityGraph();
+    }
+    if (profile.shape == AgentClearanceShape::Box &&
+        restrictToCorridor &&
+        !corridor.empty()) {
+        // The cheap radial corner samples normally suffice. A very long
+        // result relative to the raw funnel is a strong signal that a
+        // heading-aligned box tangent was missed (notably on long portals,
+        // whose midpoint can be hundreds of units away). In that case only,
+        // add analytic footprint tangents at the constraining funnel corners.
+        std::vector<NavCorridorStep> rawPortalCorridor = corridor;
+        for (NavCorridorStep& step : rawPortalCorridor) {
+            if (step.fromCellIndex >= runtime.graph.size() ||
+                step.edgeIndex >= runtime.graph[step.fromCellIndex].size()) {
+                continue;
+            }
+            const NavGraphEdge& edge =
+                runtime.graph[step.fromCellIndex][step.edgeIndex];
+            if (!edge.viaLink) {
+                step.safePortal = SharedPortalResult{
+                    edge.portalA,
+                    edge.portalB,
+                };
+            }
+        }
+        const std::optional<std::vector<glm::vec3>> rawGuide =
+            buildFunnelPath(runtime, endpoints, rawPortalCorridor);
+        const float rawGuideLength = rawGuide.has_value()
+            ? pathLength(endpoints.resolvedStart, *rawGuide)
+            : std::numeric_limits<float>::max();
+        const bool needsTangentRefinement =
+            rawGuide.has_value() &&
+            (!visibilityResult.has_value() ||
+             visibilityResult->length >
+                rawGuideLength * kMaximumUnrefinedStretch);
+        if (needsTangentRefinement) {
+            std::vector<glm::vec3> tangentCandidates{};
+            tangentCandidates.reserve(rawGuide->size() * 8u);
+            const auto addTangentsForReference = [&](
+                const glm::vec3& vertex,
+                const glm::vec3& reference,
+                bool movingTowardReference
+            ) {
+                const glm::vec2 vertexXZ(vertex.x, vertex.z);
+                const glm::vec2 referenceXZ(reference.x, reference.z);
+                for (float lateralSign : {-1.0f, 1.0f}) {
+                    for (float longitudinalSign : {-1.0f, 1.0f}) {
+                        glm::vec2 forward = normalizeOrFallback(
+                            movingTowardReference
+                                ? referenceXZ - vertexXZ
+                                : vertexXZ - referenceXZ
+                        );
+                        glm::vec2 origin = vertexXZ;
+                        for (int refinement = 0;
+                             refinement < 3;
+                             ++refinement) {
+                            const glm::vec2 right(forward.y, -forward.x);
+                            const glm::vec2 center =
+                                rotateLocalXZToPlanar(
+                                    profile.centerXZ,
+                                    forward
+                                );
+                            const glm::vec2 footprintCorner = center +
+                                right * profile.boxHalfExtentsXZ.x *
+                                    lateralSign +
+                                forward * profile.boxHalfExtentsXZ.y *
+                                    longitudinalSign;
+                            origin = vertexXZ - footprintCorner;
+                            forward = normalizeOrFallback(
+                                movingTowardReference
+                                    ? referenceXZ - origin
+                                    : origin - referenceXZ,
+                                forward
+                            );
+                        }
+                        tangentCandidates.emplace_back(
+                            origin.x,
+                            vertex.y,
+                            origin.y
+                        );
+                    }
+                }
+            };
+            for (const glm::vec3& guideCorner : *rawGuide) {
+                if (nearlyEqualVec3(
+                        guideCorner,
+                        endpoints.resolvedDestination,
+                        kPolygonEpsilon)) {
+                    continue;
+                }
+                addTangentsForReference(
+                    guideCorner,
+                    endpoints.resolvedStart,
+                    false
+                );
+                addTangentsForReference(
+                    guideCorner,
+                    endpoints.resolvedDestination,
+                    true
+                );
+            }
+            std::stable_sort(
+                tangentCandidates.begin(),
+                tangentCandidates.end(),
+                [&](const glm::vec3& lhs, const glm::vec3& rhs) {
+                    const float lhsScore =
+                        glm::distance(endpoints.resolvedStart, lhs) +
+                        glm::distance(lhs, endpoints.resolvedDestination);
+                    const float rhsScore =
+                        glm::distance(endpoints.resolvedStart, rhs) +
+                        glm::distance(rhs, endpoints.resolvedDestination);
+                    return lhsScore < rhsScore;
+                }
+            );
+            std::unordered_set<
+                QuantizedLayerPoint,
+                QuantizedLayerPointHash
+            > selectedNodes{};
+            selectedNodes.reserve(nodes.size() + tangentCandidates.size());
+            for (const glm::vec3& node : nodes) {
+                selectedNodes.insert(quantizeLayerPoint(
+                    glm::vec2(node.x, node.z),
+                    node.y
+                ));
+            }
+            for (const glm::vec3& candidate : tangentCandidates) {
+                if (nodes.size() >= kMaximumRefinedVisibilityNodes ||
+                    isCancelled()) {
+                    break;
+                }
+                const QuantizedLayerPoint key = quantizeLayerPoint(
+                    glm::vec2(candidate.x, candidate.z),
+                    candidate.y
+                );
+                if (selectedNodes.insert(key).second &&
+                    nodeCanParticipate(candidate)) {
+                    nodes.push_back(candidate);
+                }
+            }
+            if (isCancelled()) {
+                return std::nullopt;
+            }
+            const std::optional<VisibilitySearchResult> refinedResult =
+                searchVisibilityGraph();
+            if (refinedResult.has_value() &&
+                (!visibilityResult.has_value() ||
+                 refinedResult->length < visibilityResult->length)) {
+                visibilityResult = refinedResult;
+            }
+        }
+    }
+    if (!visibilityResult.has_value() || visibilityResult->path.size() < 2u) {
+        return std::nullopt;
+    }
+    std::vector<glm::vec3> result{};
+    result.reserve(visibilityResult->path.size() - 1u);
+    for (std::size_t pathIndex = 1u;
+         pathIndex < visibilityResult->path.size();
+         ++pathIndex) {
+        result.push_back(nodes[visibilityResult->path[pathIndex]]);
+    }
+    return result;
 }
 
 bool segmentMatchesRuntimeLink(
@@ -3237,7 +4834,7 @@ bool segmentMatchesRuntimeLink(
     return false;
 }
 
-bool intervalPathIsValid(
+bool pathSegmentsAreValid(
     const NavigationSolveView& runtime,
     const glm::vec3& start,
     const std::vector<glm::vec3>& corners,
@@ -3254,332 +4851,105 @@ bool intervalPathIsValid(
     return true;
 }
 
-std::optional<std::vector<glm::vec3>> solveIntervalPath(
+std::optional<std::vector<glm::vec3>> solveLinkedCorridorClearancePath(
     const NavigationSolveView& runtime,
     const ResolvedPathEndpoints& endpoints,
-    const AgentClearanceProfile& profile
+    const std::vector<NavCorridorStep>& corridor,
+    const AgentClearanceProfile& profile,
+    const std::atomic<bool>* cancelled
 ) {
-    if (runtime.bakedCells.empty()) {
+    const auto isCancelled = [&]() {
+        return cancelled != nullptr &&
+            cancelled->load(std::memory_order_relaxed);
+    };
+    if (profile.empty() || isCancelled()) {
         return std::nullopt;
     }
 
-    struct QueueItem {
-        float fScore{0.0f};
-        float gScore{0.0f};
-        std::size_t nodeIndex{0u};
+    std::vector<glm::vec3> result{};
+    std::vector<NavCorridorStep> planarCorridor{};
+    ResolvedPathEndpoints planarEndpoints{};
+    planarEndpoints.resolvedStart = endpoints.resolvedStart;
+    planarEndpoints.startCells = endpoints.startCells;
 
-        bool operator<(const QueueItem& other) const {
-            if (fScore != other.fScore) {
-                return fScore > other.fScore;
-            }
-            return gScore < other.gScore;
+    const auto flushPlanar = [&](
+        const glm::vec3& segmentDestination,
+        const std::vector<std::size_t>& targetCells
+    ) -> bool {
+        if (isCancelled()) {
+            return false;
         }
-    };
-    struct GoalResult {
-        float cost{std::numeric_limits<float>::max()};
-        std::size_t parentIndex{kInvalidIntervalNode};
-        IntervalTransition transition{};
-    };
-    struct DominanceRecord {
-        float minimumT{0.0f};
-        float maximumT{1.0f};
-        float gScore{0.0f};
-        std::size_t nodeIndex{0u};
-    };
+        planarEndpoints.resolvedDestination = segmentDestination;
+        planarEndpoints.targetCells = targetCells;
 
-    std::vector<IntervalSearchNode> nodes{};
-    nodes.reserve(std::max<std::size_t>(runtime.bakedCells.size() * 8u, 64u));
-    std::vector<QueueItem> queueStorage{};
-    queueStorage.reserve(nodes.capacity());
-    std::priority_queue<QueueItem, std::vector<QueueItem>> open(
-        std::less<QueueItem>{},
-        std::move(queueStorage)
-    );
-    std::unordered_map<IntervalStateKey, std::vector<DominanceRecord>, IntervalStateKeyHash> frontierByState{};
-    frontierByState.reserve(nodes.capacity());
-    std::unordered_map<QuantizedLayerPoint, bool, QuantizedLayerPointHash> boundaryPointCache{};
-    boundaryPointCache.reserve(runtime.bakedCells.size() * 2u);
-    const auto canTurnAtEndpoint = [&](const glm::vec3& point, std::size_t cellIndex) {
-        if (!profile.empty()) {
-            return true;
-        }
-        if (cellIndex < runtime.bakedCells.size() &&
-            cellIndex < runtime.bakedCellBoundaryVertices.size()) {
-            const NavRuntimeCell& cell = runtime.bakedCells[cellIndex];
-            const std::vector<std::uint8_t>& boundaryVertices =
-                runtime.bakedCellBoundaryVertices[cellIndex];
-            for (std::size_t vertexIndex = 0u;
-                 vertexIndex < cell.verticesXZ.size() && vertexIndex < boundaryVertices.size();
-                 ++vertexIndex) {
-                if (nearlyEqualVec2(cell.verticesXZ[vertexIndex], glm::vec2(point.x, point.z))) {
-                    return boundaryVertices[vertexIndex] != 0u;
-                }
-            }
-        }
-
-        const QuantizedLayerPoint key = quantizeLayerPoint(glm::vec2(point.x, point.z), point.y);
-        if (const auto found = boundaryPointCache.find(key); found != boundaryPointCache.end()) {
-            return found->second;
-        }
-
-        constexpr float kBoundaryProbeDistance = kPolygonEpsilon * 8.0f;
-        bool boundary = false;
-        for (int directionIndex = 0; directionIndex < kSegmentClearanceSampleDirections; ++directionIndex) {
-            const glm::vec2 direction = clearanceSampleDirection(
-                directionIndex,
-                kSegmentClearanceSampleDirections
+        std::optional<std::vector<glm::vec3>> segmentCorners =
+            buildFunnelPath(runtime, planarEndpoints, planarCorridor);
+        if (!segmentCorners.has_value() ||
+            !pathSegmentsAreValid(
+                runtime,
+                planarEndpoints.resolvedStart,
+                *segmentCorners,
+                profile)) {
+            segmentCorners = solveCorridorClearancePath(
+                runtime,
+                planarEndpoints,
+                planarCorridor,
+                profile,
+                cancelled,
+                true
             );
-            if (!pointInsideAuthoredWalkableSurface(
-                    runtime,
-                    glm::vec3(
-                        point.x + direction.x * kBoundaryProbeDistance,
-                        point.y,
-                        point.z + direction.y * kBoundaryProbeDistance))) {
-                boundary = true;
-                break;
-            }
         }
-        boundaryPointCache.emplace(key, boundary);
-        return boundary;
+        if (!segmentCorners.has_value() ||
+            !pathSegmentsAreValid(
+                runtime,
+                planarEndpoints.resolvedStart,
+                *segmentCorners,
+                profile)) {
+            return false;
+        }
+        for (const glm::vec3& corner : *segmentCorners) {
+            appendPathCorner(result, corner, kPolygonEpsilon);
+        }
+        planarCorridor.clear();
+        planarEndpoints.resolvedStart = segmentDestination;
+        planarEndpoints.startCells = targetCells;
+        return true;
     };
 
-    const auto pushNode = [&](IntervalSearchNode candidate) {
-        candidate.fScore = candidate.gScore + glm::distance(candidate.root, endpoints.resolvedDestination);
-        const IntervalStateKey key = makeIntervalStateKey(candidate);
-        float minimumT = 0.0f;
-        float maximumT = 1.0f;
-        if (candidate.hasEntryInterval) {
-            const glm::vec2 portalDelta = candidate.entryPortalB - candidate.entryPortalA;
-            const float portalLengthSquared = glm::dot(portalDelta, portalDelta);
-            if (portalLengthSquared <= kPlaneEpsilon * kPlaneEpsilon) {
-                return;
-            }
-            minimumT = glm::dot(candidate.entryA - candidate.entryPortalA, portalDelta) / portalLengthSquared;
-            maximumT = glm::dot(candidate.entryB - candidate.entryPortalA, portalDelta) / portalLengthSquared;
-            if (minimumT > maximumT) {
-                std::swap(minimumT, maximumT);
-            }
-            minimumT = std::clamp(minimumT, 0.0f, 1.0f);
-            maximumT = std::clamp(maximumT, 0.0f, 1.0f);
+    for (const NavCorridorStep& step : corridor) {
+        if (isCancelled() || step.fromCellIndex >= runtime.graph.size() ||
+            step.edgeIndex >= runtime.graph[step.fromCellIndex].size()) {
+            return std::nullopt;
         }
-
-        std::vector<DominanceRecord>& frontier = frontierByState[key];
-        if (std::any_of(frontier.begin(), frontier.end(), [&](const DominanceRecord& existing) {
-                return existing.gScore <= candidate.gScore + kPolygonEpsilon &&
-                    existing.minimumT <= minimumT + kPolygonEpsilon &&
-                    existing.maximumT >= maximumT - kPolygonEpsilon;
-            })) {
-            return;
-        }
-        const std::size_t nodeIndex = nodes.size();
-        frontier.erase(std::remove_if(frontier.begin(), frontier.end(), [&](const DominanceRecord& existing) {
-            return candidate.gScore <= existing.gScore + kPolygonEpsilon &&
-                minimumT <= existing.minimumT + kPolygonEpsilon &&
-                maximumT >= existing.maximumT - kPolygonEpsilon;
-        }), frontier.end());
-        frontier.push_back(DominanceRecord{minimumT, maximumT, candidate.gScore, nodeIndex});
-        nodes.push_back(std::move(candidate));
-        open.push(QueueItem{nodes.back().fScore, nodes.back().gScore, nodeIndex});
-    };
-
-    for (std::size_t startCell : endpoints.startCells) {
-        if (startCell >= runtime.bakedCells.size()) {
+        const NavGraphEdge& edge =
+            runtime.graph[step.fromCellIndex][step.edgeIndex];
+        if (!edge.viaLink) {
+            planarCorridor.push_back(step);
             continue;
         }
-        pushNode(IntervalSearchNode{
+
+        const std::vector<std::size_t> linkStartCells{step.fromCellIndex};
+        if (!flushPlanar(edge.linkStartPoint, linkStartCells)) {
+            return std::nullopt;
+        }
+        appendPathCorner(result, edge.linkEndPoint, kPolygonEpsilon);
+        planarEndpoints.resolvedStart = edge.linkEndPoint;
+        planarEndpoints.startCells = {step.toCellIndex};
+    }
+
+    if (!flushPlanar(
+            endpoints.resolvedDestination,
+            endpoints.targetCells)) {
+        return std::nullopt;
+    }
+    if (!pathSegmentsAreValid(
+            runtime,
             endpoints.resolvedStart,
-            glm::vec2(0.0f),
-            glm::vec2(0.0f),
-            glm::vec2(0.0f),
-            glm::vec2(0.0f),
-            startCell,
-            kInvalidIntervalNode,
-            kInvalidIntervalNode,
-            false,
-            0.0f,
-            0.0f,
-            IntervalTransition{}
-        });
-    }
-    if (open.empty()) {
+            result,
+            profile)) {
         return std::nullopt;
     }
-
-    std::vector<std::uint8_t> targetCells(runtime.bakedCells.size(), 0u);
-    for (std::size_t targetCell : endpoints.targetCells) {
-        if (targetCell < targetCells.size()) {
-            targetCells[targetCell] = 1u;
-        }
-    }
-
-    GoalResult goal{};
-    while (!open.empty()) {
-        const QueueItem currentItem = open.top();
-        open.pop();
-        if (currentItem.fScore >= goal.cost - kPolygonEpsilon) {
-            break;
-        }
-        if (currentItem.nodeIndex >= nodes.size()) {
-            continue;
-        }
-        const IntervalSearchNode current = nodes[currentItem.nodeIndex];
-        const IntervalStateKey currentKey = makeIntervalStateKey(current);
-        const auto frontier = frontierByState.find(currentKey);
-        if (frontier == frontierByState.end() ||
-            std::none_of(frontier->second.begin(), frontier->second.end(), [&](const DominanceRecord& record) {
-                return record.nodeIndex == currentItem.nodeIndex;
-            })) {
-            continue;
-        }
-
-        if (current.cellIndex < targetCells.size() && targetCells[current.cellIndex] != 0u) {
-            for (const IntervalPointReach& reach : intervalPointReaches(
-                     runtime,
-                     current,
-                     endpoints.resolvedDestination,
-                     profile,
-                     !profile.empty())) {
-                if (reach.cost >= goal.cost) {
-                    continue;
-                }
-                goal.cost = reach.cost;
-                goal.parentIndex = currentItem.nodeIndex;
-                goal.transition = reach.turn.has_value()
-                    ? makeIntervalTransition(*reach.turn, endpoints.resolvedDestination)
-                    : makeIntervalTransition(endpoints.resolvedDestination);
-            }
-        }
-
-        if (current.cellIndex >= runtime.graph.size()) {
-            continue;
-        }
-        for (const NavGraphEdge& edge : runtime.graph[current.cellIndex]) {
-            if (edge.targetCellIndex >= runtime.bakedCells.size()) {
-                continue;
-            }
-            if (edge.viaLink) {
-                for (const IntervalPointReach& reach : intervalPointReaches(
-                         runtime,
-                         current,
-                         edge.linkStartPoint,
-                         profile,
-                         true)) {
-                    IntervalTransition transition{};
-                    if (reach.turn.has_value()) {
-                        transition = makeIntervalTransition(
-                            *reach.turn,
-                            edge.linkStartPoint,
-                            edge.linkEndPoint
-                        );
-                    } else {
-                        transition = makeIntervalTransition(edge.linkStartPoint, edge.linkEndPoint);
-                    }
-                    pushNode(IntervalSearchNode{
-                        edge.linkEndPoint,
-                        glm::vec2(0.0f),
-                        glm::vec2(0.0f),
-                        glm::vec2(0.0f),
-                        glm::vec2(0.0f),
-                        edge.targetCellIndex,
-                        kInvalidIntervalNode,
-                        currentItem.nodeIndex,
-                        false,
-                        reach.cost + glm::distance(edge.linkStartPoint, edge.linkEndPoint),
-                        0.0f,
-                        transition
-                    });
-                }
-                continue;
-            }
-            if (edge.targetCellIndex == current.previousCellIndex) {
-                continue;
-            }
-
-            const std::optional<SharedPortalResult> safePortal =
-                intervalPortalForEdge(runtime, current, edge, profile);
-            if (!safePortal.has_value()) {
-                continue;
-            }
-            const std::optional<SharedPortalResult> observable =
-                clipPortalToIntervalCone(runtime, current, *safePortal);
-            if (observable.has_value()) {
-                pushNode(IntervalSearchNode{
-                    current.root,
-                    observable->a,
-                    observable->b,
-                    safePortal->a,
-                    safePortal->b,
-                    edge.targetCellIndex,
-                    current.cellIndex,
-                    currentItem.nodeIndex,
-                    true,
-                    current.gScore,
-                    0.0f,
-                    IntervalTransition{}
-                });
-            }
-
-            if (!current.hasEntryInterval ||
-                (observable.has_value() && portalsNearlyEqual(*observable, *safePortal))) {
-                continue;
-            }
-            const float elevation = runtime.bakedCells[current.cellIndex].elevationY;
-            for (const glm::vec2& endpoint : {current.entryA, current.entryB}) {
-                if (!nearlyEqualVec2(endpoint, current.entryPortalA) &&
-                    !nearlyEqualVec2(endpoint, current.entryPortalB)) {
-                    continue;
-                }
-                const glm::vec3 turn(endpoint.x, elevation, endpoint.y);
-                if (!canTurnAtEndpoint(turn, current.cellIndex)) {
-                    continue;
-                }
-                if (!profile.empty() &&
-                    !segmentInsideAuthoredWalkableSurfaceWithClearance(runtime, current.root, turn, profile)) {
-                    continue;
-                }
-                const bool rootChanges = !nearlyEqualVec3(current.root, turn);
-                pushNode(IntervalSearchNode{
-                    turn,
-                    safePortal->a,
-                    safePortal->b,
-                    safePortal->a,
-                    safePortal->b,
-                    edge.targetCellIndex,
-                    current.cellIndex,
-                    currentItem.nodeIndex,
-                    true,
-                    current.gScore + glm::distance(current.root, turn),
-                    0.0f,
-                    rootChanges ? makeIntervalTransition(turn) : IntervalTransition{}
-                });
-            }
-        }
-    }
-
-    if (goal.parentIndex == kInvalidIntervalNode) {
-        return std::nullopt;
-    }
-
-    std::vector<std::size_t> lineage{};
-    for (std::size_t nodeIndex = goal.parentIndex;
-         nodeIndex != kInvalidIntervalNode;
-         nodeIndex = nodes[nodeIndex].parentIndex) {
-        lineage.push_back(nodeIndex);
-    }
-    std::reverse(lineage.begin(), lineage.end());
-
-    std::vector<glm::vec3> corners{};
-    corners.reserve(lineage.size() + 2u);
-    for (std::size_t nodeIndex : lineage) {
-        const IntervalTransition& transition = nodes[nodeIndex].transition;
-        for (std::uint8_t pointIndex = 0u; pointIndex < transition.count; ++pointIndex) {
-            appendPathCorner(corners, transition.points[pointIndex], kPolygonEpsilon);
-        }
-    }
-    for (std::uint8_t pointIndex = 0u; pointIndex < goal.transition.count; ++pointIndex) {
-        appendPathCorner(corners, goal.transition.points[pointIndex], kPolygonEpsilon);
-    }
-    return corners;
+    return result;
 }
 
 std::optional<SolvedPath> solvePathCorners(
@@ -3587,67 +4957,475 @@ std::optional<SolvedPath> solvePathCorners(
     const glm::vec3& start,
     const glm::vec3& destination,
     float arrivalRadius,
-    const AgentClearanceProfile& profile
+    const AgentClearanceProfile& profile,
+    const std::atomic<bool>* cancelled = nullptr
 ) {
+    const auto isCancelled = [&]() {
+        return cancelled != nullptr &&
+            cancelled->load(std::memory_order_relaxed);
+    };
     const std::optional<ResolvedPathEndpoints> endpoints =
-        resolvePathEndpoints(runtime, start, destination, profile);
-    if (!endpoints.has_value()) {
+        resolvePathEndpoints(
+            runtime,
+            start,
+            destination,
+            profile,
+            cancelled
+        );
+    if (!endpoints.has_value() || isCancelled()) {
         return std::nullopt;
     }
 
     if (canSolveDirectPath(runtime, *endpoints, profile)) {
         std::vector<glm::vec3> directCorners{};
         appendPathCorner(directCorners, endpoints->resolvedDestination, arrivalRadius);
-        return SolvedPath{endpoints->resolvedDestination, std::move(directCorners)};
+        return SolvedPath{
+            endpoints->resolvedDestination,
+            std::move(directCorners),
+            endpoints->resolvedStart
+        };
     }
 
-    const auto solveWithVisibility = [&]() -> std::optional<SolvedPath> {
-        const std::optional<std::vector<glm::vec3>> visibilityPath = solveVisibilityPath(
-            runtime,
-            endpoints->resolvedStart,
-            endpoints->resolvedDestination,
-            profile,
-            endpoints->startCells
+    // Polyanya searches continuous intervals instead of a handful of sampled
+    // points on each portal. On a conforming convex mesh it returns the global
+    // Euclidean shortest path directly; applying a funnel afterwards would be
+    // redundant. Off-mesh links and collider clearance remain on the legacy
+    // validated pipeline until they have an exact configuration-space mesh.
+    std::optional<std::vector<glm::vec3>> exactPlanarCorners{};
+    if (profile.empty() && runtime.polyanyaMesh != nullptr) {
+        if (std::optional<navigation_detail::PolyanyaPath> exactPath =
+                navigation_detail::findPolyanyaPath(
+                    *runtime.polyanyaMesh,
+                    endpoints->resolvedStart,
+                    endpoints->resolvedDestination,
+                    endpoints->startCells,
+                    endpoints->targetCells,
+                    cancelled);
+            exactPath.has_value() &&
+            pathSegmentsAreValid(
+                runtime,
+                endpoints->resolvedStart,
+                exactPath->corners,
+                profile)) {
+            if (exactPath->corners.size() == 1u &&
+                glm::distance(
+                    endpoints->resolvedStart,
+                    exactPath->corners.front()) <= arrivalRadius) {
+                exactPath->corners.clear();
+            }
+
+            if (runtime.asset.links.empty()) {
+                return SolvedPath{
+                    endpoints->resolvedDestination,
+                    std::move(exactPath->corners),
+                    endpoints->resolvedStart
+                };
+            }
+
+            // A NavLink only matters when it lies on some directed graph path
+            // from this query's start set to its target set.  Unresolved links,
+            // links in another component and dead-end links must not demote an
+            // otherwise exact Polyanya query to the sampled fallback.
+            std::vector<std::uint8_t> reachableFromStart(
+                runtime.graph.size(),
+                0u);
+            std::vector<std::size_t> pending{};
+            for (std::size_t cell : endpoints->startCells) {
+                if (cell < reachableFromStart.size() &&
+                    reachableFromStart[cell] == 0u) {
+                    reachableFromStart[cell] = 1u;
+                    pending.push_back(cell);
+                }
+            }
+            while (!pending.empty()) {
+                const std::size_t cell = pending.back();
+                pending.pop_back();
+                for (const NavGraphEdge& edge : runtime.graph[cell]) {
+                    if (edge.targetCellIndex < reachableFromStart.size() &&
+                        reachableFromStart[edge.targetCellIndex] == 0u) {
+                        reachableFromStart[edge.targetCellIndex] = 1u;
+                        pending.push_back(edge.targetCellIndex);
+                    }
+                }
+            }
+
+            std::vector<std::vector<std::size_t>> reverseGraph(
+                runtime.graph.size());
+            for (std::size_t cell = 0u; cell < runtime.graph.size(); ++cell) {
+                for (const NavGraphEdge& edge : runtime.graph[cell]) {
+                    if (edge.targetCellIndex < reverseGraph.size()) {
+                        reverseGraph[edge.targetCellIndex].push_back(cell);
+                    }
+                }
+            }
+            std::vector<std::uint8_t> canReachTarget(runtime.graph.size(), 0u);
+            for (std::size_t cell : endpoints->targetCells) {
+                if (cell < canReachTarget.size() && canReachTarget[cell] == 0u) {
+                    canReachTarget[cell] = 1u;
+                    pending.push_back(cell);
+                }
+            }
+            while (!pending.empty()) {
+                const std::size_t cell = pending.back();
+                pending.pop_back();
+                for (std::size_t predecessor : reverseGraph[cell]) {
+                    if (canReachTarget[predecessor] == 0u) {
+                        canReachTarget[predecessor] = 1u;
+                        pending.push_back(predecessor);
+                    }
+                }
+            }
+
+            bool hasRelevantLink = false;
+            for (std::size_t cell = 0u;
+                 cell < runtime.graph.size() && !hasRelevantLink;
+                 ++cell) {
+                if (reachableFromStart[cell] == 0u) {
+                    continue;
+                }
+                hasRelevantLink = std::any_of(
+                    runtime.graph[cell].begin(),
+                    runtime.graph[cell].end(),
+                    [&](const NavGraphEdge& edge) {
+                        return edge.viaLink &&
+                            edge.targetCellIndex < canReachTarget.size() &&
+                            canReachTarget[edge.targetCellIndex] != 0u;
+                    }
+                );
+            }
+            if (!hasRelevantLink) {
+                return SolvedPath{
+                    endpoints->resolvedDestination,
+                    std::move(exactPath->corners),
+                    endpoints->resolvedStart
+                };
+            }
+            // Keep the exact no-link route as a baseline.  The link-aware A*
+            // result below is accepted only when its validated final geometry
+            // is actually shorter.
+            exactPlanarCorners = std::move(exactPath->corners);
+        }
+    }
+
+    std::vector<std::vector<NavCorridorStep>> corridorCandidates{};
+    constexpr std::size_t kMaximumCorridorSearches = 14u;
+    std::size_t corridorSearchCount = 0u;
+    const auto appendCorridorCandidate = [&](
+        PortalSamplingMode samplingMode,
+        const std::vector<std::pair<std::size_t, std::size_t>>&
+            blockedTraversals,
+        const AgentClearanceProfile& corridorProfile
+    ) {
+        if (corridorSearchCount >= kMaximumCorridorSearches ||
+            isCancelled()) {
+            return;
+        }
+        ++corridorSearchCount;
+        std::optional<std::vector<NavCorridorStep>> candidate =
+            findAStarCorridor(
+                runtime,
+                *endpoints,
+                corridorProfile,
+                cancelled,
+                samplingMode,
+                blockedTraversals
+            );
+        if (!candidate.has_value()) {
+            return;
+        }
+        const bool duplicate = std::any_of(
+            corridorCandidates.begin(),
+            corridorCandidates.end(),
+            [&](const std::vector<NavCorridorStep>& existing) {
+                return existing.size() == candidate->size() &&
+                    std::equal(
+                        existing.begin(),
+                        existing.end(),
+                        candidate->begin(),
+                        [](const NavCorridorStep& lhs,
+                           const NavCorridorStep& rhs) {
+                            return lhs.fromCellIndex ==
+                                    rhs.fromCellIndex &&
+                                lhs.toCellIndex ==
+                                    rhs.toCellIndex &&
+                                lhs.edgeIndex == rhs.edgeIndex;
+                        }
+                    );
+            }
         );
-        if (!visibilityPath.has_value()) {
-            return std::nullopt;
+        if (!duplicate) {
+            corridorCandidates.push_back(std::move(*candidate));
         }
-        std::vector<glm::vec3> visibilityCorners{};
-        for (const glm::vec3& corner : *visibilityPath) {
-            appendPathCorner(visibilityCorners, corner, kPolygonEpsilon);
-        }
-        if (visibilityCorners.empty() ||
-            !intervalPathIsValid(runtime, endpoints->resolvedStart, visibilityCorners, profile)) {
-            return std::nullopt;
-        }
-        return SolvedPath{endpoints->resolvedDestination, std::move(visibilityCorners)};
     };
 
-    // Direction-dependent clearance creates a continuum of interval roots.
-    // The finite visibility graph avoids that state explosion and tests direct routes explicitly.
-    if (!profile.empty()) {
-        if (std::optional<SolvedPath> visibilitySolution = solveWithVisibility();
-            visibilitySolution.has_value()) {
-            return visibilitySolution;
-        }
+    constexpr std::array<PortalSamplingMode, 2u> kSamplingModes{
+        PortalSamplingMode::Midpoint,
+        PortalSamplingMode::Geometry,
+    };
+    for (PortalSamplingMode samplingMode : kSamplingModes) {
+        appendCorridorCandidate(samplingMode, {}, profile);
     }
 
-    if (std::optional<std::vector<glm::vec3>> intervalPath =
-            solveIntervalPath(runtime, *endpoints, profile);
-        intervalPath.has_value()) {
-        std::vector<glm::vec3> corners = shortcutPathCorners(
+    // Bounded k-alternative search: force deviations at evenly distributed
+    // portals of the best corridors.  Funnel length, not the A* representative
+    // polyline, decides between the resulting corridors below.
+    std::vector<std::uint8_t> endpointCells(runtime.graph.size(), 0u);
+    for (std::size_t cellIndex : endpoints->startCells) {
+        if (cellIndex < endpointCells.size()) {
+            endpointCells[cellIndex] = 1u;
+        }
+    }
+    for (std::size_t cellIndex : endpoints->targetCells) {
+        if (cellIndex < endpointCells.size()) {
+            endpointCells[cellIndex] = 1u;
+        }
+    }
+    bool graphHasBranches = false;
+    for (std::size_t cellIndex = 0u;
+         cellIndex < runtime.graph.size();
+         ++cellIndex) {
+        // Interior degree two is just a chain, while degree two at a query
+        // endpoint is already a real choice between two homotopies.
+        const std::size_t branchDegree =
+            endpointCells[cellIndex] != 0u ? 1u : 2u;
+        if (runtime.graph[cellIndex].size() > branchDegree) {
+            graphHasBranches = true;
+            break;
+        }
+    }
+    const bool shouldExploreAlternatives =
+        corridorCandidates.size() > 1u || graphHasBranches;
+    std::size_t sourceCandidateIndex = 0u;
+    while (shouldExploreAlternatives &&
+           sourceCandidateIndex < corridorCandidates.size() &&
+           corridorSearchCount < kMaximumCorridorSearches) {
+        const std::vector<NavCorridorStep> source =
+            corridorCandidates[sourceCandidateIndex++];
+        if (source.empty()) {
+            continue;
+        }
+        const std::size_t deviationCount =
+            std::min<std::size_t>(4u, source.size());
+        std::vector<std::size_t> deviationIndices{};
+        deviationIndices.reserve(deviationCount);
+        for (std::size_t deviation = 0u;
+             deviation < deviationCount;
+             ++deviation) {
+            const std::size_t stepIndex = deviationCount == 1u
+                ? 0u
+                : deviation * (source.size() - 1u) /
+                    (deviationCount - 1u);
+            if (deviationIndices.empty() ||
+                deviationIndices.back() != stepIndex) {
+                deviationIndices.push_back(stepIndex);
+            }
+        }
+        for (std::size_t stepIndex : deviationIndices) {
+            const NavCorridorStep& blockedStep = source[stepIndex];
+            const std::vector<std::pair<std::size_t, std::size_t>>
+                blockedTraversals{
+                    {
+                        blockedStep.fromCellIndex,
+                        blockedStep.edgeIndex,
+                    },
+                };
+            for (PortalSamplingMode samplingMode : kSamplingModes) {
+                appendCorridorCandidate(
+                    samplingMode,
+                    blockedTraversals,
+                    profile
+                );
+            }
+            if (corridorSearchCount >= kMaximumCorridorSearches) {
+                break;
+            }
+        }
+    }
+    if (corridorCandidates.empty() || isCancelled()) {
+        if (exactPlanarCorners.has_value() && !isCancelled()) {
+            return SolvedPath{
+                endpoints->resolvedDestination,
+                std::move(*exactPlanarCorners),
+                endpoints->resolvedStart
+            };
+        }
+        return std::nullopt;
+    }
+
+    struct CorridorPathCandidate {
+        const std::vector<NavCorridorStep>* corridor{nullptr};
+        std::vector<glm::vec3> rawCorners{};
+        float rawLength{std::numeric_limits<float>::max()};
+        bool rawIsValid{false};
+    };
+    std::vector<CorridorPathCandidate> pathCandidates{};
+    pathCandidates.reserve(corridorCandidates.size());
+    for (std::size_t corridorIndex = 0u;
+         corridorIndex < corridorCandidates.size();
+         ++corridorIndex) {
+        const std::vector<NavCorridorStep>& corridorCandidate =
+            corridorCandidates[corridorIndex];
+        std::optional<std::vector<glm::vec3>> candidateCorners =
+            buildFunnelPath(runtime, *endpoints, corridorCandidate);
+        if (!candidateCorners.has_value() || candidateCorners->empty()) {
+            continue;
+        }
+        const float rawLength = pathLength(
+            endpoints->resolvedStart,
+            *candidateCorners
+        );
+        pathCandidates.push_back(CorridorPathCandidate{
+            &corridorCandidate,
+            std::move(*candidateCorners),
+            rawLength,
+            false,
+        });
+        // Evaluate after the move; using the stored vector keeps this aggregate
+        // construction simple and avoids copying every raw funnel path.
+        pathCandidates.back().rawIsValid = pathSegmentsAreValid(
             runtime,
             endpoints->resolvedStart,
-            *intervalPath,
-            kPolygonEpsilon,
+            pathCandidates.back().rawCorners,
             profile
         );
-        if (intervalPathIsValid(runtime, endpoints->resolvedStart, corners, profile)) {
-            return SolvedPath{endpoints->resolvedDestination, std::move(corners)};
+    }
+    std::sort(
+        pathCandidates.begin(),
+        pathCandidates.end(),
+        [](const CorridorPathCandidate& lhs,
+           const CorridorPathCandidate& rhs) {
+            return lhs.rawLength < rhs.rawLength;
+        }
+    );
+
+    std::optional<std::vector<glm::vec3>> corners{};
+    float selectedLength = std::numeric_limits<float>::max();
+    VisibilityTraversalCache sharedVisibilityCache{};
+    sharedVisibilityCache.reserve(4096u);
+    for (CorridorPathCandidate& candidate : pathCandidates) {
+        if (isCancelled()) {
+            return std::nullopt;
+        }
+        bool pathIsValid = candidate.rawIsValid;
+        std::vector<glm::vec3> candidateCorners =
+            std::move(candidate.rawCorners);
+        const bool corridorUsesLink = std::any_of(
+            candidate.corridor->begin(),
+            candidate.corridor->end(),
+            [&](const NavCorridorStep& step) {
+                return step.fromCellIndex < runtime.graph.size() &&
+                    step.edgeIndex < runtime.graph[step.fromCellIndex].size() &&
+                    runtime.graph[step.fromCellIndex][step.edgeIndex].viaLink;
+            }
+        );
+        if (!pathIsValid && !profile.empty()) {
+            if (corridorUsesLink) {
+                if (std::optional<std::vector<glm::vec3>> linkedPath =
+                        solveLinkedCorridorClearancePath(
+                            runtime,
+                            *endpoints,
+                            *candidate.corridor,
+                            profile,
+                            cancelled);
+                    linkedPath.has_value()) {
+                    candidateCorners = std::move(*linkedPath);
+                    pathIsValid = true;
+                }
+            } else {
+                // Each corridor contributes only its own portals and boundary
+                // nodes. Traversal itself is validated against the complete
+                // authored surface, so identical directed segment checks are
+                // safely reusable by the other corridor alternatives.
+                if (std::optional<std::vector<glm::vec3>> clearancePath =
+                        solveCorridorClearancePath(
+                            runtime,
+                            *endpoints,
+                            *candidate.corridor,
+                            profile,
+                            cancelled,
+                            true,
+                            true,
+                            &sharedVisibilityCache);
+                    clearancePath.has_value() &&
+                    pathSegmentsAreValid(
+                        runtime,
+                        endpoints->resolvedStart,
+                        *clearancePath,
+                        profile)) {
+                    candidateCorners = std::move(*clearancePath);
+                    pathIsValid = true;
+                }
+            }
+        }
+        if (!pathIsValid) {
+            continue;
+        }
+        const float finalLength = pathLength(
+            endpoints->resolvedStart,
+            candidateCorners
+        );
+        if (finalLength < selectedLength) {
+            selectedLength = finalLength;
+            corners = std::move(candidateCorners);
         }
     }
-
-    return profile.empty() ? solveWithVisibility() : std::nullopt;
+    if (!profile.empty() && !corners.has_value()) {
+        // If every corridor-local repair failed, retry once over the complete
+        // planar component. This is a completeness fallback, not a path-length
+        // heuristic; successful local solutions are compared above by their
+        // validated final geometry.
+        if (std::optional<std::vector<glm::vec3>> globalPath =
+                solveCorridorClearancePath(
+                    runtime,
+                    *endpoints,
+                    {},
+                    profile,
+                    cancelled,
+                    true,
+                    false,
+                    &sharedVisibilityCache);
+            globalPath.has_value() &&
+            pathSegmentsAreValid(
+                runtime,
+                endpoints->resolvedStart,
+                *globalPath,
+                profile)) {
+            const float globalLength = pathLength(
+                endpoints->resolvedStart,
+                *globalPath
+            );
+            if (globalLength < selectedLength) {
+                selectedLength = globalLength;
+                corners = std::move(*globalPath);
+            }
+        }
+    }
+    if (isCancelled()) {
+        return std::nullopt;
+    }
+    if (exactPlanarCorners.has_value()) {
+        const float exactPlanarLength = pathLength(
+            endpoints->resolvedStart,
+            *exactPlanarCorners
+        );
+        if (!corners.has_value() ||
+            exactPlanarLength <= selectedLength + kPolygonEpsilon) {
+            selectedLength = exactPlanarLength;
+            corners = std::move(*exactPlanarCorners);
+        }
+    }
+    if (!corners.has_value()) {
+        return std::nullopt;
+    }
+    if (corners->size() == 1u &&
+        glm::distance(endpoints->resolvedStart, corners->front()) <= arrivalRadius) {
+        corners->clear();
+    }
+    return SolvedPath{
+        endpoints->resolvedDestination,
+        std::move(*corners),
+        endpoints->resolvedStart
+    };
 }
 
 std::vector<glm::vec3> trimPathCornersFromCurrentPosition(
@@ -3882,14 +5660,18 @@ bool tryParseNavSourceTag(const std::string& token, NavSourceTag& outTag) {
 
 std::string serializeNavMeshAsset(const NavMeshAsset& asset) {
     std::ostringstream out;
+    // max_digits10 guarantees an exact float round-trip. Four decimal places
+    // were enough for display, but could move nearly-collinear navmesh edges
+    // far enough to create sliver portals after a save/reload cycle.
+    out << std::fixed << std::setprecision(std::numeric_limits<float>::max_digits10);
     out << "version " << asset.version << "\n";
-    out << "minimum_runtime_cell_area " << std::fixed << std::setprecision(6)
+    out << "minimum_runtime_cell_area "
         << std::max(asset.minimumRuntimeCellArea, 0.0f) << "\n";
     for (const NavSourceTagOverride& overrideRecord : asset.sourceTagOverrides) {
         out << "source_tag_override " << std::quoted(overrideRecord.stableId) << " " << navSourceTagName(overrideRecord.tag) << "\n";
     }
     for (const NavPolygon& polygon : asset.polygons) {
-        out << "polygon " << polygon.id << " " << std::fixed << std::setprecision(4) << polygon.elevationY;
+        out << "polygon " << polygon.id << " " << polygon.elevationY;
         for (const glm::vec2& vertex : polygon.verticesXZ) {
             out << " " << vertex.x << " " << vertex.y;
         }
@@ -3897,7 +5679,7 @@ std::string serializeNavMeshAsset(const NavMeshAsset& asset) {
     }
     for (const NavLink& link : asset.links) {
         out << "link " << link.id << " " << link.fromPolygonId << " " << link.toPolygonId
-            << " " << std::fixed << std::setprecision(4)
+            << " "
             << link.fromPoint.x << " " << link.fromPoint.y << " " << link.fromPoint.z
             << " " << link.toPoint.x << " " << link.toPoint.y << " " << link.toPoint.z
             << " " << (link.bidirectional ? 1 : 0) << "\n";
@@ -4130,6 +5912,9 @@ bool NavigationSystem::rebuildRuntimeInternal(
 ) const {
     invalidatePendingPathRequests();
     runtime.solveSnapshot.reset();
+    runtime.polyanyaMesh.reset();
+    runtime.exactPathfindingWarning.clear();
+    runtime.bakedCellsHaveInteriorOverlap = false;
     ++runtime.solveRevision;
     runtime.polygonIndexById.clear();
     runtime.polygonCenters.clear();
@@ -4197,14 +5982,65 @@ bool NavigationSystem::rebuildRuntimeInternal(
 
     for (const BakeLayerData& layer : bakeLayers) {
         std::vector<std::vector<std::size_t>> layerCellToPolygonIndices{};
-        const bool layerPolygonsAreDisjoint = sourcePolygonsAreDisjoint ||
+        const bool mayUseDisjointFastPath = sourcePolygonsAreDisjoint ||
             !bakeLayerHasInteriorPolygonOverlap(layer);
-        std::vector<NavRuntimeCell> layerCells = layerPolygonsAreDisjoint
-            ? bakeDisjointLayerRuntimeCells(layer, layerCellToPolygonIndices)
-            : bakeLayerRuntimeCells(layer, layerCellToPolygonIndices);
+        std::vector<NavRuntimeCell> layerCells{};
+        if (mayUseDisjointFastPath) {
+            layerCells = bakeDisjointLayerRuntimeCells(
+                layer,
+                layerCellToPolygonIndices
+            );
+            std::vector<glm::vec2> layerMinXZ{};
+            std::vector<glm::vec2> layerMaxXZ{};
+            layerMinXZ.reserve(layerCells.size());
+            layerMaxXZ.reserve(layerCells.size());
+            for (const NavRuntimeCell& cell : layerCells) {
+                const auto [minXZ, maxXZ] =
+                    polygonBoundsXZ(cell.verticesXZ);
+                layerMinXZ.push_back(minXZ);
+                layerMaxXZ.push_back(maxXZ);
+            }
+            // The source hint accelerates the common generated-mesh case, but
+            // never bypasses verification. If clipping/quantization produced
+            // a real overlap, rebuild this layer as an explicit union.
+            if (runtimeCellsHaveInteriorOverlap(
+                    layerCells,
+                    layerMinXZ,
+                    layerMaxXZ)) {
+                layerCells = bakeLayerRuntimeCells(
+                    layer,
+                    layerCellToPolygonIndices
+                );
+            }
+        } else {
+            layerCells = bakeLayerRuntimeCells(
+                layer,
+                layerCellToPolygonIndices
+            );
+        }
         for (std::size_t localCellIndex = 0; localCellIndex < layerCells.size(); ++localCellIndex) {
-            if (std::abs(polygonSignedArea(layerCells[localCellIndex].verticesXZ)) <
-                std::max(runtime.asset.minimumRuntimeCellArea, 0.0f)) {
+            const std::vector<glm::vec2>& cellVertices =
+                layerCells[localCellIndex].verticesXZ;
+            const float cellArea = std::abs(polygonSignedArea(cellVertices));
+            float longestEdge = 0.0f;
+            for (std::size_t vertexIndex = 0u;
+                 vertexIndex < cellVertices.size();
+                 ++vertexIndex) {
+                longestEdge = std::max(
+                    longestEdge,
+                    glm::distance(
+                        cellVertices[vertexIndex],
+                        cellVertices[
+                            (vertexIndex + 1u) % cellVertices.size()]
+                    )
+                );
+            }
+            const float minimumAltitude = longestEdge > kPlaneEpsilon
+                ? (2.0f * cellArea) / longestEdge
+                : 0.0f;
+            if (cellArea <
+                    std::max(runtime.asset.minimumRuntimeCellArea, 0.0f) ||
+                minimumAltitude <= kPortalBroadPhaseEpsilon) {
                 ++runtime.filteredRuntimeCellCount;
                 continue;
             }
@@ -4223,36 +6059,80 @@ bool NavigationSystem::rebuildRuntimeInternal(
         }
     }
 
+    runtime.bakedCellsHaveInteriorOverlap = runtimeCellsHaveInteriorOverlap(
+        runtime.bakedCells,
+        runtime.bakedCellMinXZ,
+        runtime.bakedCellMaxXZ
+    );
     runtime.graph.resize(runtime.bakedCells.size());
-    for (std::size_t lhsIndex = 0; lhsIndex < runtime.bakedCells.size(); ++lhsIndex) {
+    std::vector<std::size_t> graphSweepOrder(runtime.bakedCells.size());
+    for (std::size_t cellIndex = 0u;
+         cellIndex < graphSweepOrder.size();
+         ++cellIndex) {
+        graphSweepOrder[cellIndex] = cellIndex;
+    }
+    std::sort(
+        graphSweepOrder.begin(),
+        graphSweepOrder.end(),
+        [&](std::size_t lhs, std::size_t rhs) {
+            if (runtime.bakedCellMinXZ[lhs].x !=
+                runtime.bakedCellMinXZ[rhs].x) {
+                return runtime.bakedCellMinXZ[lhs].x <
+                    runtime.bakedCellMinXZ[rhs].x;
+            }
+            return lhs < rhs;
+        }
+    );
+    for (std::size_t lhsOrder = 0u;
+         lhsOrder < graphSweepOrder.size();
+         ++lhsOrder) {
+        const std::size_t lhsIndex = graphSweepOrder[lhsOrder];
         const NavRuntimeCell& lhs = runtime.bakedCells[lhsIndex];
-        for (std::size_t rhsIndex = lhsIndex + 1u; rhsIndex < runtime.bakedCells.size(); ++rhsIndex) {
+        for (std::size_t rhsOrder = lhsOrder + 1u;
+             rhsOrder < graphSweepOrder.size();
+             ++rhsOrder) {
+            const std::size_t rhsIndex = graphSweepOrder[rhsOrder];
+            if (runtime.bakedCellMinXZ[rhsIndex].x >
+                runtime.bakedCellMaxXZ[lhsIndex].x +
+                    kPortalBroadPhaseEpsilon) {
+                break;
+            }
             const NavRuntimeCell& rhs = runtime.bakedCells[rhsIndex];
-            if (std::abs(lhs.elevationY - rhs.elevationY) > kLayerGroupingEpsilon) {
+            if (std::abs(lhs.elevationY - rhs.elevationY) >
+                    kLayerGroupingEpsilon ||
+                runtime.bakedCellMinXZ[rhsIndex].y >
+                    runtime.bakedCellMaxXZ[lhsIndex].y +
+                        kPortalBroadPhaseEpsilon ||
+                runtime.bakedCellMaxXZ[rhsIndex].y <
+                    runtime.bakedCellMinXZ[lhsIndex].y -
+                        kPortalBroadPhaseEpsilon) {
                 continue;
             }
-            const auto portal = sharedPortal(lhs, rhs);
-            if (!portal.has_value()) {
+            const std::vector<SharedPortalResult> portals =
+                sharedBoundaryPortals(lhs, rhs);
+            if (portals.empty()) {
                 continue;
             }
-            runtime.graph[lhsIndex].push_back(NavGraphEdge{
-                rhsIndex,
-                false,
-                -1,
-                portal->a,
-                portal->b,
-                glm::vec3(0.0f),
-                glm::vec3(0.0f)
-            });
-            runtime.graph[rhsIndex].push_back(NavGraphEdge{
-                lhsIndex,
-                false,
-                -1,
-                portal->a,
-                portal->b,
-                glm::vec3(0.0f),
-                glm::vec3(0.0f)
-            });
+            for (const SharedPortalResult& portal : portals) {
+                runtime.graph[lhsIndex].push_back(NavGraphEdge{
+                    rhsIndex,
+                    false,
+                    -1,
+                    portal.b,
+                    portal.a,
+                    glm::vec3(0.0f),
+                    glm::vec3(0.0f)
+                });
+                runtime.graph[rhsIndex].push_back(NavGraphEdge{
+                    lhsIndex,
+                    false,
+                    -1,
+                    portal.a,
+                    portal.b,
+                    glm::vec3(0.0f),
+                    glm::vec3(0.0f)
+                });
+            }
         }
     }
 
@@ -4303,6 +6183,22 @@ bool NavigationSystem::rebuildRuntimeInternal(
                 }
             }
         }
+    }
+    std::string polyanyaError{};
+    if (runtime.bakedCellsHaveInteriorOverlap) {
+        polyanyaError =
+            "runtime cells still have positive-area interior overlap";
+    } else {
+        runtime.polyanyaMesh = navigation_detail::buildPolyanyaMesh(
+            runtime.bakedCells,
+            runtime.graph,
+            &polyanyaError
+        );
+    }
+    if (runtime.polyanyaMesh == nullptr) {
+        runtime.exactPathfindingWarning =
+            "Exact Polyanya pathfinding unavailable: " + polyanyaError +
+            ". Using the validated A* + funnel fallback.";
     }
     runtime.solveSnapshot = buildSolveSnapshot(runtime);
     return true;
@@ -4450,6 +6346,12 @@ bool NavigationSystem::setAgentDestination(
     }
 
     discardPendingPathRequest(agentEntity);
+    snapAgentToResolvedStart(
+        world,
+        agentEntity,
+        *transform,
+        path->resolvedStart
+    );
     applyPathResult(*agent, path->destination, std::move(path->corners));
     return true;
 }
@@ -4512,15 +6414,30 @@ bool NavigationSystem::requestAgentDestination(
                 return result;
             }
             std::optional<SolvedPath> path =
-                solvePathCorners(solveView, startPosition, destination, arrivalRadius, clearanceProfile);
+                solvePathCorners(
+                    solveView,
+                    startPosition,
+                    destination,
+                    arrivalRadius,
+                    clearanceProfile,
+                    cancelled.get()
+                );
+            if (cancelled->load(std::memory_order_acquire)) {
+                return result;
+            }
             if (path.has_value()) {
+                result.resolvedStart = path->resolvedStart;
                 result.destination = path->destination;
                 result.pathCorners = path->corners;
                 // Publish partial path so the agent can start moving toward the
                 // destination before the final result is applied.
                 {
                     std::lock_guard<std::mutex> lock(progress->mutex);
-                    progress->partialPath = PartialPathResult{path->destination, path->corners};
+                    progress->partialPath = PartialPathResult{
+                        path->resolvedStart,
+                        path->destination,
+                        path->corners
+                    };
                 }
             } else {
                 result.pathCorners.reset();
@@ -4547,12 +6464,58 @@ void NavigationSystem::applyCompletedPathRequests(World& world, const Navigation
             auto partial = consumePartialPathResult(pending.progress);
             if (partial.has_value()) {
                 NavAgentComponent* agent = world.navAgents.tryGet(it->first);
-                if (agent != nullptr) {
-                    applyPathResult(*agent, partial->destination, std::move(partial->pathCorners));
-                    pending.partialPathApplied = true;
+                TransformComponent* transform =
+                    world.transforms.tryGet(it->first);
+                if (agent != nullptr && transform != nullptr) {
+                    const AgentClearanceProfile clearanceProfile =
+                        resolveAgentClearanceProfile(
+                            world,
+                            it->first,
+                            *agent
+                        );
+                    const bool agentHasNotMoved = nearlyEqualVec3(
+                        transform->position,
+                        pending.startPosition,
+                        kPolygonEpsilon * 8.0f
+                    );
+                    if (agentHasNotMoved) {
+                        snapAgentToResolvedStart(
+                            world,
+                            it->first,
+                            *transform,
+                            partial->resolvedStart
+                        );
+                    } else if (runtime.solveSnapshot != nullptr) {
+                        partial->pathCorners =
+                            trimPathCornersFromCurrentPosition(
+                                makeSolveView(*runtime.solveSnapshot),
+                                transform->position,
+                                std::move(partial->pathCorners),
+                                agent->arrivalRadius,
+                                clearanceProfile
+                            );
+                    }
+                    const bool pathStillValid =
+                        runtime.solveSnapshot != nullptr &&
+                        pathSegmentsAreValid(
+                            makeSolveView(*runtime.solveSnapshot),
+                            transform->position,
+                            partial->pathCorners,
+                            clearanceProfile
+                        );
+                    if (pathStillValid) {
+                        applyPathResult(
+                            *agent,
+                            partial->destination,
+                            std::move(partial->pathCorners)
+                        );
+                        pending.partialPathApplied = true;
+                    }
                 }
-                ++it;
-                continue;
+                if (pending.partialPathApplied) {
+                    ++it;
+                    continue;
+                }
             }
         }
         if (!pending.handle.ready()) {
@@ -4603,14 +6566,41 @@ void NavigationSystem::applyCompletedPathRequests(World& world, const Navigation
 
         const AgentClearanceProfile clearanceProfile =
             resolveAgentClearanceProfile(world, result->agentEntity, *agent);
-        std::vector<glm::vec3> trimmedCorners = runtime.solveSnapshot != nullptr
-            ? trimPathCornersFromCurrentPosition(
-                  makeSolveView(*runtime.solveSnapshot),
-                  transform->position,
-                  *result->pathCorners,
-                  agent->arrivalRadius,
-                  clearanceProfile)
-            : *result->pathCorners;
+        const NavigationSolveView solveView =
+            makeSolveView(*runtime.solveSnapshot);
+        const bool agentHasNotMoved = nearlyEqualVec3(
+            transform->position,
+            result->startPosition,
+            kPolygonEpsilon * 8.0f
+        );
+        if (!pending.partialPathApplied && agentHasNotMoved) {
+            snapAgentToResolvedStart(
+                world,
+                result->agentEntity,
+                *transform,
+                result->resolvedStart
+            );
+        }
+        std::vector<glm::vec3> trimmedCorners =
+            trimPathCornersFromCurrentPosition(
+                solveView,
+                transform->position,
+                *result->pathCorners,
+                agent->arrivalRadius,
+                clearanceProfile
+            );
+        if (!pathSegmentsAreValid(
+                solveView,
+                transform->position,
+                trimmedCorners,
+                clearanceProfile)) {
+            // The agent moved far enough that the completed route can no
+            // longer be joined safely. Never re-run the expensive solver on
+            // the main thread while draining asynchronous results.
+            ++stalePathResults_;
+            it = pendingPathRequests_.erase(it);
+            continue;
+        }
         applyPathResult(*agent, result->destination, std::move(trimmedCorners));
         it = pendingPathRequests_.erase(it);
     }
@@ -4684,6 +6674,30 @@ void NavigationSystem::updateAgents(World& world, const NavigationRuntime&, cons
         }
 
         const glm::vec3 direction = toTarget / std::max(distance, kPlaneEpsilon);
+        const glm::vec2 planarDirection(direction.x, direction.z);
+        if (glm::dot(planarDirection, planarDirection) > kPlaneEpsilon) {
+            const float desiredYaw = glm::degrees(
+                std::atan2(planarDirection.x, planarDirection.y)
+            );
+            const AgentClearanceProfile clearanceProfile =
+                resolveAgentClearanceProfile(world, entity, agent);
+            if (clearanceProfile.shape == AgentClearanceShape::Box) {
+                // Box paths are validated with the longitudinal axis aligned
+                // to each segment. Align before translating so movement and
+                // collision clearance use the same orientation model.
+                transform->rotationDeg.y = desiredYaw;
+            } else {
+                float updatedYaw = transform->rotationDeg.y;
+                shortestYawStep(
+                    transform->rotationDeg.y,
+                    desiredYaw,
+                    agent.turnSpeedDeg * time.deltaSeconds,
+                    updatedYaw
+                );
+                transform->rotationDeg.y = updatedYaw;
+            }
+        }
+
         const float step = agent.moveSpeed * time.deltaSeconds;
         if (step >= distance) {
             transform->position = target;
@@ -4694,19 +6708,6 @@ void NavigationSystem::updateAgents(World& world, const NavigationRuntime&, cons
             }
         } else {
             transform->position += direction * step;
-        }
-
-        const glm::vec2 planarDirection(direction.x, direction.z);
-        if (glm::dot(planarDirection, planarDirection) > kPlaneEpsilon) {
-            const float desiredYaw = glm::degrees(std::atan2(planarDirection.x, planarDirection.y));
-            float updatedYaw = transform->rotationDeg.y;
-            shortestYawStep(
-                transform->rotationDeg.y,
-                desiredYaw,
-                agent.turnSpeedDeg * time.deltaSeconds,
-                updatedYaw
-            );
-            transform->rotationDeg.y = updatedYaw;
         }
 
         world.markTransformsDirty(entity);
