@@ -30,6 +30,7 @@ namespace core {
 
 struct InputSession {
     bool middleDragging{false};
+    bool rightMouseLooking{false};
     int lastMouseX{0};
     int lastMouseY{0};
 };

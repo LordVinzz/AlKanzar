@@ -17,6 +17,8 @@ private:
     void transitionTo(AppMode mode);
     void translateSdlEvent(const SDL_Event& event);
     void bindEventHandlers();
+    void updateFreeCameraControls();
+    void releaseFreeCameraMouse();
 
     EngineServices services_;
     BootstrapState bootstrapState_{};

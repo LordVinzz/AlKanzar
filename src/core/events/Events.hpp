@@ -14,7 +14,7 @@ struct EnterEditorEvent {};
 struct ExitEditorEvent {};
 struct EnterGameplayEvent {};
 struct ToggleEditorEvent {};
-struct ToggleOrbitCameraEvent {};
+struct ToggleFreeCameraEvent {};
 struct ToggleLightDebugEvent {};
 struct UndoRequestedEvent {};
 struct RedoRequestedEvent {};
@@ -68,7 +68,7 @@ using AppEvent = std::variant<
     ExitEditorEvent,
     EnterGameplayEvent,
     ToggleEditorEvent,
-    ToggleOrbitCameraEvent,
+    ToggleFreeCameraEvent,
     ToggleLightDebugEvent,
     UndoRequestedEvent,
     RedoRequestedEvent,

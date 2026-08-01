@@ -3063,6 +3063,45 @@ void testNavigationHitTestFindsProjectedNavPolygon() {
     assert(std::abs(hit->position.z) < 0.25f);
 }
 
+void testFreeCameraUsesPerspectiveAndUnityStyleControls() {
+    core::CameraState camera{};
+    const render::CameraMatrices orthographic =
+        core::computeCameraMatrices(camera, 1600, 900);
+    assert(std::abs(orthographic.projection[2][3]) < 1.0e-6f);
+
+    core::setFreeCameraEnabled(camera, true);
+    assert(camera.freeCameraEnabled);
+    assert(camera.freeCameraInitialized);
+    const render::CameraMatrices perspective =
+        core::computeCameraMatrices(camera, 1600, 900);
+    assert(nearlyEqual(perspective.projection[2][3], -1.0, 1.0e-6));
+
+    camera.freePosition = glm::vec3(0.0f);
+    camera.freeYawDeg = 0.0f;
+    camera.freePitchDeg = 0.0f;
+    camera.freeMoveSpeed = 10.0f;
+    core::FreeCameraInput input{};
+    input.forward = true;
+    core::TimeContext time{};
+    time.deltaSeconds = 0.1f;
+    core::updateFreeCamera(camera, input, time);
+    assert(nearlyEqual(camera.freePosition.x, 0.0, 1.0e-5));
+    assert(nearlyEqual(camera.freePosition.y, 0.0, 1.0e-5));
+    assert(nearlyEqual(camera.freePosition.z, -1.0, 1.0e-5));
+
+    core::rotateFreeCamera(camera, 20.0f, -10000.0f);
+    assert(camera.freeYawDeg > 0.0f);
+    assert(nearlyEqual(camera.freePitchDeg, 89.0, 1.0e-5));
+    core::adjustFreeCameraSpeed(camera, 1);
+    assert(camera.freeMoveSpeed > 10.0f);
+
+    core::setFreeCameraEnabled(camera, false);
+    assert(!camera.freeCameraEnabled);
+    const render::CameraMatrices restored =
+        core::computeCameraMatrices(camera, 1600, 900);
+    assert(std::abs(restored.projection[2][3]) < 1.0e-6f);
+}
+
 void testNavigationAgentMovementRotatesAndRequestsWalkThenIdle() {
     auto model = std::make_shared<render::GltfModelData>();
     assert(render::loadGltfModel(assetPath("src/render/models/Adventurer.glb").string(), *model));
@@ -6595,6 +6634,7 @@ int main() {
     testNavigationOverlapCandidateSelectionUsesMultiplyCoveredStartCell();
     testNavigationRejectsSelfIntersectingPolygon();
     testNavigationHitTestFindsProjectedNavPolygon();
+    testFreeCameraUsesPerspectiveAndUnityStyleControls();
     testNavigationAgentMovementRotatesAndRequestsWalkThenIdle();
     testNavigationBoxAgentAlignsBeforeTranslation();
     testNavigationAgentClearanceRemainsOptIn();

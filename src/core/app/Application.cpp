@@ -198,6 +198,7 @@ void Application::run() {
         if (diagnostics.shouldLogFrameStage(frameIndex)) {
             logFrameStageBoundary("end", "Begin ImGui Frame", frameIndex, "main");
         }
+        updateFreeCameraControls();
         if (currentState_ != nullptr) {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "State Update");
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
@@ -480,24 +481,29 @@ void Application::bindEventHandlers() {
         if (services_.renderer.wantsMouse() || event.delta == 0) {
             return;
         }
+        if (services_.camera.freeCameraEnabled) {
+            adjustFreeCameraSpeed(services_.camera, event.delta);
+            return;
+        }
         const float factor = event.delta > 0 ? 0.9f : 1.1f;
         services_.camera.zoom = std::clamp(services_.camera.zoom * factor, 0.2f, 5.0f);
     });
     services_.events.subscribe<ViewportPanEvent>([this](const ViewportPanEvent& event) {
-        if (services_.renderer.wantsMouse() || services_.camera.orbitEnabled) {
+        if (services_.renderer.wantsMouse() ||
+            services_.camera.orbitEnabled ||
+            services_.camera.freeCameraEnabled) {
             return;
         }
         constexpr float panSpeed = 0.01f;
         services_.camera.panX -= static_cast<float>(event.dx) * panSpeed / services_.camera.zoom;
         services_.camera.panY += static_cast<float>(event.dy) * panSpeed / services_.camera.zoom;
     });
-    services_.events.subscribe<ToggleOrbitCameraEvent>([this](const ToggleOrbitCameraEvent&) {
-        services_.camera.orbitEnabled = !services_.camera.orbitEnabled;
-        if (services_.camera.orbitEnabled) {
-            services_.camera.orbitYawDeg = 45.0f;
-            services_.camera.panX = 0.0f;
-            services_.camera.panY = 0.0f;
+    services_.events.subscribe<ToggleFreeCameraEvent>([this](const ToggleFreeCameraEvent&) {
+        const bool enable = !services_.camera.freeCameraEnabled;
+        if (!enable) {
+            releaseFreeCameraMouse();
         }
+        setFreeCameraEnabled(services_.camera, enable);
     });
     services_.events.subscribe<ToggleLightDebugEvent>([this](const ToggleLightDebugEvent&) {
         services_.showLightDebug = !services_.showLightDebug;
@@ -713,7 +719,7 @@ void Application::translateSdlEvent(const SDL_Event& event) {
                     break;
                 case SDLK_c:
                     if (event.key.repeat == 0) {
-                        services_.events.publish(ToggleOrbitCameraEvent{});
+                        services_.events.publish(ToggleFreeCameraEvent{});
                     }
                     break;
                 default:
@@ -733,14 +739,30 @@ void Application::translateSdlEvent(const SDL_Event& event) {
                 services_.input.lastMouseX = event.button.x;
                 services_.input.lastMouseY = event.button.y;
             }
+            if (event.button.button == SDL_BUTTON_RIGHT &&
+                services_.camera.freeCameraEnabled &&
+                !services_.renderer.wantsMouse()) {
+                services_.input.rightMouseLooking = true;
+                SDL_SetRelativeMouseMode(SDL_TRUE);
+            }
             break;
         case SDL_MOUSEBUTTONUP:
             if (event.button.button == SDL_BUTTON_MIDDLE) {
                 services_.input.middleDragging = false;
             }
+            if (event.button.button == SDL_BUTTON_RIGHT) {
+                releaseFreeCameraMouse();
+            }
             break;
         case SDL_MOUSEMOTION:
-            if (services_.input.middleDragging) {
+            if (services_.input.rightMouseLooking &&
+                services_.camera.freeCameraEnabled) {
+                rotateFreeCamera(
+                    services_.camera,
+                    static_cast<float>(event.motion.xrel),
+                    static_cast<float>(event.motion.yrel)
+                );
+            } else if (services_.input.middleDragging) {
                 services_.events.publish(ViewportPanEvent{event.motion.xrel, event.motion.yrel});
                 services_.input.lastMouseX = event.motion.x;
                 services_.input.lastMouseY = event.motion.y;
@@ -750,10 +772,41 @@ void Application::translateSdlEvent(const SDL_Event& event) {
             if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
                 services_.events.publish(WindowResizedEvent{event.window.data1, event.window.data2});
             }
+            if (event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+                services_.input.middleDragging = false;
+                releaseFreeCameraMouse();
+            }
             break;
         default:
             break;
     }
+}
+
+void Application::updateFreeCameraControls() {
+    if (!services_.camera.freeCameraEnabled ||
+        services_.renderer.wantsKeyboard()) {
+        return;
+    }
+    const Uint8* keys = SDL_GetKeyboardState(nullptr);
+    const FreeCameraInput input{
+        keys[SDL_SCANCODE_W] != 0,
+        keys[SDL_SCANCODE_S] != 0,
+        keys[SDL_SCANCODE_A] != 0,
+        keys[SDL_SCANCODE_D] != 0,
+        keys[SDL_SCANCODE_Q] != 0,
+        keys[SDL_SCANCODE_E] != 0,
+        keys[SDL_SCANCODE_LSHIFT] != 0 ||
+            keys[SDL_SCANCODE_RSHIFT] != 0,
+    };
+    updateFreeCamera(services_.camera, input, services_.time);
+}
+
+void Application::releaseFreeCameraMouse() {
+    if (!services_.input.rightMouseLooking) {
+        return;
+    }
+    services_.input.rightMouseLooking = false;
+    SDL_SetRelativeMouseMode(SDL_FALSE);
 }
 
 }  // namespace core
