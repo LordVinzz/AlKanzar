@@ -20,7 +20,7 @@
 #include "render/engine/RenderTypes.hpp"
 
 #define CGLTF_IMPLEMENTATION
-#include "cgltf.h"
+#include "cgltf/cgltf.h"
 
 namespace {
 

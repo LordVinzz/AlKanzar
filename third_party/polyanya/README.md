@@ -10,4 +10,4 @@ from Michael Cui and Daniel Harabor's reference Polyanya implementation:
 The retained source is licensed under the MIT terms in `LICENSE.txt`. The
 reference repository's Fade2D mesh-generation utility is not used or included.
 AlKanzar supplies its own conforming runtime-mesh adapter and query wrapper in
-`../Polyanya.cpp`.
+`../../src/core/navigation/Polyanya.cpp`.

@@ -28,8 +28,8 @@ add_library(alkanzar_core STATIC
     src/core/physics/PhysicsSystem.cpp
     src/core/navigation/Navigation.cpp
     src/core/navigation/Polyanya.cpp
-    src/core/navigation/polyanya/expansion.cpp
-    src/core/navigation/polyanya/geometry.cpp
+    third_party/polyanya/expansion.cpp
+    third_party/polyanya/geometry.cpp
     src/core/scene/Camera.cpp
     src/core/scene/SceneFactory.cpp
     src/core/scene/SceneRegistry.cpp
@@ -46,6 +46,8 @@ add_library(alkanzar_core STATIC
 target_include_directories(alkanzar_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 
 target_link_libraries(alkanzar_core
@@ -80,4 +82,16 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME alkanzar_core_tests COMMAND alkanzar_core_tests)
+
+    add_test(
+        NAME alkanzar_src_file_length
+        COMMAND
+            ${CMAKE_COMMAND}
+            -DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/src
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_src_file_length.cmake
+    )
+    set_tests_properties(
+        alkanzar_src_file_length
+        PROPERTIES LABELS "architecture;quality"
+    )
 endif()
