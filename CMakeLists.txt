@@ -22,23 +22,73 @@ add_library(alkanzar_core STATIC
     src/core/animation/AnimationSystem.cpp
     src/core/app/AppState.cpp
     src/core/app/Application.cpp
+    src/core/app/ApplicationInput.cpp
     src/core/app/RuntimePolicy.cpp
     src/core/ecs/ComponentRegistry.cpp
+    src/core/ecs/ComponentDescriptors.cpp
+    src/core/ecs/ComponentInspector.cpp
     src/core/editor/EditorSessionImGuiSettings.cpp
+    src/core/editor/EditorUiAnimation.cpp
+    src/core/editor/EditorUiHierarchy.cpp
+    src/core/editor/EditorUiInspector.cpp
+    src/core/editor/EditorUiMainWindow.cpp
+    src/core/editor/EditorUiNavigation.cpp
+    src/core/editor/EditorUiProfiler.cpp
+    src/core/editor/EditorUiSupport.cpp
+    src/core/editor/EditorUiTextureBrowser.cpp
     src/core/physics/PhysicsSystem.cpp
     src/core/navigation/Navigation.cpp
+    src/core/navigation/NavigationAgentMotion.cpp
+    src/core/navigation/NavigationAgentRequests.cpp
+    src/core/navigation/NavigationAgentResults.cpp
+    src/core/navigation/NavigationAgentSupport.cpp
+    src/core/navigation/NavigationAssetSerialization.cpp
+    src/core/navigation/NavigationAssetLifecycle.cpp
+    src/core/navigation/NavigationEditor.cpp
+    src/core/navigation/NavigationEditorSupport.cpp
+    src/core/navigation/NavigationFrameSync.cpp
+    src/core/navigation/NavigationDetailGeometry.cpp
+    src/core/navigation/NavigationDetailRuntime.cpp
+    src/core/navigation/NavigationRuntimeSupport.cpp
+    src/core/navigation/NavigationRuntimeBuilder.cpp
+    src/core/navigation/NavigationBakeSources.cpp
+    src/core/navigation/NavigationBakeRuntimeCells.cpp
+    src/core/navigation/NavigationSurfaceCoverage.cpp
+    src/core/navigation/NavigationSurfaceSweep.cpp
+    src/core/navigation/NavigationRuntimeQueries.cpp
+    src/core/navigation/NavigationSolveEndpoints.cpp
+    src/core/navigation/NavigationCellMerge.cpp
+    src/core/navigation/NavigationCorridorSearch.cpp
+    src/core/navigation/NavigationCorridorVisibility.cpp
+    src/core/navigation/NavigationVisibilityNodes.cpp
+    src/core/navigation/NavigationFunnel.cpp
+    src/core/navigation/NavigationLinkedPath.cpp
+    src/core/navigation/NavigationGenerator.cpp
+    src/core/navigation/NavigationHitTest.cpp
+    src/core/navigation/NavigationPathSolver.cpp
+    src/core/navigation/NavigationPolygonOperations.cpp
+    src/core/navigation/NavigationPolygonTopology.cpp
+    src/core/navigation/NavigationDetailClearance.cpp
+    src/core/navigation/NavigationEndpointResolution.cpp
     src/core/navigation/Polyanya.cpp
+    src/core/navigation/PolyanyaMeshBuilder.cpp
+    src/core/navigation/PolyanyaSearch.cpp
     third_party/polyanya/expansion.cpp
     third_party/polyanya/geometry.cpp
     src/core/scene/Camera.cpp
     src/core/scene/SceneFactory.cpp
+    src/core/scene/SceneMeshFactory.cpp
+    src/core/scene/SceneModelFactory.cpp
     src/core/scene/SceneRegistry.cpp
     src/core/lighting/LightSystem.cpp
     src/core/transform/TransformMath.cpp
     src/core/transform/TransformSystem.cpp
     src/core/profiling/PerfettoTraceExporter.cpp
+    src/core/profiling/PerfettoProto.cpp
     src/core/profiling/ProfilerService.cpp
+    src/core/profiling/ProfilerRuntime.cpp
     src/core/systems/PickingSystem.cpp
+    src/core/systems/RenderExtractionAnimation.cpp
     src/core/systems/RenderExtractionSystem.cpp
     src/core/systems/TaskScheduler.cpp
 )

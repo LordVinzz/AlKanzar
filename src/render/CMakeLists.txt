@@ -33,20 +33,33 @@ endif()
 
 add_library(alkanzar_render STATIC
     engine/RenderEngine.cpp
+    engine/RenderEngineOcclusion.cpp
+    engine/RenderEngineProfiling.cpp
+    engine/RenderEngineResources.cpp
+    engine/RenderPathBase.cpp
     engine/RenderPaths.cpp
+    engine/SimpleForwardPath.cpp
+    engine/DeferredRenderPathResources.cpp
     engine/RenderResourceRegistry.cpp
     engine/RenderSceneView.cpp
     pipeline/RenderLightPipeline.cpp
     pipeline/SceneGeometryRenderer.cpp
     pipeline/SceneOverlayRenderer.cpp
+    pipeline/SceneOverlayMath.cpp
+    pipeline/SceneOverlayDrawing.cpp
+    pipeline/SceneOverlayResources.cpp
     pipeline/ShadowSystem.cpp
+    pipeline/ShadowSystemRender.cpp
     pipeline/LightExecutionVolume.cpp
     resources/Geometry.cpp
     resources/Material.cpp
+    resources/TextureFactory.cpp
     resources/MeshBuffer.cpp
     resources/Profiling.cpp
     resources/ShaderProgram.cpp
     resources/StaticGltfModel.cpp
+    resources/GltfAccessors.cpp
+    resources/GltfModelProcessing.cpp
 )
 
 set(SHADER_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)

@@ -1,4 +1,5 @@
 #include "RenderExtractionSystem.hpp"
+#include "RenderExtractionAnimation.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -79,326 +80,6 @@ float maxAxisScale(const glm::mat4& modelMatrix) {
     const float yScale = glm::length(glm::vec3(modelMatrix[1]));
     const float zScale = glm::length(glm::vec3(modelMatrix[2]));
     return std::max(xScale, std::max(yScale, zScale));
-}
-
-bool computeSkinnedWorldBounds(
-    const AnimatedModelComponent& animated,
-    const SkinnedRenderableComponent& skinned,
-    const glm::mat4& modelMatrix,
-    render::Bounds3& outBounds
-) {
-    if (!animated.model ||
-        skinned.sectionIndex < 0 ||
-        skinned.sectionIndex >= static_cast<int>(animated.model->sections.size())) {
-        return false;
-    }
-
-    const render::GltfMeshSection& section = animated.model->sections[static_cast<std::size_t>(skinned.sectionIndex)];
-    const render::Mesh& mesh = section.mesh;
-    if (mesh.positions.empty()) {
-        return false;
-    }
-
-    const std::vector<glm::mat4>* skinMatrices =
-        skinned.skinIndex >= 0 && skinned.skinIndex < static_cast<int>(animated.skinJointMatrices.size())
-            ? &animated.skinJointMatrices[static_cast<std::size_t>(skinned.skinIndex)]
-            : nullptr;
-
-    bool hasBounds = false;
-    for (std::size_t vertexIndex = 0; vertexIndex < mesh.positions.size(); ++vertexIndex) {
-        glm::vec4 skinnedPosition(mesh.positions[vertexIndex], 1.0f);
-        if (skinMatrices != nullptr &&
-            !skinMatrices->empty() &&
-            vertexIndex < mesh.jointIndices.size() &&
-            vertexIndex < mesh.jointWeights.size()) {
-            const glm::uvec4 joints = mesh.jointIndices[vertexIndex];
-            const glm::vec4 weights = mesh.jointWeights[vertexIndex];
-            const float totalWeight = weights.x + weights.y + weights.z + weights.w;
-            if (totalWeight > 0.0f) {
-                glm::mat4 skinMatrix(0.0f);
-                if (weights.x > 0.0f && joints.x < skinMatrices->size()) {
-                    skinMatrix += (*skinMatrices)[joints.x] * weights.x;
-                }
-                if (weights.y > 0.0f && joints.y < skinMatrices->size()) {
-                    skinMatrix += (*skinMatrices)[joints.y] * weights.y;
-                }
-                if (weights.z > 0.0f && joints.z < skinMatrices->size()) {
-                    skinMatrix += (*skinMatrices)[joints.z] * weights.z;
-                }
-                if (weights.w > 0.0f && joints.w < skinMatrices->size()) {
-                    skinMatrix += (*skinMatrices)[joints.w] * weights.w;
-                }
-                skinnedPosition = skinMatrix * skinnedPosition;
-            }
-        }
-
-        const glm::vec3 worldPosition = glm::vec3(modelMatrix * skinnedPosition);
-        if (!hasBounds) {
-            outBounds.min = worldPosition;
-            outBounds.max = worldPosition;
-            hasBounds = true;
-            continue;
-        }
-        outBounds.min = glm::min(outBounds.min, worldPosition);
-        outBounds.max = glm::max(outBounds.max, worldPosition);
-    }
-
-    return hasBounds;
-}
-
-bool computeConservativeSkinnedWorldBounds(
-    const AnimatedModelComponent& animated,
-    const SkinnedRenderableComponent& skinned,
-    const glm::mat4& modelMatrix,
-    render::Bounds3& outBounds
-) {
-    if (!animated.model ||
-        skinned.sectionIndex < 0 ||
-        skinned.sectionIndex >= static_cast<int>(animated.model->sections.size())) {
-        return false;
-    }
-
-    const render::GltfMeshSection& section = animated.model->sections[static_cast<std::size_t>(skinned.sectionIndex)];
-    if (section.jointInfluenceBounds.empty()) {
-        return false;
-    }
-
-    const std::vector<glm::mat4>* skinMatrices =
-        skinned.skinIndex >= 0 && skinned.skinIndex < static_cast<int>(animated.skinJointMatrices.size())
-            ? &animated.skinJointMatrices[static_cast<std::size_t>(skinned.skinIndex)]
-            : nullptr;
-    if (skinMatrices == nullptr || skinMatrices->empty()) {
-        return false;
-    }
-
-    bool hasBounds = false;
-    for (const render::JointInfluenceBounds& jointBounds : section.jointInfluenceBounds) {
-        if (jointBounds.jointIndex < 0 ||
-            jointBounds.jointIndex >= static_cast<int>(skinMatrices->size())) {
-            return false;
-        }
-
-        const render::Bounds3 transformedBounds = transformBounds(
-            jointBounds.localBounds,
-            modelMatrix * (*skinMatrices)[static_cast<std::size_t>(jointBounds.jointIndex)]
-        );
-        outBounds = hasBounds ? mergeBounds(outBounds, transformedBounds) : transformedBounds;
-        hasBounds = true;
-    }
-
-    return hasBounds;
-}
-
-bool resolveAnimatedSelectionBounds(
-    const World& world,
-    EntityId selected,
-    const FrameSceneData& frame,
-    render::Bounds3& outBounds
-) {
-    if (!world.animatedModels.contains(selected)) {
-        return false;
-    }
-
-    bool hasBounds = false;
-    for (const FrameRenderable& renderable : frame.renderables) {
-        if (world.animationOwnerEntity(renderable.entity) != selected) {
-            continue;
-        }
-        outBounds = hasBounds ? mergeBounds(outBounds, renderable.worldBounds) : renderable.worldBounds;
-        hasBounds = true;
-    }
-
-    return hasBounds;
-}
-
-void applyAnimatedRenderableState(
-    const World& world,
-    const EntityId entity,
-    FrameRenderable& frameRenderable,
-    FrameSceneData& outFrame
-) {
-    const SkinnedRenderableComponent* skinned = world.skinnedRenderables.tryGet(entity);
-    if (skinned == nullptr || !world.isAlive(skinned->animationOwner)) {
-        return;
-    }
-
-    const AnimatedModelComponent* animated = world.animatedModels.tryGet(skinned->animationOwner);
-    if (animated == nullptr || !animated->model) {
-        return;
-    }
-
-    if (skinned->animationOwner.index < world.transformCache_.size()) {
-        // Skin palettes are generated in mesh-node space already, so skinned renderables
-        // only need the owning scene transform here. Multiplying by the mesh node global
-        // again double-applies exporter correction nodes such as unit-scale and axis fixes.
-        frameRenderable.modelMatrix = world.transformCache_[skinned->animationOwner.index].worldMatrix;
-    }
-
-    const bool conservativeBounds =
-        computeConservativeSkinnedWorldBounds(*animated, *skinned, frameRenderable.modelMatrix, frameRenderable.worldBounds);
-    const bool exactBounds =
-        !conservativeBounds && computeSkinnedWorldBounds(*animated, *skinned, frameRenderable.modelMatrix, frameRenderable.worldBounds);
-    if (conservativeBounds || exactBounds) {
-        frameRenderable.hasWorldBounds = true;
-    } else if (entity.index >= world.transformCache_.size() || !world.transformCache_[entity.index].hasWorldBounds) {
-        // Fall back to the raw section bounds when skin data is unavailable.
-        frameRenderable.worldBounds = transformBounds(frameRenderable.localBounds, frameRenderable.modelMatrix);
-        frameRenderable.hasWorldBounds = true;
-    }
-
-    if (skinned->skinIndex < 0 || skinned->skinIndex >= static_cast<int>(animated->skinJointMatrices.size())) {
-        return;
-    }
-
-    const std::vector<glm::mat4>& skinMatrices = animated->skinJointMatrices[static_cast<std::size_t>(skinned->skinIndex)];
-    if (skinMatrices.empty()) {
-        return;
-    }
-
-    frameRenderable.skinned = true;
-    frameRenderable.jointMatrixBase = static_cast<int>(outFrame.jointMatrices.size());
-    frameRenderable.jointMatrixCount = static_cast<int>(skinMatrices.size());
-    outFrame.jointMatrices.insert(outFrame.jointMatrices.end(), skinMatrices.begin(), skinMatrices.end());
-}
-
-void populateSelectionSkeletonDebug(
-    const World& world,
-    EntityId selected,
-    FrameSceneData& outFrame
-) {
-    outFrame.selectionSkeleton.clear();
-
-    const EntityId owner = world.animationOwnerEntity(selected);
-    if (!owner.valid()) {
-        return;
-    }
-
-    const AnimatedModelComponent* animated = world.animatedModels.tryGet(owner);
-    if (animated == nullptr || !animated->model || animated->model->skins.empty()) {
-        return;
-    }
-
-    int skinIndex = 0;
-    if (const SkinnedRenderableComponent* skinned = world.skinnedRenderables.tryGet(selected);
-        skinned != nullptr && skinned->animationOwner == owner) {
-        skinIndex = skinned->skinIndex;
-    }
-    if (skinIndex < 0 || skinIndex >= static_cast<int>(animated->model->skins.size())) {
-        return;
-    }
-
-    const render::SkinData& skin = animated->model->skins[static_cast<std::size_t>(skinIndex)];
-    const std::size_t skeletonCount = std::min(
-        skin.skeletonNodeIndices.size(),
-        std::min(skin.skeletonParentIndices.size(), skin.skeletonJointIndices.size())
-    );
-
-    outFrame.selectionSkeleton.owner = owner;
-    outFrame.selectionSkeleton.skinIndex = skinIndex;
-    outFrame.selectionSkeleton.showOverlay = animated->showSkeletonOverlay;
-    outFrame.selectionSkeleton.jointMatrices = skinIndex < static_cast<int>(animated->skinJointMatrices.size())
-        ? animated->skinJointMatrices[static_cast<std::size_t>(skinIndex)]
-        : std::vector<glm::mat4>{};
-
-    if (skeletonCount == 0u) {
-        return;
-    }
-
-    std::vector<std::vector<int>> childrenByParent(skeletonCount);
-    for (std::size_t index = 0; index < skeletonCount; ++index) {
-        const int parentIndex = skin.skeletonParentIndices[index];
-        if (parentIndex >= 0 && parentIndex < static_cast<int>(skeletonCount)) {
-            childrenByParent[static_cast<std::size_t>(parentIndex)].push_back(static_cast<int>(index));
-        }
-    }
-
-    constexpr std::string_view kInvalidNodeName = "<invalid>";
-    const auto nodeNameForDisplay = [&](int skeletonDisplayIndex) -> std::string_view {
-        if (skeletonDisplayIndex < 0 || skeletonDisplayIndex >= static_cast<int>(skeletonCount)) {
-            return kInvalidNodeName;
-        }
-
-        const int nodeIndex = skin.skeletonNodeIndices[static_cast<std::size_t>(skeletonDisplayIndex)];
-        if (nodeIndex < 0 || nodeIndex >= static_cast<int>(animated->model->nodes.size())) {
-            return kInvalidNodeName;
-        }
-        return animated->model->nodes[static_cast<std::size_t>(nodeIndex)].name;
-    };
-
-    std::vector<std::uint8_t> includeMask(skeletonCount, 0u);
-    std::vector<std::uint8_t> resolvedMask(skeletonCount, 0u);
-    const auto shouldInclude = [&](const auto& self, int skeletonDisplayIndex) -> bool {
-        if (skeletonDisplayIndex < 0 || skeletonDisplayIndex >= static_cast<int>(skeletonCount)) {
-            return false;
-        }
-        if (resolvedMask[static_cast<std::size_t>(skeletonDisplayIndex)] != 0u) {
-            return includeMask[static_cast<std::size_t>(skeletonDisplayIndex)] != 0u;
-        }
-
-        bool hasIncludedChild = false;
-        for (int childIndex : childrenByParent[static_cast<std::size_t>(skeletonDisplayIndex)]) {
-            hasIncludedChild = self(self, childIndex) || hasIncludedChild;
-        }
-
-        const bool isJoint = skin.skeletonJointIndices[static_cast<std::size_t>(skeletonDisplayIndex)] >= 0;
-        bool include = isJoint || hasIncludedChild;
-        if (!include) {
-            const int parentIndex = skin.skeletonParentIndices[static_cast<std::size_t>(skeletonDisplayIndex)];
-            const bool parentIsJoint =
-                parentIndex >= 0 &&
-                parentIndex < static_cast<int>(skeletonCount) &&
-                skin.skeletonJointIndices[static_cast<std::size_t>(parentIndex)] >= 0;
-            include = parentIsJoint && endsWithIgnoreCase(nodeNameForDisplay(skeletonDisplayIndex), "_end");
-        }
-
-        resolvedMask[static_cast<std::size_t>(skeletonDisplayIndex)] = 1u;
-        includeMask[static_cast<std::size_t>(skeletonDisplayIndex)] = include ? 1u : 0u;
-        return include;
-    };
-
-    for (std::size_t index = 0; index < skeletonCount; ++index) {
-        shouldInclude(shouldInclude, static_cast<int>(index));
-    }
-
-    const auto resolveNodeWorldPosition = [&](int nodeIndex) {
-        glm::vec3 position(0.0f);
-        if (nodeIndex >= 0 && nodeIndex < static_cast<int>(animated->globalNodeMatrices.size())) {
-            position = glm::vec3(animated->globalNodeMatrices[static_cast<std::size_t>(nodeIndex)] * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
-            if (owner.index < world.transformCache_.size()) {
-                position = glm::vec3(world.transformCache_[owner.index].worldMatrix * glm::vec4(position, 1.0f));
-            }
-        }
-        return position;
-    };
-
-    outFrame.selectionSkeleton.jointNames.reserve(skeletonCount);
-    outFrame.selectionSkeleton.parentIndices.reserve(skeletonCount);
-    outFrame.selectionSkeleton.jointWorldPositions.reserve(skeletonCount);
-
-    const auto appendFilteredNode = [&](const auto& self, int skeletonDisplayIndex, int filteredParentIndex) -> void {
-        if (skeletonDisplayIndex < 0 ||
-            skeletonDisplayIndex >= static_cast<int>(skeletonCount) ||
-            includeMask[static_cast<std::size_t>(skeletonDisplayIndex)] == 0u) {
-            return;
-        }
-
-        const int filteredIndex = static_cast<int>(outFrame.selectionSkeleton.parentIndices.size());
-        outFrame.selectionSkeleton.jointNames.emplace_back(nodeNameForDisplay(skeletonDisplayIndex));
-        outFrame.selectionSkeleton.parentIndices.push_back(filteredParentIndex);
-        outFrame.selectionSkeleton.jointWorldPositions.push_back(
-            resolveNodeWorldPosition(skin.skeletonNodeIndices[static_cast<std::size_t>(skeletonDisplayIndex)])
-        );
-
-        for (int childIndex : childrenByParent[static_cast<std::size_t>(skeletonDisplayIndex)]) {
-            self(self, childIndex, filteredIndex);
-        }
-    };
-
-    for (std::size_t index = 0; index < skeletonCount; ++index) {
-        if (skin.skeletonParentIndices[index] < 0) {
-            appendFilteredNode(appendFilteredNode, static_cast<int>(index), -1);
-        }
-    }
 }
 
 }  // namespace
@@ -640,7 +321,12 @@ void RenderExtractionSystem::extract(
     }
 
     for (FrameRenderable& renderable : outFrame.renderables) {
-        applyAnimatedRenderableState(world, renderable.entity, renderable, outFrame);
+        render_extraction_detail::applyAnimatedRenderableState(
+            world,
+            renderable.entity,
+            renderable,
+            outFrame
+        );
     }
 
     if (!selection.current().has_value()) {
@@ -696,13 +382,17 @@ void RenderExtractionSystem::extract(
     if (!outFrame.selection.hasWorldBounds ||
         (world.animatedModels.contains(selected) && !world.renderables.contains(selected))) {
         render::Bounds3 animatedBounds{};
-        if (resolveAnimatedSelectionBounds(world, selected, outFrame, animatedBounds)) {
+        if (render_extraction_detail::resolveAnimatedSelectionBounds(
+                world,
+                selected,
+                outFrame,
+                animatedBounds)) {
             outFrame.selection.worldBounds = animatedBounds;
             outFrame.selection.hasWorldBounds = true;
         }
     }
 
-    populateSelectionSkeletonDebug(world, selected, outFrame);
+    render_extraction_detail::populateSelectionSkeletonDebug(world, selected, outFrame);
 }
 
 }  // namespace core

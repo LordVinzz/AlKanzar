@@ -1,4 +1,6 @@
 #include "SceneFactory.hpp"
+#include "SceneMeshFactory.hpp"
+#include "SceneModelFactory.hpp"
 
 #include <algorithm>
 #include <array>
@@ -44,158 +46,6 @@ void addQuad(const std::array<Vertex, 4>& verts, render::Mesh& outMesh) {
     outMesh.indices.insert(outMesh.indices.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
 }
 
-void addBox(
-    const glm::vec3& minCorner,
-    const glm::vec3& maxCorner,
-    const glm::vec4& color,
-    render::Mesh& outMesh
-) {
-    const float minX = minCorner.x;
-    const float minY = minCorner.y;
-    const float minZ = minCorner.z;
-    const float maxX = maxCorner.x;
-    const float maxY = maxCorner.y;
-    const float maxZ = maxCorner.z;
-
-    const std::array<Vertex, 4> rightFace{{
-        {glm::vec3(maxX, minY, minZ), glm::vec3(1.0f, 0.0f, 0.0f), glm::vec2(0.0f, 0.0f), glm::vec2(0.0f), color},
-        {glm::vec3(maxX, maxY, minZ), glm::vec3(1.0f, 0.0f, 0.0f), glm::vec2(0.0f, 1.0f), glm::vec2(0.0f), color},
-        {glm::vec3(maxX, maxY, maxZ), glm::vec3(1.0f, 0.0f, 0.0f), glm::vec2(1.0f, 1.0f), glm::vec2(0.0f), color},
-        {glm::vec3(maxX, minY, maxZ), glm::vec3(1.0f, 0.0f, 0.0f), glm::vec2(1.0f, 0.0f), glm::vec2(0.0f), color},
-    }};
-    addQuad(rightFace, outMesh);
-
-    const std::array<Vertex, 4> leftFace{{
-        {glm::vec3(minX, minY, minZ), glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec2(0.0f, 0.0f), glm::vec2(0.0f), color},
-        {glm::vec3(minX, minY, maxZ), glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec2(1.0f, 0.0f), glm::vec2(0.0f), color},
-        {glm::vec3(minX, maxY, maxZ), glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec2(1.0f, 1.0f), glm::vec2(0.0f), color},
-        {glm::vec3(minX, maxY, minZ), glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec2(0.0f, 1.0f), glm::vec2(0.0f), color},
-    }};
-    addQuad(leftFace, outMesh);
-
-    const std::array<Vertex, 4> topFace{{
-        {glm::vec3(minX, maxY, minZ), glm::vec3(0.0f, 1.0f, 0.0f), glm::vec2(0.0f, 0.0f), glm::vec2(0.0f), color},
-        {glm::vec3(minX, maxY, maxZ), glm::vec3(0.0f, 1.0f, 0.0f), glm::vec2(0.0f, 1.0f), glm::vec2(0.0f), color},
-        {glm::vec3(maxX, maxY, maxZ), glm::vec3(0.0f, 1.0f, 0.0f), glm::vec2(1.0f, 1.0f), glm::vec2(0.0f), color},
-        {glm::vec3(maxX, maxY, minZ), glm::vec3(0.0f, 1.0f, 0.0f), glm::vec2(1.0f, 0.0f), glm::vec2(0.0f), color},
-    }};
-    addQuad(topFace, outMesh);
-
-    const std::array<Vertex, 4> bottomFace{{
-        {glm::vec3(minX, minY, minZ), glm::vec3(0.0f, -1.0f, 0.0f), glm::vec2(0.0f, 0.0f), glm::vec2(0.0f), color},
-        {glm::vec3(maxX, minY, minZ), glm::vec3(0.0f, -1.0f, 0.0f), glm::vec2(1.0f, 0.0f), glm::vec2(0.0f), color},
-        {glm::vec3(maxX, minY, maxZ), glm::vec3(0.0f, -1.0f, 0.0f), glm::vec2(1.0f, 1.0f), glm::vec2(0.0f), color},
-        {glm::vec3(minX, minY, maxZ), glm::vec3(0.0f, -1.0f, 0.0f), glm::vec2(0.0f, 1.0f), glm::vec2(0.0f), color},
-    }};
-    addQuad(bottomFace, outMesh);
-
-    const std::array<Vertex, 4> frontFace{{
-        {glm::vec3(minX, minY, maxZ), glm::vec3(0.0f, 0.0f, 1.0f), glm::vec2(0.0f, 0.0f), glm::vec2(0.0f), color},
-        {glm::vec3(maxX, minY, maxZ), glm::vec3(0.0f, 0.0f, 1.0f), glm::vec2(1.0f, 0.0f), glm::vec2(0.0f), color},
-        {glm::vec3(maxX, maxY, maxZ), glm::vec3(0.0f, 0.0f, 1.0f), glm::vec2(1.0f, 1.0f), glm::vec2(0.0f), color},
-        {glm::vec3(minX, maxY, maxZ), glm::vec3(0.0f, 0.0f, 1.0f), glm::vec2(0.0f, 1.0f), glm::vec2(0.0f), color},
-    }};
-    addQuad(frontFace, outMesh);
-
-    const std::array<Vertex, 4> backFace{{
-        {glm::vec3(minX, minY, minZ), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec2(1.0f, 0.0f), glm::vec2(0.0f), color},
-        {glm::vec3(minX, maxY, minZ), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec2(1.0f, 1.0f), glm::vec2(0.0f), color},
-        {glm::vec3(maxX, maxY, minZ), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec2(0.0f, 1.0f), glm::vec2(0.0f), color},
-        {glm::vec3(maxX, minY, minZ), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec2(0.0f, 0.0f), glm::vec2(0.0f), color},
-    }};
-    addQuad(backFace, outMesh);
-}
-
-render::Bounds3 computeMeshBounds(const render::Mesh& mesh) {
-    render::Bounds3 bounds{};
-    if (mesh.positions.empty()) {
-        return bounds;
-    }
-
-    bounds.min = mesh.positions.front();
-    bounds.max = bounds.min;
-    for (const glm::vec3& position : mesh.positions) {
-        bounds.min = glm::min(bounds.min, position);
-        bounds.max = glm::max(bounds.max, position);
-    }
-    return bounds;
-}
-
-render::Bounds3 computeModelBounds(const render::GltfModelData& model) {
-    render::Bounds3 bounds{};
-    bool hasBounds = false;
-    for (const auto& section : model.sections) {
-        if (section.mesh.positions.empty()) {
-            continue;
-        }
-        glm::mat4 nodeMatrix(1.0f);
-        if (section.nodeIndex >= 0 && section.nodeIndex < static_cast<int>(model.nodes.size())) {
-            nodeMatrix = model.nodes[static_cast<std::size_t>(section.nodeIndex)].bindGlobalMatrix;
-        }
-
-        render::Bounds3 sectionBounds{};
-        bool hasSectionBounds = false;
-        for (const glm::vec3& position : section.mesh.positions) {
-            const glm::vec3 worldPosition = glm::vec3(nodeMatrix * glm::vec4(position, 1.0f));
-            if (!hasSectionBounds) {
-                sectionBounds.min = worldPosition;
-                sectionBounds.max = worldPosition;
-                hasSectionBounds = true;
-                continue;
-            }
-            sectionBounds.min = glm::min(sectionBounds.min, worldPosition);
-            sectionBounds.max = glm::max(sectionBounds.max, worldPosition);
-        }
-        if (!hasSectionBounds) {
-            continue;
-        }
-        if (!hasBounds) {
-            bounds = sectionBounds;
-            hasBounds = true;
-            continue;
-        }
-        bounds.min = glm::min(bounds.min, sectionBounds.min);
-        bounds.max = glm::max(bounds.max, sectionBounds.max);
-    }
-    return bounds;
-}
-
-core::TransformComponent transformFromNodeTransform(const render::NodeTransform& transform) {
-    return core::TransformComponent{
-        transform.translation,
-        glm::degrees(glm::eulerAngles(transform.rotation)),
-        transform.scale
-    };
-}
-
-bool fitModelToFootprint(render::GltfModelData& model, float targetFootprint) {
-    const render::Bounds3 bounds = computeModelBounds(model);
-    const glm::vec3 size = bounds.max - bounds.min;
-    const float footprint = std::max(size.x, size.z);
-    if (footprint <= 1.0e-4f) {
-        return false;
-    }
-
-    const float scale = targetFootprint / footprint;
-    for (int rootNodeIndex : model.sceneRootNodes) {
-        if (rootNodeIndex < 0 || rootNodeIndex >= static_cast<int>(model.nodes.size())) {
-            continue;
-        }
-        model.nodes[static_cast<std::size_t>(rootNodeIndex)].localTransform.scale *= glm::vec3(scale);
-    }
-    render::refreshModelBindPose(model);
-    return true;
-}
-
-std::string assetRootPath(const char* subdir) {
-    char* basePath = SDL_GetBasePath();
-    std::string root = basePath ? basePath : "";
-    if (basePath) {
-        SDL_free(basePath);
-    }
-    return root + subdir;
-}
-
 }  // namespace
 
 namespace core {
@@ -207,7 +57,7 @@ bool SceneFactory::buildScene(
 ) const {
     world.clear();
 
-    const std::string texturesRoot = assetRootPath("textures/");
+    const std::string texturesRoot = scene_detail::assetRootPath("textures/");
     const auto soilBase = renderer.registerTexture(render::loadTextureFromFile(
         texturesRoot + "soil.jpg",
         "SoilBaseColor",
@@ -353,33 +203,25 @@ bool SceneFactory::buildScene(
         groundMesh
     );
 
-    render::Mesh wallAMesh;
-    render::Mesh wallBMesh;
-    render::Mesh frustumTestBoxMesh;
-    render::Mesh occlusionTestBoxMesh;
-    addBox(
+    const render::Mesh wallAMesh = SceneMeshFactory::createBox(
         glm::vec3(-blueprint.wallThickness * 0.5f, 0.0f, -blueprint.wallLength),
         glm::vec3(blueprint.wallThickness * 0.5f, blueprint.wallHeight, blueprint.wallLength),
-        glm::vec4(1.0f),
-        wallAMesh
+        glm::vec4(1.0f)
     );
-    addBox(
+    const render::Mesh wallBMesh = SceneMeshFactory::createBox(
         glm::vec3(-blueprint.wallThickness * 0.5f, 0.0f, -blueprint.wallLength),
         glm::vec3(blueprint.wallThickness * 0.5f, blueprint.wallHeight, blueprint.wallLength),
-        glm::vec4(1.0f),
-        wallBMesh
+        glm::vec4(1.0f)
     );
-    addBox(
+    const render::Mesh frustumTestBoxMesh = SceneMeshFactory::createBox(
         glm::vec3(-0.75f, -0.75f, -0.75f),
         glm::vec3(0.75f, 0.75f, 0.75f),
-        glm::vec4(1.0f),
-        frustumTestBoxMesh
+        glm::vec4(1.0f)
     );
-    addBox(
+    const render::Mesh occlusionTestBoxMesh = SceneMeshFactory::createBox(
         glm::vec3(-0.75f, -0.75f, -0.75f),
         glm::vec3(0.75f, 0.75f, 0.75f),
-        glm::vec4(1.0f),
-        occlusionTestBoxMesh
+        glm::vec4(1.0f)
     );
 
     const render::MeshHandle groundMeshHandle = renderer.uploadMesh(groundMesh);
@@ -418,7 +260,7 @@ bool SceneFactory::buildScene(
         "Ground",
         TransformComponent{},
         groundMesh,
-        computeMeshBounds(groundMesh),
+        SceneMeshFactory::computeBounds(groundMesh),
         groundMeshHandle,
         groundMaterial,
         render::RenderLayer::Ground
@@ -427,7 +269,7 @@ bool SceneFactory::buildScene(
         "Wall A",
         TransformComponent{glm::vec3(-blueprint.wallOffset, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)},
         wallAMesh,
-        computeMeshBounds(wallAMesh),
+        SceneMeshFactory::computeBounds(wallAMesh),
         wallAMeshHandle,
         wallRockMaterial,
         render::RenderLayer::Geometry
@@ -436,7 +278,7 @@ bool SceneFactory::buildScene(
         "Wall B",
         TransformComponent{glm::vec3(blueprint.wallOffset, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)},
         wallBMesh,
-        computeMeshBounds(wallBMesh),
+        SceneMeshFactory::computeBounds(wallBMesh),
         wallBMeshHandle,
         wallWoodMaterial,
         render::RenderLayer::Geometry
@@ -445,7 +287,7 @@ bool SceneFactory::buildScene(
         "Frustum Test Box",
         TransformComponent{glm::vec3(-9.5f, 0.75f, -14.0f), glm::vec3(0.0f), glm::vec3(1.0f)},
         frustumTestBoxMesh,
-        computeMeshBounds(frustumTestBoxMesh),
+        SceneMeshFactory::computeBounds(frustumTestBoxMesh),
         frustumTestBoxMeshHandle,
         wallWoodMaterial,
         render::RenderLayer::Geometry
@@ -454,7 +296,7 @@ bool SceneFactory::buildScene(
         "Occlusion Test Box",
         TransformComponent{glm::vec3(-3.0f, 0.75f, -8.5f), glm::vec3(0.0f), glm::vec3(1.0f)},
         occlusionTestBoxMesh,
-        computeMeshBounds(occlusionTestBoxMesh),
+        SceneMeshFactory::computeBounds(occlusionTestBoxMesh),
         occlusionTestBoxMeshHandle,
         wallRockMaterial,
         render::RenderLayer::Geometry
@@ -469,7 +311,7 @@ bool SceneFactory::buildScene(
         world.markLightsDirty(entity);
     }
 
-    const std::string modelRoot = assetRootPath("models/");
+    const std::string modelRoot = scene_detail::assetRootPath("models/");
     for (const ModelInstanceBlueprint& modelBlueprint : blueprint.models) {
         auto modelAsset = std::make_shared<render::GltfModelData>();
         if (!render::loadGltfModel(modelRoot + modelBlueprint.path, *modelAsset)) {
@@ -477,7 +319,8 @@ bool SceneFactory::buildScene(
             return false;
         }
 
-        if (modelBlueprint.fitToFootprint && !fitModelToFootprint(*modelAsset, modelBlueprint.footprint)) {
+        if (modelBlueprint.fitToFootprint &&
+            !scene_detail::fitModelToFootprint(*modelAsset, modelBlueprint.footprint)) {
             spdlog::error("SceneFactory: failed to fit model '{}'", modelBlueprint.path);
             return false;
         }
@@ -540,10 +383,13 @@ bool SceneFactory::buildScene(
                         modelAsset->nodes[static_cast<std::size_t>(section.nodeIndex)].bindGlobalMatrix,
                         nodeTransform
                     )) {
-                    world.transforms.emplace(sectionEntity, transformFromNodeTransform(nodeTransform));
+                    world.transforms.emplace(
+                        sectionEntity,
+                        scene_detail::transformFromNodeTransform(nodeTransform)
+                    );
                 }
             }
-            world.bounds.emplace(sectionEntity, BoundsComponent{computeMeshBounds(section.mesh)});
+            world.bounds.emplace(sectionEntity, BoundsComponent{SceneMeshFactory::computeBounds(section.mesh)});
             world.visibilities.emplace(sectionEntity, VisibilityComponent{true});
             world.renderables.emplace(sectionEntity, RenderableComponent{meshHandle, modelBlueprint.layer});
             world.materials.emplace(sectionEntity, MaterialComponent{material});
