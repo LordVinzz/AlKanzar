@@ -50,6 +50,8 @@ std::string serializeNavMeshAsset(const NavMeshAsset& asset) {
     out << "version " << asset.version << "\n";
     out << "minimum_runtime_cell_area "
         << std::max(asset.minimumRuntimeCellArea, 0.0f) << "\n";
+    out << "maximum_polygon_edge_length "
+        << std::max(asset.maximumPolygonEdgeLength, 0.0f) << "\n";
     for (const NavSourceTagOverride& overrideRecord : asset.sourceTagOverrides) {
         out << "source_tag_override " << std::quoted(overrideRecord.stableId) << " " << navSourceTagName(overrideRecord.tag) << "\n";
     }
@@ -96,6 +98,16 @@ bool parseNavMeshAsset(const std::string& text, NavMeshAsset& outAsset, std::str
                 asset.minimumRuntimeCellArea < 0.0f) {
                 if (error) {
                     *error = "Invalid minimum_runtime_cell_area at line " + std::to_string(lineNumber);
+                }
+                return false;
+            }
+        } else if (keyword == "maximum_polygon_edge_length") {
+            if (!(lineStream >> asset.maximumPolygonEdgeLength) ||
+                !std::isfinite(asset.maximumPolygonEdgeLength) ||
+                asset.maximumPolygonEdgeLength < 0.0f) {
+                if (error) {
+                    *error = "Invalid maximum_polygon_edge_length at line " +
+                        std::to_string(lineNumber);
                 }
                 return false;
             }

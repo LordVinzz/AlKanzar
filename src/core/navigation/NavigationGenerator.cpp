@@ -76,11 +76,20 @@ bool NavigationSystem::generateFromTags(const World& world, NavigationRuntime& r
         return lhs.elevationY < rhs.elevationY;
     });
     for (const LayerBuildData& layer : layers) {
-        std::vector<NavPolygon> polygons = buildPolygonsForLayer(layer, polygonId);
+        const auto polygons = buildPolygonsForLayer(
+            layer,
+            polygonId,
+            runtime.asset.maximumPolygonEdgeLength,
+            runtime.asset.minimumRuntimeCellArea,
+            error
+        );
+        if (!polygons.has_value()) {
+            return false;
+        }
         runtime.asset.polygons.insert(
             runtime.asset.polygons.end(),
-            std::make_move_iterator(polygons.begin()),
-            std::make_move_iterator(polygons.end())
+            std::make_move_iterator(polygons->begin()),
+            std::make_move_iterator(polygons->end())
         );
     }
 
@@ -96,4 +105,3 @@ bool NavigationSystem::generateFromTags(const World& world, NavigationRuntime& r
 }
 
 }  // namespace core
-

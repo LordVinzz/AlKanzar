@@ -35,6 +35,8 @@
 #include "core/events/Events.hpp"
 #include "core/lighting/LightSystem.hpp"
 #include "core/navigation/Navigation.hpp"
+#include "core/navigation/NavigationDetailBake.hpp"
+#include "core/navigation/NavigationDetailPolygon.hpp"
 #include "core/physics/PhysicsSystem.hpp"
 #include "core/scene/Camera.hpp"
 #include "core/systems/PickingSystem.hpp"
@@ -757,6 +759,7 @@ void testSelectionModelTracksComponentFocus() {
 void testNavigationAssetRoundTrip() {
     core::NavMeshAsset asset{};
     asset.minimumRuntimeCellArea = 0.0125f;
+    asset.maximumPolygonEdgeLength = 3.5f;
     asset.sourceTagOverrides.push_back(core::NavSourceTagOverride{"Root/Ground", core::NavSourceTag::Walkable});
     asset.polygons.push_back(core::NavPolygon{
         1,
@@ -784,6 +787,7 @@ void testNavigationAssetRoundTrip() {
     assert(error.empty());
     assert(parsed.version == 1);
     assert(nearlyEqual(parsed.minimumRuntimeCellArea, 0.0125, 0.000001));
+    assert(nearlyEqual(parsed.maximumPolygonEdgeLength, 3.5, 0.000001));
     assert(parsed.sourceTagOverrides.size() == 1u);
     assert(parsed.sourceTagOverrides[0].stableId == "Root/Ground");
     assert(parsed.sourceTagOverrides[0].tag == core::NavSourceTag::Walkable);
@@ -873,7 +877,7 @@ void testNavigationBakeBuildsMultiLevelPolygonsAndBlocksOnlyOverlappingLayers() 
     assert(!foundSlopeLayer);
 }
 
-void testNavigationBakeFiltersRuntimeCellsBelowConfiguredArea() {
+void testNavigationMinimumTriangleAreaIsNotAppliedAtRuntime() {
     core::NavigationSystem navigation;
     core::NavigationRuntime runtime{};
     runtime.asset.minimumRuntimeCellArea = 0.01f;
@@ -899,11 +903,10 @@ void testNavigationBakeFiltersRuntimeCellsBelowConfiguredArea() {
     };
 
     assert(navigation.rebuildRuntime(runtime));
-    assert(runtime.bakedCells.size() == 2u);
-    assert(runtime.filteredRuntimeCellCount == 1u);
+    assert(runtime.bakedCells.size() == 3u);
     assert(runtime.polygonToCellIndices.size() == 3u);
     assert(runtime.polygonToCellIndices[0].size() == 1u);
-    assert(runtime.polygonToCellIndices[1].empty());
+    assert(runtime.polygonToCellIndices[1].size() == 1u);
     assert(runtime.polygonToCellIndices[2].size() == 1u);
 
     core::World world;
@@ -914,7 +917,24 @@ void testNavigationBakeFiltersRuntimeCellsBelowConfiguredArea() {
         glm::vec3(1.0f)
     });
     world.navAgents.emplace(agentEntity, core::NavAgentComponent{});
-    assert(!navigation.setAgentDestination(world, runtime, agentEntity, glm::vec3(3.0f, 0.0f, 1.0f)));
+    assert(navigation.setAgentDestination(world, runtime, agentEntity, glm::vec3(3.0f, 0.0f, 1.0f)));
+
+    const std::vector<core::NavRuntimeCell> triangles{
+        core::NavRuntimeCell{0.0f, {
+            glm::vec2(0.0f, 0.0f), glm::vec2(1.0f, 0.0f),
+            glm::vec2(0.0f, 1.0f)
+        }},
+        core::NavRuntimeCell{0.0f, {
+            glm::vec2(2.0f, 0.0f), glm::vec2(2.05f, 0.0f),
+            glm::vec2(2.0f, 0.05f)
+        }},
+    };
+    const std::vector<core::NavRuntimeCell> constrained =
+        core::navigation_detail::applyMinimumTriangleAreaConstraint(
+            triangles,
+            0.01f
+        );
+    assert(constrained.size() == 1u);
 }
 
 void testNavigationGenerationUsesUnionOfObjectColliderShapes() {
@@ -990,7 +1010,7 @@ void testNavigationDefaultHitboxPreservesConcaveShapeUnion() {
     assert(pointInsideWalkableUnion(glm::vec3(1.0f, 0.0f, 1.0f), runtime.asset.polygons));
 }
 
-void testNavigationGenerationMinimizesRectangularObstacleDecomposition() {
+void testNavigationGenerationUsesDelaunayTrianglesAroundRectangularObstacle() {
     core::World world;
     core::TransformSystem transformSystem;
     core::TaskScheduler scheduler = makeScheduler();
@@ -1013,7 +1033,121 @@ void testNavigationGenerationMinimizesRectangularObstacleDecomposition() {
     std::string error{};
     assert(navigation.generateFromTags(world, runtime, &error));
     assert(error.empty());
-    assert(runtime.asset.polygons.size() == 4u);
+    assert(!runtime.asset.polygons.empty());
+    assert(runtime.asset.polygons.size() <= 12u);
+    assert(std::all_of(
+        runtime.asset.polygons.begin(),
+        runtime.asset.polygons.end(),
+        [](const core::NavPolygon& polygon) {
+            return polygon.verticesXZ.size() == 3u;
+        }
+    ));
+
+    runtime.asset.maximumPolygonEdgeLength = 2.0f;
+    error.clear();
+    assert(navigation.generateFromTags(world, runtime, &error));
+    assert(error.empty());
+    for (const core::NavPolygon& polygon : runtime.asset.polygons) {
+        for (std::size_t vertexIndex = 0u;
+             vertexIndex < polygon.verticesXZ.size();
+             ++vertexIndex) {
+            const glm::vec2& from = polygon.verticesXZ[vertexIndex];
+            const glm::vec2& to = polygon.verticesXZ[
+                (vertexIndex + 1u) % polygon.verticesXZ.size()];
+            assert(glm::distance(from, to) <= 2.0f + 0.0002f);
+        }
+    }
+}
+
+void testNavigationDelaunayTriangulatesCellsIndividuallyWhenNeeded() {
+    const std::vector<core::NavRuntimeCell> cells{
+        core::NavRuntimeCell{0.0f, {
+            glm::vec2(-4.0f, -1.0f), glm::vec2(-2.0f, -1.0f),
+            glm::vec2(-2.0f, 1.0f), glm::vec2(-4.0f, 1.0f)
+        }},
+        core::NavRuntimeCell{0.0f, {
+            glm::vec2(2.0f, -1.0f), glm::vec2(4.0f, -1.0f),
+            glm::vec2(4.0f, 1.0f), glm::vec2(2.0f, 1.0f)
+        }},
+    };
+    std::string error{};
+    const auto triangles =
+        core::navigation_detail::triangulateWalkableCellsIndividuallyDelaunay(
+            cells,
+            0.0f,
+            &error
+        );
+    assert(triangles.has_value());
+    assert(error.empty());
+    assert(triangles->size() == 4u);
+    assert(std::all_of(
+        triangles->begin(),
+        triangles->end(),
+        [](const core::NavRuntimeCell& triangle) {
+            return triangle.verticesXZ.size() == 3u;
+        }
+    ));
+}
+
+void testDefaultSceneMinimumDelaunayAreaBuildsWeldedPolyanyaMesh() {
+    std::ifstream input(assetPath("assets/navmeshes/DefaultScene.navmesh"));
+    assert(input.is_open());
+    const std::string serialized{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()
+    };
+    core::NavMeshAsset sourceAsset{};
+    std::string error{};
+    assert(core::parseNavMeshAsset(serialized, sourceAsset, &error));
+    assert(error.empty());
+
+    std::vector<core::NavRuntimeCell> cells{};
+    cells.reserve(sourceAsset.polygons.size());
+    for (const core::NavPolygon& polygon : sourceAsset.polygons) {
+        cells.push_back(core::NavRuntimeCell{
+            polygon.elevationY,
+            polygon.verticesXZ
+        });
+    }
+    const auto triangles =
+        core::navigation_detail::triangulateWalkableCellsIndividuallyDelaunay(
+            cells,
+            0.0f,
+            &error
+    );
+    assert(triangles.has_value());
+    assert(error.empty());
+
+    core::NavigationRuntime runtime{};
+    constexpr float minimumTriangleArea = 0.01f;
+    runtime.asset.minimumRuntimeCellArea = minimumTriangleArea;
+    int polygonId = 1;
+    const std::vector<core::NavRuntimeCell> constrainedTriangles =
+        core::navigation_detail::applyMinimumTriangleAreaConstraint(
+            *triangles,
+            minimumTriangleArea
+        );
+    assert(std::all_of(
+        constrainedTriangles.begin(),
+        constrainedTriangles.end(),
+        [minimumTriangleArea](const core::NavRuntimeCell& triangle) {
+            return std::abs(
+                core::navigation_detail::polygonSignedArea(triangle.verticesXZ)
+            ) >= minimumTriangleArea;
+        }
+    ));
+    for (const core::NavRuntimeCell& triangle : constrainedTriangles) {
+        runtime.asset.polygons.push_back(core::NavPolygon{
+            polygonId++,
+            triangle.elevationY,
+            triangle.verticesXZ
+        });
+    }
+    core::NavigationSystem navigation;
+    assert(navigation.rebuildRuntime(runtime, &error));
+    assert(error.empty());
+    assert(runtime.polyanyaMesh != nullptr);
+    assert(runtime.exactPathfindingWarning.empty());
 }
 
 void testNavigationGenerationHandlesFantasyHouseGeometryWithoutPathologicalMerge() {
@@ -1075,6 +1209,13 @@ void testNavigationGenerationHandlesFantasyHouseGeometryWithoutPathologicalMerge
 
         assert(error.empty());
         assert(!runtime.asset.polygons.empty());
+        assert(std::all_of(
+            runtime.asset.polygons.begin(),
+            runtime.asset.polygons.end(),
+            [](const core::NavPolygon& polygon) {
+                return polygon.verticesXZ.size() == 3u;
+            }
+        ));
         if (attempt == 0) {
             expectedPolygonCount = runtime.asset.polygons.size();
         } else {
@@ -1087,6 +1228,24 @@ void testNavigationGenerationHandlesFantasyHouseGeometryWithoutPathologicalMerge
         slowestDurationSeconds * 1000.0
     );
     assert(slowestDurationSeconds < 2.0);
+
+    runtime.asset.minimumRuntimeCellArea = 0.01f;
+    std::string generationConstraintError{};
+    assert(navigation.generateFromTags(
+        world,
+        runtime,
+        &generationConstraintError
+    ));
+    assert(generationConstraintError.empty());
+    assert(std::all_of(
+        runtime.asset.polygons.begin(),
+        runtime.asset.polygons.end(),
+        [](const core::NavPolygon& polygon) {
+            return std::abs(
+                core::navigation_detail::polygonSignedArea(polygon.verticesXZ)
+            ) >= 0.01f - 0.0001f;
+        }
+    ));
 
     std::string bakeError{};
     const auto bakeStartedAt = std::chrono::steady_clock::now();
@@ -1758,6 +1917,21 @@ void witnessDefaultSceneNavigationGeneration() {
     assert(houseModel.sections.size() == 9u);
     assert(generatedRuntime.asset.polygons.size() <= 128u);
     assert(generatedRuntime.bakedCells.size() <= 192u);
+    const auto generatedSurfaceContains = [&generatedRuntime](const glm::vec3& point) {
+        const glm::vec2 pointXZ(point.x, point.z);
+        return std::any_of(
+            generatedRuntime.asset.polygons.begin(),
+            generatedRuntime.asset.polygons.end(),
+            [&](const core::NavPolygon& polygon) {
+                return std::abs(point.y - polygon.elevationY) <= 0.1f &&
+                    pointInOrOnPolygonXZ(pointXZ, polygon.verticesXZ);
+            }
+        );
+    };
+    // These are interior points of Wall A and the fitted house in the real
+    // default scene. The generated surface must never cover either obstacle.
+    assert(!generatedSurfaceContains(glm::vec3(-3.0f, 0.0f, 2.0f)));
+    assert(!generatedSurfaceContains(glm::vec3(-3.0f, 0.0f, -8.0f)));
     core::NavMeshAsset parsedAsset{};
     std::string parseError{};
     assert(core::parseNavMeshAsset(serialized, parsedAsset, &parseError));
@@ -1802,10 +1976,9 @@ void witnessDefaultSceneNavigationGeneration() {
         }
     );
     std::printf(
-        "[default-scene reload] polygons=%zu cells=%zu filtered=%zu graph_edges=%zu rebuild_ms=%.3f\n",
+        "[default-scene reload] polygons=%zu cells=%zu graph_edges=%zu rebuild_ms=%.3f\n",
         reloadedRuntime.asset.polygons.size(),
         reloadedRuntime.bakedCells.size(),
-        reloadedRuntime.filteredRuntimeCellCount,
         graphEdgeCount,
         rebuildMs
     );
@@ -1826,6 +1999,31 @@ void witnessDefaultSceneNavigationGeneration() {
         false,
         false
     });
+
+    // Wall A separates these two points. A direct route would cross its
+    // footprint, so this is an end-to-end regression for the generated asset,
+    // the runtime graph and the funnel/path solver together.
+    const glm::vec3 wallStart(-4.0f, 0.0f, 2.0f);
+    const glm::vec3 wallDestination(-2.0f, 0.0f, 2.0f);
+    world.transforms.get(agentEntity).position = wallStart;
+    assert(navigation.setAgentDestination(
+        world,
+        reloadedRuntime,
+        agentEntity,
+        wallDestination
+    ));
+    const std::vector<glm::vec3> wallPath =
+        world.navAgents.get(agentEntity).pathCorners;
+    assert(pathLength(wallStart, wallPath) > glm::distance(wallStart, wallDestination) + 1.0f);
+    glm::vec3 wallPathPrevious = wallStart;
+    for (const glm::vec3& corner : wallPath) {
+        assert(segmentInsidePolygons(
+            wallPathPrevious,
+            corner,
+            reloadedRuntime.asset.polygons
+        ));
+        wallPathPrevious = corner;
+    }
 
     // This pair straddles the house. With only 64 globally ranked visibility
     // nodes, the southern clearance homotopy lost its last required corner and
@@ -6613,10 +6811,12 @@ int main() {
     testSelectionModelTracksComponentFocus();
     testNavigationAssetRoundTrip();
     testNavigationBakeBuildsMultiLevelPolygonsAndBlocksOnlyOverlappingLayers();
-    testNavigationBakeFiltersRuntimeCellsBelowConfiguredArea();
+    testNavigationMinimumTriangleAreaIsNotAppliedAtRuntime();
     testNavigationGenerationUsesUnionOfObjectColliderShapes();
     testNavigationDefaultHitboxPreservesConcaveShapeUnion();
-    testNavigationGenerationMinimizesRectangularObstacleDecomposition();
+    testNavigationGenerationUsesDelaunayTrianglesAroundRectangularObstacle();
+    testNavigationDelaunayTriangulatesCellsIndividuallyWhenNeeded();
+    testDefaultSceneMinimumDelaunayAreaBuildsWeldedPolyanyaMesh();
     testNavigationGenerationHandlesFantasyHouseGeometryWithoutPathologicalMerge();
     testNavigationPathfindingUsesAStarFunnelAndExplicitLinks();
     testNavigationOverlapCorridorConstraint();

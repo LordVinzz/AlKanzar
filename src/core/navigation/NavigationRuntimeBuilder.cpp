@@ -44,7 +44,6 @@ bool NavigationSystem::rebuildRuntimeInternal(
     runtime.polygonToCellIndices.clear();
     runtime.cellToPolygonIndices.clear();
     runtime.graph.clear();
-    runtime.filteredRuntimeCellCount = 0u;
 
     std::vector<BakeLayerData> bakeLayers{};
     runtime.polygonToCellIndices.resize(runtime.asset.polygons.size());
@@ -139,29 +138,6 @@ bool NavigationSystem::rebuildRuntimeInternal(
         for (std::size_t localCellIndex = 0; localCellIndex < layerCells.size(); ++localCellIndex) {
             const std::vector<glm::vec2>& cellVertices =
                 layerCells[localCellIndex].verticesXZ;
-            const float cellArea = std::abs(polygonSignedArea(cellVertices));
-            float longestEdge = 0.0f;
-            for (std::size_t vertexIndex = 0u;
-                 vertexIndex < cellVertices.size();
-                 ++vertexIndex) {
-                longestEdge = std::max(
-                    longestEdge,
-                    glm::distance(
-                        cellVertices[vertexIndex],
-                        cellVertices[
-                            (vertexIndex + 1u) % cellVertices.size()]
-                    )
-                );
-            }
-            const float minimumAltitude = longestEdge > kPlaneEpsilon
-                ? (2.0f * cellArea) / longestEdge
-                : 0.0f;
-            if (cellArea <
-                    std::max(runtime.asset.minimumRuntimeCellArea, 0.0f) ||
-                minimumAltitude <= kPortalBroadPhaseEpsilon) {
-                ++runtime.filteredRuntimeCellCount;
-                continue;
-            }
             const std::size_t globalCellIndex = runtime.bakedCells.size();
             const auto [cellMinXZ, cellMaxXZ] = polygonBoundsXZ(layerCells[localCellIndex].verticesXZ);
             runtime.bakedCellCenters.push_back(polygonCentroidXZ(layerCells[localCellIndex].verticesXZ));
@@ -323,4 +299,3 @@ bool NavigationSystem::rebuildRuntimeInternal(
 }
 
 }  // namespace core
-

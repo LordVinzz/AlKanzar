@@ -50,7 +50,12 @@ struct NavLink {
 
 struct NavMeshAsset {
     int version{1};
+    // Generation constraint: triangles below this world-space area are not
+    // emitted into the navmesh asset. Zero disables the constraint.
     float minimumRuntimeCellArea{0.0f};
+    // Zero keeps the generated mesh unconstrained. A positive value limits
+    // every generated polygon edge to this world-space length.
+    float maximumPolygonEdgeLength{0.0f};
     std::vector<NavSourceTagOverride> sourceTagOverrides{};
     std::vector<NavPolygon> polygons{};
     std::vector<NavLink> links{};
@@ -124,7 +129,6 @@ struct NavigationRuntime {
     bool bakedCellsHaveInteriorOverlap{false};
     std::shared_ptr<const NavigationSolveSnapshot> solveSnapshot{};
     std::uint64_t solveRevision{0u};
-    std::size_t filteredRuntimeCellCount{0u};
     std::string statusMessage{};
     std::string exactPathfindingWarning{};
     bool statusIsError{false};

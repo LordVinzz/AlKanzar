@@ -26,6 +26,7 @@ constexpr int kClearanceBinarySearchSteps = 10;
 constexpr int kClearanceProjectionIterations = 16;
 constexpr std::size_t kMaxClearanceProjectionCandidateCells = 16u;
 constexpr std::size_t kMaxProjectedCellsPerDefaultHitboxPart = 16u;
+constexpr std::size_t kMaxGeneratedNavMeshCells = 250000u;
 constexpr int kNavAssetVersion = 1;
 inline const glm::vec4 kWalkableOverlayColor(0.0f, 1.0f, 0.0f, 0.5f);
 

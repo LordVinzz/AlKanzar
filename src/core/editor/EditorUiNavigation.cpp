@@ -71,10 +71,9 @@ void drawNavMeshWindow(EngineServices& services) {
 
     ImGui::Text("Asset: %s", services.navigation.assetPath.c_str());
     ImGui::Text(
-        "%zu polygons | %zu runtime cells | %zu filtered",
+        "%zu polygons | %zu runtime cells",
         services.navigation.asset.polygons.size(),
-        services.navigation.bakedCells.size(),
-        services.navigation.filteredRuntimeCellCount
+        services.navigation.bakedCells.size()
     );
     if (!services.navigation.statusMessage.empty()) {
         const ImVec4 color = services.navigation.statusIsError
@@ -94,8 +93,7 @@ void drawNavMeshWindow(EngineServices& services) {
         std::string error{};
         if (services.navigationSystem.rebuildRuntime(services.navigation, &error)) {
             services.navigation.statusMessage = "Baked navmesh (" +
-                std::to_string(services.navigation.bakedCells.size()) + " cells, " +
-                std::to_string(services.navigation.filteredRuntimeCellCount) + " filtered).";
+                std::to_string(services.navigation.bakedCells.size()) + " cells).";
             services.navigation.statusIsError = false;
         } else {
             services.navigation.statusMessage = error;
@@ -161,7 +159,7 @@ void drawNavMeshWindow(EngineServices& services) {
         services.navigation.editor.polygonCaptureActive = false;
     }
     if (ImGui::DragFloat(
-        "Minimum Runtime Cell Area",
+        "Minimum Generated Triangle Area",
         &services.navigation.asset.minimumRuntimeCellArea,
         0.001f,
         0.0f,
@@ -172,8 +170,29 @@ void drawNavMeshWindow(EngineServices& services) {
         services.navigation.asset.minimumRuntimeCellArea =
             std::max(services.navigation.asset.minimumRuntimeCellArea, 0.0f);
     }
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        bakeRuntime();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "0 disables the constraint. Regenerate From Tags after changing this value."
+        );
+    }
+    if (ImGui::DragFloat(
+        "Maximum Polygon Edge Length",
+        &services.navigation.asset.maximumPolygonEdgeLength,
+        0.1f,
+        0.0f,
+        1000.0f,
+        "%.2f",
+        ImGuiSliderFlags_AlwaysClamp
+    )) {
+        services.navigation.asset.maximumPolygonEdgeLength = std::max(
+            services.navigation.asset.maximumPolygonEdgeLength,
+            0.0f
+        );
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "0 disables the limit. Regenerate From Tags after changing this value."
+        );
     }
 
     ImGui::SeparatorText("Tagging");
@@ -388,4 +407,3 @@ void drawNavMeshWindow(EngineServices& services) {
 }
 
 }  // namespace core
-

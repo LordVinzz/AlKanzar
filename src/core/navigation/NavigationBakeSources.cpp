@@ -285,7 +285,13 @@ void appendConvexPolygonToUnion(
     }
 }
 
-std::vector<NavPolygon> buildPolygonsForLayer(const LayerBuildData& layer, int& nextPolygonId) {
+std::optional<std::vector<NavPolygon>> buildPolygonsForLayer(
+    const LayerBuildData& layer,
+    int& nextPolygonId,
+    float maximumPolygonEdgeLength,
+    float minimumTriangleArea,
+    std::string* error
+) {
     std::vector<NavRuntimeCell> cells{};
     for (const WalkableTriangle& triangle : layer.triangles) {
         appendConvexPolygonToUnion(cells, {triangle.a, triangle.b, triangle.c}, layer.elevationY);
@@ -323,6 +329,42 @@ std::vector<NavPolygon> buildPolygonsForLayer(const LayerBuildData& layer, int& 
         }
     }
     mergeAdjacentConvexCells(cells);
+
+    std::string delaunayError{};
+    const auto triangulated = triangulateWalkableCellsDelaunay(
+        cells,
+        layer.elevationY,
+        &delaunayError
+    );
+    if (!triangulated.has_value()) {
+        if (error != nullptr) {
+            *error = "Constrained Delaunay triangulation failed: " +
+                (delaunayError.empty() ? "unknown error" : delaunayError);
+        }
+        return std::nullopt;
+    }
+    cells = *triangulated;
+
+    if (maximumPolygonEdgeLength > 0.0f) {
+        const auto constrained = enforceMaximumPolygonEdgeLength(
+            cells,
+            maximumPolygonEdgeLength
+        );
+        if (!constrained.has_value()) {
+            if (error != nullptr) {
+                *error = "Maximum Polygon Edge Length generates too many navmesh cells.";
+            }
+            return std::nullopt;
+        }
+        cells = *constrained;
+    }
+    cells = applyMinimumTriangleAreaConstraint(cells, minimumTriangleArea);
+    if (cells.empty()) {
+        if (error != nullptr) {
+            *error = "Minimum Generated Triangle Area removed every triangle from a navmesh layer.";
+        }
+        return std::nullopt;
+    }
 
     std::vector<NavPolygon> polygons{};
     polygons.reserve(cells.size());

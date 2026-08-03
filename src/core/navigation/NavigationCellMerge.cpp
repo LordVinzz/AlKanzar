@@ -105,9 +105,12 @@ std::vector<SharedPortalResult> sharedBoundaryPortals(
             const glm::vec2& rhsB = rhs.verticesXZ[(rhsIndex + 1u) % rhs.verticesXZ.size()];
             const glm::vec2 rhsEdge = rhsB - rhsA;
             const float rhsLength = glm::length(rhsEdge);
+            const float rhsStartOffset = std::abs(cross2(axis, rhsA - lhsA));
+            const float rhsEndOffset = std::abs(cross2(axis, rhsB - lhsA));
             if (rhsLength <= kPolygonEpsilon ||
                 std::abs(cross2(axis, rhsEdge / rhsLength)) > kPolygonEpsilon ||
-                std::abs(cross2(axis, rhsA - lhsA)) > kPolygonEpsilon) {
+                rhsStartOffset > kPolygonEpsilon ||
+                rhsEndOffset > kPolygonEpsilon) {
                 continue;
             }
 

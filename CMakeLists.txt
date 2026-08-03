@@ -52,6 +52,8 @@ add_library(alkanzar_core STATIC
     src/core/navigation/NavigationRuntimeSupport.cpp
     src/core/navigation/NavigationRuntimeBuilder.cpp
     src/core/navigation/NavigationBakeSources.cpp
+    src/core/navigation/NavigationDelaunayRemesh.cpp
+    src/core/navigation/NavigationDelaunayCells.cpp
     src/core/navigation/NavigationBakeRuntimeCells.cpp
     src/core/navigation/NavigationSurfaceCoverage.cpp
     src/core/navigation/NavigationSurfaceSweep.cpp
@@ -98,6 +100,7 @@ target_include_directories(alkanzar_core
         ${CMAKE_CURRENT_SOURCE_DIR}/src
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cdt/include
 )
 
 target_link_libraries(alkanzar_core

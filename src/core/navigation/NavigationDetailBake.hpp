@@ -20,9 +20,30 @@ void addTriangleToLayer(
     const WalkableTriangle& triangle
 );
 std::vector<BlockingFootprint> buildBlockingFootprints(const World& world);
-std::vector<NavPolygon> buildPolygonsForLayer(
+std::optional<std::vector<NavPolygon>> buildPolygonsForLayer(
     const LayerBuildData& layer,
-    int& nextPolygonId
+    int& nextPolygonId,
+    float maximumPolygonEdgeLength,
+    float minimumTriangleArea,
+    std::string* error
+);
+std::optional<std::vector<NavRuntimeCell>> triangulateWalkableCellsDelaunay(
+    const std::vector<NavRuntimeCell>& cells,
+    float elevationY,
+    std::string* error
+);
+std::optional<std::vector<NavRuntimeCell>> triangulateWalkableCellsIndividuallyDelaunay(
+    const std::vector<NavRuntimeCell>& cells,
+    float elevationY,
+    std::string* error
+);
+std::optional<std::vector<NavRuntimeCell>> enforceMaximumPolygonEdgeLength(
+    const std::vector<NavRuntimeCell>& cells,
+    float maximumPolygonEdgeLength
+);
+std::vector<NavRuntimeCell> applyMinimumTriangleAreaConstraint(
+    const std::vector<NavRuntimeCell>& triangles,
+    float minimumTriangleArea
 );
 std::vector<NavRuntimeCell> bakeLayerRuntimeCells(
     const BakeLayerData& layer,
