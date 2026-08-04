@@ -1,6 +1,7 @@
 #include "Application.hpp"
 
 #include <algorithm>
+#include <array>
 #include <optional>
 
 #include "core/editor/EditorSessionImGuiSettings.hpp"
@@ -63,6 +64,18 @@ void Application::bindEventHandlers() {
     });
     services_.events.subscribe<ToggleLightDebugEvent>([this](const ToggleLightDebugEvent&) {
         services_.showLightDebug = !services_.showLightDebug;
+    });
+    services_.events.subscribe<ToggleSimulationPauseEvent>([this](const ToggleSimulationPauseEvent&) {
+        services_.time.paused = !services_.time.paused;
+    });
+    services_.events.subscribe<AdjustSimulationSpeedEvent>([this](const AdjustSimulationSpeedEvent& event) {
+        constexpr std::array<float, 4> speeds{0.5f, 1.0f, 2.0f, 4.0f};
+        const auto current = std::lower_bound(speeds.begin(), speeds.end(), services_.time.timeScale);
+        const std::size_t index = current == speeds.end()
+            ? speeds.size() - 1u
+            : static_cast<std::size_t>(std::distance(speeds.begin(), current));
+        const int next = std::clamp(static_cast<int>(index) + event.direction, 0, static_cast<int>(speeds.size() - 1u));
+        services_.time.timeScale = speeds[static_cast<std::size_t>(next)];
     });
     services_.events.subscribe<DebugViewSelectedEvent>([this](const DebugViewSelectedEvent& event) {
         services_.debugView = event.view;
@@ -235,6 +248,22 @@ void Application::translateSdlEvent(const SDL_Event& event) {
             }
 
             switch (event.key.keysym.sym) {
+                case SDLK_SPACE:
+                    if (event.key.repeat == 0) {
+                        services_.events.publish(ToggleSimulationPauseEvent{});
+                    }
+                    break;
+                case SDLK_MINUS:
+                    if (event.key.repeat == 0) {
+                        services_.events.publish(AdjustSimulationSpeedEvent{-1});
+                    }
+                    break;
+                case SDLK_EQUALS:
+                case SDLK_KP_PLUS:
+                    if (event.key.repeat == 0) {
+                        services_.events.publish(AdjustSimulationSpeedEvent{1});
+                    }
+                    break;
                 case SDLK_F1:
                     if (event.key.repeat == 0) {
                         services_.events.publish(ToggleEditorEvent{});
@@ -354,7 +383,9 @@ void Application::updateFreeCameraControls() {
         keys[SDL_SCANCODE_LSHIFT] != 0 ||
             keys[SDL_SCANCODE_RSHIFT] != 0,
     };
-    updateFreeCamera(services_.camera, input, services_.time);
+    TimeContext frameTime = services_.time;
+    frameTime.deltaSeconds = std::min(services_.time.frameDeltaSeconds, 0.1f);
+    updateFreeCamera(services_.camera, input, frameTime);
 }
 
 void Application::releaseFreeCameraMouse() {

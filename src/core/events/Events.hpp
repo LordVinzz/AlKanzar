@@ -16,6 +16,10 @@ struct EnterGameplayEvent {};
 struct ToggleEditorEvent {};
 struct ToggleFreeCameraEvent {};
 struct ToggleLightDebugEvent {};
+struct ToggleSimulationPauseEvent {};
+struct AdjustSimulationSpeedEvent {
+    int direction{0};
+};
 struct UndoRequestedEvent {};
 struct RedoRequestedEvent {};
 
@@ -70,6 +74,8 @@ using AppEvent = std::variant<
     ToggleEditorEvent,
     ToggleFreeCameraEvent,
     ToggleLightDebugEvent,
+    ToggleSimulationPauseEvent,
+    AdjustSimulationSpeedEvent,
     UndoRequestedEvent,
     RedoRequestedEvent,
     DebugViewSelectedEvent,

@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "RuntimePolicy.hpp"
+#include "SimulationClock.hpp"
 #include "core/editor/EditorSessionImGuiSettings.hpp"
 #include "core/scene/Camera.hpp"
 #include <spdlog/spdlog.h>
@@ -155,6 +156,7 @@ void Application::run() {
     const Uint64 performanceFrequency = SDL_GetPerformanceFrequency();
     const Uint64 startupCounter = SDL_GetPerformanceCounter();
     Uint64 previousCounter = startupCounter;
+    SimulationClock simulationClock;
     std::uint64_t frameIndex = 0u;
     while (services_.running) {
         if (!diagnostics.disableProfilerFrame) {
@@ -186,10 +188,15 @@ void Application::run() {
         }
 
         const Uint64 currentCounter = SDL_GetPerformanceCounter();
-        services_.time.deltaSeconds = static_cast<float>(secondsBetween(previousCounter, currentCounter, performanceFrequency));
-        services_.time.totalSeconds = static_cast<float>(secondsBetween(startupCounter, currentCounter, performanceFrequency));
+        const double frameSeconds = secondsBetween(previousCounter, currentCounter, performanceFrequency);
         previousCounter = currentCounter;
-        const RuntimePolicyDecision& runtimeDecision = runtimePolicy.evaluate(buildRuntimePolicyFrameContext(services_));
+        services_.time.frameDeltaSeconds = static_cast<float>(simulationClock.advance(
+            frameSeconds,
+            services_.time.paused,
+            services_.time.timeScale
+        ));
+        services_.time.interpolationAlpha = static_cast<float>(simulationClock.interpolationAlpha());
+        const RuntimePolicyDecision* runtimeDecision = &runtimePolicy.decision();
 
         if (diagnostics.shouldLogFrameStage(frameIndex)) {
             logFrameStageBoundary("begin", "Begin ImGui Frame", frameIndex, "main");
@@ -199,16 +206,22 @@ void Application::run() {
             logFrameStageBoundary("end", "Begin ImGui Frame", frameIndex, "main");
         }
         updateFreeCameraControls();
-        if (currentState_ != nullptr) {
+        while (simulationClock.consumeStep()) {
+            services_.time.deltaSeconds = static_cast<float>(simulationClock.fixedStepSeconds());
+            services_.time.totalSeconds += services_.time.deltaSeconds;
+            services_.time.simulationTick = simulationClock.tickCount();
+            runtimeDecision = &runtimePolicy.evaluate(buildRuntimePolicyFrameContext(services_));
+
+            if (currentState_ != nullptr) {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "State Update");
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary("begin", "State Update", frameIndex, "main");
             }
-            currentState_->update(services_);
+                currentState_->update(services_);
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary("end", "State Update", frameIndex, "main");
             }
-        }
+            }
         {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Navigation Path Apply");
             services_.navigationSystem.applyCompletedPathRequests(services_.world, services_.navigation);
@@ -239,16 +252,16 @@ void Application::run() {
                     "begin",
                     "Transform Update",
                     frameIndex,
-                    runtimeDecision.parallelTransformUpdate ? "parallel" : "sequential"
+                    runtimeDecision->parallelTransformUpdate ? "parallel" : "sequential"
                 );
             }
-            services_.transformSystem.update(services_.world, services_.scheduler, runtimeDecision.parallelTransformUpdate);
+            services_.transformSystem.update(services_.world, services_.scheduler, runtimeDecision->parallelTransformUpdate);
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary(
                     "end",
                     "Transform Update",
                     frameIndex,
-                    runtimeDecision.parallelTransformUpdate ? "parallel" : "sequential"
+                    runtimeDecision->parallelTransformUpdate ? "parallel" : "sequential"
                 );
             }
         }
@@ -259,21 +272,21 @@ void Application::run() {
                     "begin",
                     "Light Update",
                     frameIndex,
-                    runtimeDecision.parallelLightUpdate ? "parallel" : "sequential"
+                    runtimeDecision->parallelLightUpdate ? "parallel" : "sequential"
                 );
             }
             services_.lightSystem.update(
                 services_.world,
                 services_.time,
                 services_.scheduler,
-                runtimeDecision.parallelLightUpdate
+                runtimeDecision->parallelLightUpdate
             );
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary(
                     "end",
                     "Light Update",
                     frameIndex,
-                    runtimeDecision.parallelLightUpdate ? "parallel" : "sequential"
+                    runtimeDecision->parallelLightUpdate ? "parallel" : "sequential"
                 );
             }
         }
@@ -284,7 +297,7 @@ void Application::run() {
                     "begin",
                     "Render Extraction",
                     frameIndex,
-                    runtimeDecision.parallelRenderExtraction ? "parallel" : "sequential"
+                    runtimeDecision->parallelRenderExtraction ? "parallel" : "sequential"
                 );
             }
             services_.renderExtractionSystem.extract(
@@ -292,17 +305,19 @@ void Application::run() {
                 services_.selection,
                 services_.frame,
                 services_.scheduler,
-                runtimeDecision.parallelRenderExtraction
+                runtimeDecision->parallelRenderExtraction
             );
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary(
                     "end",
                     "Render Extraction",
                     frameIndex,
-                    runtimeDecision.parallelRenderExtraction ? "parallel" : "sequential"
+                    runtimeDecision->parallelRenderExtraction ? "parallel" : "sequential"
                 );
             }
         }
+        }
+        services_.time.interpolationAlpha = static_cast<float>(simulationClock.interpolationAlpha());
 
         if (currentState_ != nullptr) {
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
@@ -336,7 +351,7 @@ void Application::run() {
                     "begin",
                     "Render Frame",
                     frameIndex,
-                    runtimeDecision.parallelSceneView ? "parallel" : "sequential"
+                    runtimeDecision->parallelSceneView ? "parallel" : "sequential"
                 );
             }
             services_.renderer.renderFrame(
@@ -344,14 +359,14 @@ void Application::run() {
                 camera,
                 renderOptions,
                 services_.scheduler,
-                runtimeDecision.parallelSceneView
+                runtimeDecision->parallelSceneView
             );
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary(
                     "end",
                     "Render Frame",
                     frameIndex,
-                    runtimeDecision.parallelSceneView ? "parallel" : "sequential"
+                    runtimeDecision->parallelSceneView ? "parallel" : "sequential"
                 );
             }
         }

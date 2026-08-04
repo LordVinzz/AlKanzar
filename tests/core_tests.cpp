@@ -27,6 +27,7 @@
 
 #include "core/animation/AnimationSystem.hpp"
 #include "core/app/RuntimePolicy.hpp"
+#include "core/app/SimulationClock.hpp"
 #include "core/editor/CommandHistory.hpp"
 #include "core/editor/EditorSession.hpp"
 #include "core/editor/EditorSessionImGuiSettings.hpp"
@@ -57,6 +58,29 @@ namespace {
 
 bool nearlyEqual(double lhs, double rhs, double epsilon = 0.001) {
     return std::abs(lhs - rhs) <= epsilon;
+}
+
+void testSimulationClockUsesFixedStepsAndBoundsFrameDelays() {
+    core::SimulationClock clock(core::SimulationClockConfig{0.1, 0.25, 2u});
+
+    assert(nearlyEqual(clock.advance(0.05, false, 1.0), 0.05));
+    assert(!clock.consumeStep());
+    assert(nearlyEqual(clock.interpolationAlpha(), 0.5));
+
+    clock.advance(0.05, false, 1.0);
+    assert(clock.consumeStep());
+    assert(!clock.consumeStep());
+    assert(clock.tickCount() == 1u);
+
+    clock.advance(10.0, true, 1.0);
+    assert(!clock.consumeStep());
+
+    clock.advance(1.0, false, 2.0);
+    assert(clock.consumeStep());
+    assert(clock.consumeStep());
+    assert(!clock.consumeStep());
+    assert(clock.tickCount() == 3u);
+    assert(nearlyEqual(clock.interpolationAlpha(), 0.0));
 }
 
 render::Bounds3 exactSkinnedWorldBounds(
@@ -6803,6 +6827,7 @@ int main() {
         return EXIT_SUCCESS;
     }
     testEntityPoolReuse();
+    testSimulationClockUsesFixedStepsAndBoundsFrameDelays();
     testComponentStoreDenseRemove();
     testEventBusOrderingAndUnsubscribe();
     testCommandHistoryUndoRedoAndMerge();
