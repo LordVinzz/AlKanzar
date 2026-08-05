@@ -24,6 +24,7 @@
 #include "core/app/EngineServices.hpp"
 #include "core/editor/EditorSessionImGuiSettings.hpp"
 #include "core/ecs/ComponentRegistry.hpp"
+#include "core/gameplay/CharacterRules.hpp"
 #include "render/resources/StaticGltfModel.hpp"
 
 
@@ -86,7 +87,11 @@ std::string editorSelectionLabel(const EngineServices& services) {
 
 std::string editorHierarchyLabel(const EngineServices& services, EntityId entity) {
     std::string label = editorEntityLabel(services, entity);
-    if (services.world.pointLights.contains(entity)) {
+    if (const CharacterComponent* character = services.world.characters.tryGet(entity)) {
+        label += " [";
+        label += characterAffiliationName(character->affiliation);
+        label += "]";
+    } else if (services.world.pointLights.contains(entity)) {
         label += " [Point Light]";
     } else if (services.world.spotLights.contains(entity)) {
         label += " [Spot Light]";

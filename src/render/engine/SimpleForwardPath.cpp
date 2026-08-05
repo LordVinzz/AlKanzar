@@ -73,6 +73,7 @@ void SimpleForwardPath::drawGeometry(const RenderPathContext& context) {
         const glm::vec3 dirLightView = glm::normalize(glm::mat3(context.camera.view) * glm::normalize(context.directionalLightDirection));
         glUniform3fv(lightDirLocation_, 1, glm::value_ptr(dirLightView));
         drawStandardSceneLayers(context, geometryContext_);
+        context.overlayRenderer.renderGroundIndicators(context.scene, context.camera);
         return;
     }
 
@@ -82,6 +83,7 @@ void SimpleForwardPath::drawGeometry(const RenderPathContext& context) {
     const glm::vec3 dirLightView = glm::normalize(glm::mat3(context.camera.view) * glm::normalize(context.directionalLightDirection));
     glUniform3fv(lightDirLocation_, 1, glm::value_ptr(dirLightView));
     drawStandardSceneLayers(context, geometryContext_);
+    context.overlayRenderer.renderGroundIndicators(context.scene, context.camera);
 }
 
 void SimpleForwardPath::composeFrame(const RenderPathContext&) {}
@@ -91,4 +93,3 @@ std::vector<ResourceMemoryRecord> SimpleForwardPath::profilingResources() const 
 }
 
 }  // namespace render
-

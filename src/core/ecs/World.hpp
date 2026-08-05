@@ -44,6 +44,10 @@ public:
         rigidbodies.remove(entity);
         pointLights.remove(entity);
         spotLights.remove(entity);
+        characters.remove(entity);
+        abilityScores.remove(entity);
+        skillRanks.remove(entity);
+        characterVitals.remove(entity);
         if (entity.index < transformCache_.size()) {
             transformCache_[entity.index] = TransformCacheEntry{};
         }
@@ -80,6 +84,10 @@ public:
         rigidbodies.clear();
         pointLights.clear();
         spotLights.clear();
+        characters.clear();
+        abilityScores.clear();
+        skillRanks.clear();
+        characterVitals.clear();
         transformCache_.clear();
         lightRuntime_.clear();
         transformsDirty_ = true;
@@ -189,6 +197,28 @@ public:
         return {};
     }
 
+    [[nodiscard]] EntityId characterOwnerEntity(EntityId entity) const {
+        EntityId current = entity;
+        while (current.valid() && isAlive(current)) {
+            if (characters.contains(current)) {
+                return current;
+            }
+            if (const SkinnedRenderableComponent* skinned = skinnedRenderables.tryGet(current);
+                skinned != nullptr &&
+                skinned->animationOwner != current &&
+                isAlive(skinned->animationOwner)) {
+                current = skinned->animationOwner;
+                continue;
+            }
+            const ParentComponent* parent = parents.tryGet(current);
+            if (parent == nullptr || !isAlive(parent->parent)) {
+                break;
+            }
+            current = parent->parent;
+        }
+        return {};
+    }
+
     void ensureCacheSize(std::size_t size) {
         if (transformCache_.size() < size) {
             transformCache_.resize(size);
@@ -217,6 +247,10 @@ public:
     ComponentStore<RigidbodyComponent> rigidbodies{};
     ComponentStore<PointLightComponent> pointLights{};
     ComponentStore<SpotLightComponent> spotLights{};
+    ComponentStore<CharacterComponent> characters{};
+    ComponentStore<AbilityScoresComponent> abilityScores{};
+    ComponentStore<SkillRanksComponent> skillRanks{};
+    ComponentStore<CharacterVitalsComponent> characterVitals{};
     std::vector<TransformCacheEntry> transformCache_{};
     std::vector<LightRuntime> lightRuntime_{};
 

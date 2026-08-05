@@ -26,6 +26,7 @@ enum class ComponentKind {
     NavAgent,
     Locomotion,
     NavSource,
+    Character,
 };
 
 struct ComponentDescriptor {
@@ -55,6 +56,7 @@ public:
     ) const;
 
 private:
+    void registerCharacterDescriptor();
     std::vector<ComponentDescriptor> descriptors_;
 };
 

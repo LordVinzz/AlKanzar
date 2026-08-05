@@ -83,8 +83,29 @@ debug et release.
 
 - [ ] Créer les composants runtime de personnage : identité, équipe, position,
   état, cible, contrôleur, statistiques, inventaire et rendu.
+    - [x] Ajouter un profil ECS commun aux PJ et PNJ : affiliation, race, kit,
+      expérience et rayon de l'indicateur au sol.
+    - [x] Séparer les caractéristiques, rangs de compétence et ressources
+      PV/PM dans des composants dédiés avec cycle de vie ECS cohérent.
+    - [x] Ajouter trois profils de démonstration : joueur, PNJ amical et PNJ
+      hostile, sans contrôleur IA pour les PNJ.
+    - [x] Afficher un anneau vert pour le joueur, bleu pour un PNJ amical et
+      rouge pour un PNJ hostile dans les rendus direct et différé.
+    - [ ] Séparer l'affiliation visuelle de l'équipe de combat, de la faction,
+      de la réputation et de la disposition individuelle.
+    - [ ] Ajouter les composants d'état runtime : vivant/à terre/mort, cible,
+      contrôleur, ordre courant, inventaire, équipement et effets actifs.
+    - [ ] Définir des identifiants persistants et la sérialisation des
+      personnages pour les scènes, sauvegardes et changements de zone.
 - [ ] Sélectionner un ou plusieurs personnages par clic, cadre de sélection,
   portraits UI et raccourcis de sélection du groupe.
+    - [x] Rediriger le picking d'une sous-section glTF vers la racine ECS du
+      personnage afin d'ouvrir la bonne fiche dans l'éditeur.
+    - [ ] Distinguer la sélection d'édition de la sélection de groupe en jeu.
+    - [ ] Ajouter sélection multiple, cadre, ajout/retrait avec modificateur,
+      chef de sélection et limite de taille du groupe.
+    - [ ] Ajouter portraits, raccourcis numériques, retour caméra et retours
+      visuels/sonores de sélection.
 - [ ] Donner des ordres par clic : déplacement, interaction, attaque, maintien
   de position et annulation ; afficher chemin, destination et curseur contextuel.
 - [ ] Implémenter formations, rattrapage des retardataires, anti-blocage,
@@ -131,10 +152,45 @@ chargement d'une sauvegarde.
 
 - [ ] Concevoir un système de règles original : attributs, ressources,
   compétences, jets, difficulté, défense, initiative/cadence et progression.
+    - [x] Implémenter les six caractéristiques, modificateurs raciaux, onze
+      kits, robustesse, progression magique et seize compétences.
+    - [x] Implémenter XP/niveaux 1 à 40, bonus de niveau, rangs de compétence,
+      PV initiaux/par niveau et PM des lanceurs complets ou partiels.
+    - [x] Calculer les valeurs dérivées : initiative, esquive, armure, défenses,
+      résistance au poison, attaque/DD magique, concentration, charge et
+      déplacement de base.
+    - [x] Conserver les PV maximum historiques au lieu de les recalculer
+      rétroactivement après un changement de caractéristique ou de kit.
+    - [x] Ajouter normalisation des données et tests unitaires des formules,
+      profils de scène, affiliations et restrictions de contrôle des PNJ.
+    - [ ] Décider si les défenses sont des seuils statiques, des jets au d20 ou
+      les deux selon l'effet, puis unifier les termes du document de règles.
+    - [ ] Définir les types de dégâts, résistances en pourcentage,
+      vulnérabilités, immunités et l'ordre exact de réduction.
+    - [ ] Ajouter les bonus d'équipement, de situation, d'effet et de maîtrise
+      sans coupler le noyau de règles au rendu ou à ImGui.
+    - [ ] Implémenter les traits raciaux restants qui nécessitent un contexte de
+      combat, de perception, de déplacement forcé ou de type de dégâts.
+    - [ ] Définir les règles de cadence, jets opposés, critiques, états à
+      0 PV, soins, repos et récupération hors combat.
+- [x] Rendre les statistiques des PJ et PNJ accessibles dans l'éditeur ImGui.
+    - [x] Éditer affiliation, race, kit, niveau/XP, rayon, caractéristiques,
+      compétences, PV maximum/courants et PM avec annulation/rétablissement.
+    - [x] Afficher séparément les valeurs effectives, modificateurs et valeurs
+      dérivées en lecture seule avec des identifiants ImGui stables.
+    - [ ] Ajouter explications de formule, provenance des bonus, avertissements
+      de données incohérentes et recherche/filtrage des compétences.
 - [ ] Ajouter création de personnage : origine, apparence, voix, archétype,
   choix de départ, validation et récapitulatif.
 - [ ] Implémenter niveaux, expérience, montée de niveau, choix de capacités,
   spécialisations, améliorations permanentes et respec si prévu.
+    - [x] Déduire le niveau de l'XP et permettre à l'éditeur de positionner l'XP
+      au seuil exact d'un niveau choisi.
+    - [ ] Ajouter un service de montée de niveau qui applique et mémorise les
+      gains historiques de PV, maîtrise, talents, caractéristiques et
+      compétences.
+    - [ ] Définir les choix différés, validations, annulations et migrations
+      lorsque les règles ou tables de progression changent.
 - [ ] Ajouter effets persistants : blessures, maladies, malédictions, bonus,
   pénalités, durées, empilement, dissipation et affichage explicite.
 - [ ] Concevoir une table de progression et un système d'équilibrage piloté par

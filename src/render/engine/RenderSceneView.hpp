@@ -91,6 +91,13 @@ struct RenderColliderDebugView {
     float radius{0.0f};
 };
 
+struct RenderGroundIndicatorView {
+    core::EntityId owner{};
+    glm::vec3 center{0.0f};
+    float radius{0.65f};
+    glm::vec4 color{1.0f};
+};
+
 struct RenderSelectionSkeletonView {
     bool showOverlay{false};
     std::vector<int> parentIndices{};
@@ -125,6 +132,7 @@ struct RenderSceneView {
     std::vector<core::FrameLight> lights{};
     std::vector<core::FrameLightVolume> lightVolumes{};
     std::vector<RenderColliderDebugView> colliderDebug{};
+    std::vector<RenderGroundIndicatorView> groundIndicators{};
     RenderSelectionView selection{};
     RenderSelectionSkeletonView selectionSkeleton{};
     RenderNavigationView navigation{};

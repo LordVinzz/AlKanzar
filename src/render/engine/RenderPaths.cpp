@@ -388,6 +388,8 @@ void DeferredRenderPath::composeFrame(const RenderPathContext& context) {
         glDepthMask(GL_TRUE);
     }
 
+    context.overlayRenderer.renderGroundIndicators(context.scene, context.camera);
+
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, context.width, context.height);
     glDisable(GL_DEPTH_TEST);

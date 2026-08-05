@@ -26,7 +26,10 @@ add_library(alkanzar_core STATIC
     src/core/app/RuntimePolicy.cpp
     src/core/ecs/ComponentRegistry.cpp
     src/core/ecs/ComponentDescriptors.cpp
+    src/core/ecs/CharacterComponentDescriptor.cpp
     src/core/ecs/ComponentInspector.cpp
+    src/core/gameplay/CharacterInspector.cpp
+    src/core/gameplay/CharacterRules.cpp
     src/core/editor/EditorSessionImGuiSettings.cpp
     src/core/editor/EditorUiAnimation.cpp
     src/core/editor/EditorUiHierarchy.cpp
@@ -124,6 +127,10 @@ if(BUILD_TESTING)
         tests/core_tests.cpp
     )
 
+    add_executable(alkanzar_character_rules_tests
+        tests/character_rules_tests.cpp
+    )
+
     target_include_directories(alkanzar_core_tests
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -134,7 +141,13 @@ if(BUILD_TESTING)
             alkanzar_core
     )
 
+    target_link_libraries(alkanzar_character_rules_tests
+        PRIVATE
+            alkanzar_core
+    )
+
     add_test(NAME alkanzar_core_tests COMMAND alkanzar_core_tests)
+    add_test(NAME alkanzar_character_rules_tests COMMAND alkanzar_character_rules_tests)
 
     add_test(
         NAME alkanzar_src_file_length

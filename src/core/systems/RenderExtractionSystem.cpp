@@ -82,6 +82,18 @@ float maxAxisScale(const glm::mat4& modelMatrix) {
     return std::max(xScale, std::max(yScale, zScale));
 }
 
+glm::vec4 groundIndicatorColor(CharacterAffiliation affiliation) {
+    switch (affiliation) {
+        case CharacterAffiliation::Player:
+            return glm::vec4(0.10f, 0.95f, 0.18f, 0.90f);
+        case CharacterAffiliation::FriendlyNpc:
+            return glm::vec4(0.12f, 0.42f, 1.00f, 0.90f);
+        case CharacterAffiliation::HostileNpc:
+            return glm::vec4(0.95f, 0.12f, 0.10f, 0.90f);
+    }
+    return glm::vec4(1.0f);
+}
+
 }  // namespace
 
 void RenderExtractionSystem::extract(
@@ -175,6 +187,31 @@ void RenderExtractionSystem::extract(
             frameCollider.radius = collider.radius * std::max(maxAxisScale(modelMatrix), 0.001f);
             frameCollider.bounds = centeredBounds(frameCollider.center, glm::vec3(frameCollider.radius));
             outFrame.colliderDebug.push_back(std::move(frameCollider));
+        }
+    };
+    const auto appendGroundIndicators = [&]() {
+        outFrame.groundIndicators.reserve(world.characters.size());
+        for (EntityId entity : world.characters.entities()) {
+            const VisibilityComponent* visibility = world.visibilities.tryGet(entity);
+            if (visibility == nullptr || !visibility->visible ||
+                entity.index >= world.transformCache_.size()) {
+                continue;
+            }
+
+            const TransformCacheEntry& cache = world.transformCache_[entity.index];
+            if (!cache.valid) {
+                continue;
+            }
+
+            const CharacterComponent& character = world.characters.get(entity);
+            glm::vec3 center(cache.worldMatrix[3]);
+            center.y += 0.02f;
+            outFrame.groundIndicators.push_back(FrameGroundIndicator{
+                entity,
+                center,
+                std::max(character.groundIndicatorRadius, 0.01f),
+                groundIndicatorColor(character.affiliation)
+            });
         }
     };
 
@@ -319,6 +356,8 @@ void RenderExtractionSystem::extract(
         appendLightVolumes();
         appendColliderDebug();
     }
+
+    appendGroundIndicators();
 
     for (FrameRenderable& renderable : outFrame.renderables) {
         render_extraction_detail::applyAnimatedRenderableState(

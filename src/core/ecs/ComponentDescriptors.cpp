@@ -441,7 +441,8 @@ ComponentRegistry::ComponentRegistry() {
             return changed;
         },
     });
+
+    registerCharacterDescriptor();
 }
 
 }  // namespace core
-

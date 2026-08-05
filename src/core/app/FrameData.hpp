@@ -68,6 +68,13 @@ struct FrameColliderDebug {
     float radius{0.0f};
 };
 
+struct FrameGroundIndicator {
+    EntityId owner{};
+    glm::vec3 center{0.0f};
+    float radius{0.65f};
+    glm::vec4 color{1.0f};
+};
+
 struct FrameSelection {
     std::optional<EntityId> entity{};
     std::optional<ComponentKind> component{};
@@ -136,6 +143,7 @@ struct FrameSceneData {
     std::vector<FrameLight> lights{};
     std::vector<FrameLightVolume> lightVolumes{};
     std::vector<FrameColliderDebug> colliderDebug{};
+    std::vector<FrameGroundIndicator> groundIndicators{};
     std::vector<glm::mat4> jointMatrices{};
     FrameSelection selection{};
     FrameSkeletonDebug selectionSkeleton{};
@@ -154,6 +162,7 @@ struct FrameSceneData {
         lights.clear();
         lightVolumes.clear();
         colliderDebug.clear();
+        groundIndicators.clear();
         jointMatrices.clear();
         selection = FrameSelection{};
         selectionSkeleton.clear();

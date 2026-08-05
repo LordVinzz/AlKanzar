@@ -73,9 +73,15 @@ public:
         const glm::vec3& directionalLightDirection
     ) const;
 
+    void renderGroundIndicators(
+        const RenderSceneView& scene,
+        const CameraMatrices& camera
+    ) const;
+
 private:
     bool buildVolumeMeshes();
     bool buildDebugMeshes();
+    bool buildGroundIndicatorResources();
     bool buildLightIconResources(const std::string& shaderRoot);
     bool loadLightIconTextures();
     void drawDebugMesh(
@@ -118,6 +124,7 @@ private:
     MeshBuffer lightCone_{};
     MeshBuffer axisGizmo_{};
     MeshBuffer selectionBox_{};
+    MeshBuffer groundIndicatorRing_{};
     MeshBuffer lightIconQuad_{};
     GLint debugMvpLocation_{-1};
     GLint debugColorLocation_{-1};

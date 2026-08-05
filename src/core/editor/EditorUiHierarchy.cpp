@@ -92,6 +92,10 @@ SceneHierarchyData buildSceneHierarchy(const EngineServices& services) {
     collectEntities(world.skinnedRenderables);
     collectEntities(world.pointLights);
     collectEntities(world.spotLights);
+    collectEntities(world.characters);
+    collectEntities(world.abilityScores);
+    collectEntities(world.skillRanks);
+    collectEntities(world.characterVitals);
 
     for (EntityId child : world.parents.entities()) {
         addEntity(child);
@@ -346,4 +350,3 @@ std::size_t editorHierarchyChildCount(const EngineServices& services, EntityId e
 }
 
 }  // namespace core
-

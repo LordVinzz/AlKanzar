@@ -12,6 +12,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <spdlog/spdlog.h>
 
+#include "core/gameplay/CharacterRules.hpp"
 #include "core/transform/TransformMath.hpp"
 #include "render/resources/Geometry.hpp"
 #include "render/engine/RenderEngine.hpp"
@@ -359,6 +360,19 @@ bool SceneFactory::buildScene(
         world.visibilities.emplace(rootEntity, VisibilityComponent{true});
         if (modelAsset->animated()) {
             world.animatedModels.emplace(rootEntity, AnimatedModelComponent{modelAsset});
+        }
+        if (modelBlueprint.character.has_value()) {
+            CharacterBlueprint character = *modelBlueprint.character;
+            normalizeCharacterData(
+                character.character,
+                character.abilities,
+                character.skills,
+                character.vitals
+            );
+            world.characters.emplace(rootEntity, character.character);
+            world.abilityScores.emplace(rootEntity, character.abilities);
+            world.skillRanks.emplace(rootEntity, character.skills);
+            world.characterVitals.emplace(rootEntity, character.vitals);
         }
         world.markTransformsDirty(rootEntity);
 

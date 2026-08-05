@@ -77,8 +77,8 @@ bool NavigationSystem::initializeScene(const SceneBlueprint& blueprint, World& w
     }
 
     for (EntityId entity : world.animatedModels.entities()) {
-        const NameComponent* name = world.names.tryGet(entity);
-        if (name == nullptr || name->value != "Character") {
+        const CharacterComponent* character = world.characters.tryGet(entity);
+        if (character == nullptr || character->affiliation != CharacterAffiliation::Player) {
             continue;
         }
         if (!world.navAgents.contains(entity)) {

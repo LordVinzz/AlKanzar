@@ -152,7 +152,7 @@ void Application::bindEventHandlers() {
 
         {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Viewport Selection");
-            services_.selection.set(services_.pickingSystem.pick(
+            std::optional<EntityId> picked = services_.pickingSystem.pick(
                 services_.frame,
                 camera,
                 services_.renderer.width(),
@@ -160,7 +160,14 @@ void Application::bindEventHandlers() {
                 event.x,
                 event.y,
                 false
-            ));
+            );
+            if (picked.has_value()) {
+                const EntityId characterOwner = services_.world.characterOwnerEntity(*picked);
+                if (characterOwner.valid()) {
+                    picked = characterOwner;
+                }
+            }
+            services_.selection.set(picked);
         }
     });
 }

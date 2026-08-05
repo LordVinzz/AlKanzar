@@ -116,6 +116,15 @@ RenderSceneView buildRenderSceneView(
             collider.radius
         });
     }
+    scene.groundIndicators.reserve(frame.groundIndicators.size());
+    for (const core::FrameGroundIndicator& indicator : frame.groundIndicators) {
+        scene.groundIndicators.push_back(RenderGroundIndicatorView{
+            indicator.owner,
+            indicator.center,
+            indicator.radius,
+            indicator.color
+        });
+    }
     scene.selection = resolveRenderSelection(frame);
     scene.selectionSkeleton.showOverlay = frame.selectionSkeleton.showOverlay;
     scene.selectionSkeleton.parentIndices = frame.selectionSkeleton.parentIndices;

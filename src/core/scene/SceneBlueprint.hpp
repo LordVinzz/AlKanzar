@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -9,6 +10,13 @@
 
 namespace core {
 
+struct CharacterBlueprint {
+    CharacterComponent character{};
+    AbilityScoresComponent abilities{};
+    SkillRanksComponent skills{};
+    CharacterVitalsComponent vitals{};
+};
+
 struct ModelInstanceBlueprint {
     std::string name;
     std::string path;
@@ -16,6 +24,7 @@ struct ModelInstanceBlueprint {
     TransformComponent transform{};
     bool fitToFootprint{false};
     float footprint{0.0f};
+    std::optional<CharacterBlueprint> character{};
 };
 
 struct PointLightBlueprint {

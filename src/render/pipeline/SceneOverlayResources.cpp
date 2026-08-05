@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cmath>
 #include <memory>
 #include <string>
 
@@ -42,6 +43,37 @@ void addQuad(const std::array<Vertex, 4>& vertices, render::Mesh& mesh) {
     mesh.indices.insert(mesh.indices.end(), {base, base + 1u, base + 2u, base, base + 2u, base + 3u});
 }
 
+void buildGroundIndicatorRing(render::Mesh& mesh) {
+    constexpr int kSegments = 64;
+    constexpr float kInnerRadius = 0.78f;
+    constexpr float kTwoPi = 6.283185307f;
+    mesh = render::Mesh{};
+    mesh.uvSets.resize(2u);
+
+    for (int segment = 0; segment <= kSegments; ++segment) {
+        const float angle = kTwoPi * static_cast<float>(segment) / static_cast<float>(kSegments);
+        const glm::vec2 direction(std::cos(angle), std::sin(angle));
+        for (float radius : {1.0f, kInnerRadius}) {
+            mesh.positions.emplace_back(direction.x * radius, 0.0f, direction.y * radius);
+            mesh.normals.emplace_back(0.0f, 1.0f, 0.0f);
+            mesh.colors.emplace_back(1.0f);
+            mesh.uvSets[0].emplace_back(direction * radius * 0.5f + 0.5f);
+            mesh.uvSets[1].emplace_back(0.0f);
+        }
+    }
+
+    for (int segment = 0; segment < kSegments; ++segment) {
+        const unsigned int outer = static_cast<unsigned int>(segment * 2);
+        const unsigned int inner = outer + 1u;
+        const unsigned int nextOuter = outer + 2u;
+        const unsigned int nextInner = outer + 3u;
+        mesh.indices.insert(mesh.indices.end(), {
+            outer, inner, nextOuter,
+            nextOuter, inner, nextInner
+        });
+    }
+}
+
 std::string assetRootPath(const char* subdirectory) {
     char* basePath = SDL_GetBasePath();
     std::string root = basePath != nullptr ? basePath : "";
@@ -80,7 +112,10 @@ bool SceneOverlayRenderer::init(const std::string& shaderRoot) {
 
     debugMvpLocation_ = debugColorShader_.uniformLocation("uMVP");
     debugColorLocation_ = debugColorShader_.uniformLocation("uColor");
-    return buildVolumeMeshes() && buildDebugMeshes() && buildLightIconResources(shaderRoot);
+    return buildVolumeMeshes() &&
+        buildDebugMeshes() &&
+        buildGroundIndicatorResources() &&
+        buildLightIconResources(shaderRoot);
 }
 
 void SceneOverlayRenderer::destroy() {
@@ -168,6 +203,12 @@ bool SceneOverlayRenderer::buildLightIconResources(const std::string& shaderRoot
     return true;
 }
 
+bool SceneOverlayRenderer::buildGroundIndicatorResources() {
+    Mesh ring{};
+    buildGroundIndicatorRing(ring);
+    return groundIndicatorRing_.upload(ring);
+}
+
 bool SceneOverlayRenderer::loadLightIconTextures() {
     const std::string textureRoot = assetRootPath("textures/engine/");
     pointLightIconTexture_ = uploadOverlayTexture(loadTextureFromFile(
@@ -186,4 +227,3 @@ bool SceneOverlayRenderer::loadLightIconTextures() {
 }
 
 }  // namespace render
-

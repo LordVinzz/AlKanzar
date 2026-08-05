@@ -184,6 +184,42 @@ void SceneOverlayRenderer::drawFilledPolygon(
     drawLineVertices(triangleVertices, projection, view, color, GL_TRIANGLES);
 }
 
+void SceneOverlayRenderer::renderGroundIndicators(
+    const RenderSceneView& scene,
+    const CameraMatrices& camera
+) const {
+    if (scene.groundIndicators.empty() ||
+        debugColorShader_.id() == 0 ||
+        !groundIndicatorRing_.valid()) {
+        return;
+    }
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_CULL_FACE);
+
+    debugColorShader_.use();
+    for (const RenderGroundIndicatorView& indicator : scene.groundIndicators) {
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), indicator.center);
+        model = glm::scale(model, glm::vec3(std::max(indicator.radius, 0.01f), 1.0f, std::max(indicator.radius, 0.01f)));
+        drawDebugMesh(
+            groundIndicatorRing_,
+            camera.projection,
+            camera.view,
+            model,
+            indicator.color,
+            false
+        );
+    }
+
+    glDisable(GL_BLEND);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glDepthMask(GL_TRUE);
+}
+
 void SceneOverlayRenderer::renderOverlays(
     const RenderSceneView& scene,
     const RenderLightPipeline::FrameState& lights,
@@ -432,4 +468,3 @@ void SceneOverlayRenderer::renderOverlays(
 }
 
 }  // namespace render
-
