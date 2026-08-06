@@ -1,15 +1,10 @@
 #pragma once
 
+#include "AppMode.hpp"
+
 namespace core {
 
 struct EngineServices;
-
-enum class AppMode {
-    Bootstrap,
-    Gameplay,
-    Editor,
-    Shutdown,
-};
 
 class IAppState {
 public:
@@ -49,6 +44,15 @@ public:
     void renderUi(EngineServices& services) override;
 };
 
+class TestToolState final : public IAppState {
+public:
+    [[nodiscard]] AppMode mode() const override { return AppMode::TestTool; }
+    void onEnter(EngineServices& services) override;
+    void onExit(EngineServices& services) override;
+    void update(EngineServices& services) override;
+    void renderUi(EngineServices& services) override;
+};
+
 class ShutdownState final : public IAppState {
 public:
     [[nodiscard]] AppMode mode() const override { return AppMode::Shutdown; }
@@ -56,6 +60,18 @@ public:
     void onExit(EngineServices& services) override;
     void update(EngineServices& services) override;
     void renderUi(EngineServices& services) override;
+};
+
+class AppStateCollection {
+public:
+    [[nodiscard]] IAppState& forMode(AppMode mode);
+
+private:
+    BootstrapState bootstrap_{};
+    GameplayState gameplay_{};
+    EditorState editor_{};
+    TestToolState testTool_{};
+    ShutdownState shutdown_{};
 };
 
 }  // namespace core

@@ -10,32 +10,38 @@
 namespace core {
 
 void Application::bindEventHandlers() {
-    services_.selection.changed().connect([this](const std::optional<SelectionTarget>& selection) {
-        services_.events.publish(SelectionChangedEvent{selection});
+    services_.editorSelection.changed().connect([this](const std::optional<SelectionTarget>& selection) {
+        services_.events.publish(EditorSelectionChangedEvent{selection});
+    });
+    services_.partySelection.changed().connect([this](const std::optional<EntityId>& leader) {
+        services_.events.publish(PartySelectionChangedEvent{leader});
     });
 
     services_.events.subscribe<QuitRequestedEvent>([this](const QuitRequestedEvent&) {
         services_.requestedMode = AppMode::Shutdown;
     });
     services_.events.subscribe<ToggleEditorEvent>([this](const ToggleEditorEvent&) {
-        if (currentMode_ == AppMode::Editor) {
-            services_.editorSession.suspendEditorUi();
-        } else {
-            services_.editorSession.openMainWindow();
+        const AppMode target = modeSession_.editorToggleTarget();
+        if (target != modeSession_.current()) {
+            services_.requestedMode = target;
         }
-        services_.requestedMode = currentMode_ == AppMode::Editor ? AppMode::Gameplay : AppMode::Editor;
     });
     services_.events.subscribe<UndoRequestedEvent>([this](const UndoRequestedEvent&) {
-        services_.commands.undo();
+        if (modeSession_.capabilities().acceptsEditorInput) {
+            services_.commands.undo();
+        }
     });
     services_.events.subscribe<RedoRequestedEvent>([this](const RedoRequestedEvent&) {
-        services_.commands.redo();
+        if (modeSession_.capabilities().acceptsEditorInput) {
+            services_.commands.redo();
+        }
     });
     services_.events.subscribe<WindowResizedEvent>([this](const WindowResizedEvent& event) {
         services_.renderer.resize(event.width, event.height);
     });
     services_.events.subscribe<ViewportWheelEvent>([this](const ViewportWheelEvent& event) {
-        if (services_.renderer.wantsMouse() || event.delta == 0) {
+        const AppModeCapabilities& capabilities = modeSession_.capabilities();
+        if (!capabilities.acceptsCameraInput || services_.renderer.wantsMouse() || event.delta == 0) {
             return;
         }
         if (services_.camera.freeCameraEnabled) {
@@ -46,7 +52,8 @@ void Application::bindEventHandlers() {
         services_.camera.zoom = std::clamp(services_.camera.zoom * factor, 0.2f, 5.0f);
     });
     services_.events.subscribe<ViewportPanEvent>([this](const ViewportPanEvent& event) {
-        if (services_.renderer.wantsMouse() ||
+        if (!modeSession_.capabilities().acceptsCameraInput ||
+            services_.renderer.wantsMouse() ||
             services_.camera.orbitEnabled ||
             services_.camera.freeCameraEnabled) {
             return;
@@ -56,6 +63,9 @@ void Application::bindEventHandlers() {
         services_.camera.panY += static_cast<float>(event.dy) * panSpeed / services_.camera.zoom;
     });
     services_.events.subscribe<ToggleFreeCameraEvent>([this](const ToggleFreeCameraEvent&) {
+        if (!modeSession_.capabilities().acceptsCameraInput) {
+            return;
+        }
         const bool enable = !services_.camera.freeCameraEnabled;
         if (!enable) {
             releaseFreeCameraMouse();
@@ -66,9 +76,14 @@ void Application::bindEventHandlers() {
         services_.showLightDebug = !services_.showLightDebug;
     });
     services_.events.subscribe<ToggleSimulationPauseEvent>([this](const ToggleSimulationPauseEvent&) {
-        services_.time.paused = !services_.time.paused;
+        if (modeSession_.capabilities().acceptsTimeControls) {
+            services_.time.paused = !services_.time.paused;
+        }
     });
     services_.events.subscribe<AdjustSimulationSpeedEvent>([this](const AdjustSimulationSpeedEvent& event) {
+        if (!modeSession_.capabilities().acceptsTimeControls) {
+            return;
+        }
         constexpr std::array<float, 4> speeds{0.5f, 1.0f, 2.0f, 4.0f};
         const auto current = std::lower_bound(speeds.begin(), speeds.end(), services_.time.timeScale);
         const std::size_t index = current == speeds.end()
@@ -88,13 +103,14 @@ void Application::bindEventHandlers() {
         if (services_.renderer.wantsMouse()) {
             return;
         }
+        const AppModeCapabilities& capabilities = modeSession_.capabilities();
         const render::CameraMatrices camera = computeCameraMatrices(
             services_.camera,
             services_.renderer.width(),
             services_.renderer.height()
         );
-        const auto moveControlledAgent = [&]() {
-            if (services_.world.navAgents.entities().empty()) {
+        const auto moveAgent = [&](EntityId agent) {
+            if (!agent.valid() || !services_.world.navAgents.contains(agent)) {
                 return false;
             }
             std::optional<NavHitResult> hit{};
@@ -118,18 +134,20 @@ void Application::bindEventHandlers() {
                     services_.world,
                     services_.navigation,
                     services_.scheduler,
-                    services_.world.navAgents.entities().front(),
+                    agent,
                     hit->position
                 );
             }
         };
 
-        if (currentMode_ == AppMode::Gameplay) {
+        if (capabilities.acceptsGameplayOrders) {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Gameplay Click Move");
-            moveControlledAgent();
+            if (services_.partySelection.leader().has_value()) {
+                moveAgent(*services_.partySelection.leader());
+            }
             return;
         }
-        if (currentMode_ != AppMode::Editor) {
+        if (!capabilities.acceptsEditorInput) {
             return;
         }
         if (services_.navigation.editor.polygonCaptureActive) {
@@ -146,7 +164,9 @@ void Application::bindEventHandlers() {
         }
         if (services_.navigation.editor.testMoveMode) {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Editor Test Move");
-            moveControlledAgent();
+            if (!services_.world.navAgents.entities().empty()) {
+                moveAgent(services_.world.navAgents.entities().front());
+            }
             return;
         }
 
@@ -167,7 +187,7 @@ void Application::bindEventHandlers() {
                     picked = characterOwner;
                 }
             }
-            services_.selection.set(picked);
+            services_.editorSelection.set(picked);
         }
     });
 }
@@ -190,7 +210,7 @@ void Application::translateSdlEvent(const SDL_Event& event) {
             const SDL_Keymod modifiers = SDL_GetModState();
             const bool primaryModifier = (modifiers & KMOD_CTRL) != 0 || (modifiers & KMOD_GUI) != 0;
             if (primaryModifier && event.key.repeat == 0) {
-                if (currentMode_ == AppMode::Editor) {
+                if (modeSession_.capabilities().acceptsEditorInput) {
                     switch (event.key.keysym.sym) {
                         case SDLK_i:
                             setPersistedEditorSessionFlag(
@@ -332,6 +352,7 @@ void Application::translateSdlEvent(const SDL_Event& event) {
                 services_.input.lastMouseY = event.button.y;
             }
             if (event.button.button == SDL_BUTTON_RIGHT &&
+                modeSession_.capabilities().acceptsCameraInput &&
                 services_.camera.freeCameraEnabled &&
                 !services_.renderer.wantsMouse()) {
                 services_.input.rightMouseLooking = true;
@@ -347,7 +368,8 @@ void Application::translateSdlEvent(const SDL_Event& event) {
             }
             break;
         case SDL_MOUSEMOTION:
-            if (services_.input.rightMouseLooking &&
+            if (modeSession_.capabilities().acceptsCameraInput &&
+                services_.input.rightMouseLooking &&
                 services_.camera.freeCameraEnabled) {
                 rotateFreeCamera(
                     services_.camera,
@@ -375,7 +397,8 @@ void Application::translateSdlEvent(const SDL_Event& event) {
 }
 
 void Application::updateFreeCameraControls() {
-    if (!services_.camera.freeCameraEnabled ||
+    if (!modeSession_.capabilities().acceptsCameraInput ||
+        !services_.camera.freeCameraEnabled ||
         services_.renderer.wantsKeyboard()) {
         return;
     }

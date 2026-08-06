@@ -293,7 +293,7 @@ void drawInspectorWindow(EngineServices& services) {
     ImGui::SetNextWindowSize(ImVec2(640.0f, 720.0f), ImGuiCond_FirstUseEver);
 
     std::string inspectorTitle = "Inspector";
-    if (services.selection.current().has_value()) {
+    if (services.editorSelection.current().has_value()) {
         inspectorTitle += " - " + editorSelectionLabel(services);
     }
     inspectorTitle += "###Inspector";
@@ -311,7 +311,7 @@ void drawInspectorWindow(EngineServices& services) {
         return;
     }
 
-    if (!services.selection.current().has_value()) {
+    if (!services.editorSelection.current().has_value()) {
         ImGui::TextUnformatted("Click an object or light to inspect it.");
         ImGui::End();
         services.editorSession.inspectorWindowVisible = open;
@@ -323,7 +323,7 @@ void drawInspectorWindow(EngineServices& services) {
         return;
     }
 
-    const SelectionTarget selectedTarget = *services.selection.current();
+    const SelectionTarget selectedTarget = *services.editorSelection.current();
     const EntityId selected = selectedTarget.entity;
     const ImGuiTabItemFlags selectionTabFlags =
         (services.editorSession.textureBrowserFocusRequested &&

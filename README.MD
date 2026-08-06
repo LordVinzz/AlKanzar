@@ -5,6 +5,35 @@ cmake -S . -B build
 cmake --build build
 ```
 
+Run from the build directory so staged assets resolve next to the executable:
+
+```bash
+cd build
+./AlKanzar --gameplay
+```
+
+Available startup modes are `--gameplay` (default), `--editor`, and
+`--test-tool`. The test-tool mode loads a deterministic scene without editor
+UI or gameplay input.
+
+# Scene assets
+
+The default scene is authored in readable Lua at
+`assets/scenes/DefaultScene.scene`. Its first line is the fixed 10-byte header
+`V1SCN-----`; the remaining lines use the restricted scene DSL:
+
+```lua
+scene = Create({ type = "Scene" })
+object = Create({ type = "Model", name = "Object", asset = "Object.glb" })
+object.transform({ position = { x = 0, y = 0, z = 0 } })
+scene.add(object)
+scene.build()
+```
+
+Scene scripts have no IO, OS, package-loading or debug libraries. CMake fetches
+the pinned official Lua 5.5.0 runtime automatically; no system Lua package is
+required.
+
 If you need `compile_commands.json` at the repo root for tooling:
 
 ```bash
@@ -36,6 +65,7 @@ This project requires the following libraries:
 - **glad** (OpenGL loader — **Windows only** for bindings)
 - **spdlog** (logging)
 - **glm** (math)
+- **Lua 5.5.0** (fetched and built automatically for restricted scene assets)
 
 Below are installation instructions for **macOS**, **Linux**, and **Windows (via vcpkg)**.
 

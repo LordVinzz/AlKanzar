@@ -108,6 +108,12 @@ file(GLOB NAVMESH_FILES
     ${NAVMESH_SOURCE_DIR}/*
 )
 
+set(SCENE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../assets/scenes)
+set(SCENE_OUTPUT_DIR ${CMAKE_BINARY_DIR}/scenes)
+file(GLOB SCENE_FILES
+    ${SCENE_SOURCE_DIR}/*
+)
+
 add_custom_target(copy_models ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory ${MODEL_OUTPUT_DIR}
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MODEL_FILES} ${MODEL_OUTPUT_DIR}
@@ -129,7 +135,21 @@ add_custom_target(copy_navmeshes ALL
     COMMENT "Copying navmeshes to build/navmeshes"
 )
 
-add_dependencies(alkanzar_render copy_shaders copy_models copy_textures copy_navmeshes)
+add_custom_target(copy_scenes ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SCENE_OUTPUT_DIR}
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${SCENE_SOURCE_DIR} ${SCENE_OUTPUT_DIR}
+    DEPENDS ${SCENE_FILES}
+    COMMENT "Copying scenes to build/scenes"
+)
+
+add_dependencies(
+    alkanzar_render
+    copy_shaders
+    copy_models
+    copy_textures
+    copy_navmeshes
+    copy_scenes
+)
 
 target_include_directories(alkanzar_render
     PUBLIC

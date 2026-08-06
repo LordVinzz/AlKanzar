@@ -137,7 +137,7 @@ struct NavigationRuntime {
 
 const char* navSourceTagName(NavSourceTag tag);
 bool tryParseNavSourceTag(const std::string& token, NavSourceTag& outTag);
-std::string serializeNavMeshAsset(const NavMeshAsset& asset);
+std::string serializeNavMeshAsset(const NavMeshAsset& asset, std::string* error = nullptr);
 bool parseNavMeshAsset(const std::string& text, NavMeshAsset& outAsset, std::string* error = nullptr);
 
 class NavigationSystem {

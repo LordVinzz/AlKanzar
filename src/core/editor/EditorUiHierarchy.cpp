@@ -143,13 +143,13 @@ SceneHierarchyData buildSceneHierarchy(const EngineServices& services) {
 }
 
 void selectHierarchyEntity(EngineServices& services, EntityId entity) {
-    services.selection.set(entity);
+    services.editorSelection.set(entity);
     services.editorSession.activeInspectorTab = InspectorTab::Selection;
     services.editorSession.textureBrowserFocusRequested = true;
 }
 
 void selectHierarchyComponent(EngineServices& services, EntityId entity, ComponentKind component) {
-    services.selection.set(SelectionTarget{entity, component});
+    services.editorSelection.set(SelectionTarget{entity, component});
     services.editorSession.activeInspectorTab = InspectorTab::Selection;
     services.editorSession.textureBrowserFocusRequested = true;
 }
@@ -249,7 +249,7 @@ void drawSceneHierarchyNode(EngineServices& services, const SceneHierarchyData& 
     const std::vector<EntityId>& children = entity.index < hierarchy.childrenByParent.size()
         ? hierarchy.childrenByParent[entity.index]
         : emptyChildren;
-    const std::optional<SelectionTarget>& selection = services.selection.current();
+    const std::optional<SelectionTarget>& selection = services.editorSelection.current();
     const bool entitySelected = selection.has_value() &&
         selection->entity == entity &&
         !selection->component.has_value();

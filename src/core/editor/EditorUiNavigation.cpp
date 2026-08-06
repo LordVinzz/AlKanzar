@@ -196,11 +196,11 @@ void drawNavMeshWindow(EngineServices& services) {
     }
 
     ImGui::SeparatorText("Tagging");
-    if (services.selection.current().has_value()) {
+    if (services.editorSelection.current().has_value()) {
         const std::vector<EntityId> targets =
             services.navigationSystem.collectRenderableSelectionTargets(
                 services.world,
-                services.selection.current()->entity
+                services.editorSelection.current()->entity
             );
         ImGui::Text("%d target renderables", static_cast<int>(targets.size()));
         const char* preview = navSelectionPreviewLabel(targets, services);

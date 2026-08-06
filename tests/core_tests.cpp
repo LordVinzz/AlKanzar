@@ -26,6 +26,7 @@
 #include <imgui.h>
 
 #include "core/animation/AnimationSystem.hpp"
+#include "core/content/ContentFileHeader.hpp"
 #include "core/app/RuntimePolicy.hpp"
 #include "core/app/SimulationClock.hpp"
 #include "core/editor/CommandHistory.hpp"
@@ -805,6 +806,10 @@ void testNavigationAssetRoundTrip() {
     });
 
     const std::string serialized = core::serializeNavMeshAsset(asset);
+    assert(serialized.size() > core::kContentFileHeaderSize);
+    assert((serialized.substr(0u, core::kContentFileHeaderSize) ==
+        std::string{"V1NAV\0\0\0\0\0", core::kContentFileHeaderSize}));
+    assert(serialized.find("version 1\n") == std::string::npos);
     core::NavMeshAsset parsed{};
     std::string error{};
     assert(core::parseNavMeshAsset(serialized, parsed, &error));
@@ -830,6 +835,27 @@ void testNavigationAssetRoundTrip() {
     assert(parsed.links[0].bidirectional);
     assert(parsed.links[0].fromPoint == asset.links[0].fromPoint);
     assert(parsed.links[0].toPoint == asset.links[0].toPoint);
+
+    const std::string legacy =
+        "version 1\n"
+        "minimum_runtime_cell_area 0.25\n"
+        "maximum_polygon_edge_length 2.0\n";
+    core::NavMeshAsset legacyAsset{};
+    assert(core::parseNavMeshAsset(legacy, legacyAsset, &error));
+    assert(error.empty());
+    assert(legacyAsset.version == 1);
+    assert(nearlyEqual(legacyAsset.minimumRuntimeCellArea, 0.25));
+    assert(nearlyEqual(legacyAsset.maximumPolygonEdgeLength, 2.0));
+
+    std::array<char, core::kContentFileHeaderSize> wrongTypeHeader{};
+    assert(core::encodeContentFileHeader(1u, "SAV", wrongTypeHeader, &error));
+    const std::string wrongType(wrongTypeHeader.data(), wrongTypeHeader.size());
+    assert(!core::parseNavMeshAsset(wrongType, parsed, &error));
+    assert(error == "Expected content type NAV, got SAV.");
+
+    asset.version = 2;
+    assert(core::serializeNavMeshAsset(asset, &error).empty());
+    assert(error == "Cannot serialize unsupported navmesh version 2.");
 }
 
 void testNavigationBakeBuildsMultiLevelPolygonsAndBlocksOnlyOverlappingLayers() {

@@ -2,19 +2,62 @@ cmake_minimum_required(VERSION 3.16)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-project(AlKanzar VERSION 0.1.0 LANGUAGES CXX)
+project(AlKanzar VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
+include(FetchContent)
 
 find_package(SDL2 REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(Threads REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(glm CONFIG REQUIRED)
+
+FetchContent_Declare(
+    lua_runtime
+    GIT_REPOSITORY https://github.com/lua/lua.git
+    GIT_TAG v5.5.0
+    GIT_SHALLOW TRUE
+    GIT_PROGRESS TRUE
+)
+FetchContent_MakeAvailable(lua_runtime)
+
+# Scene scripts deliberately link only Lua's core and auxiliary API. Standard
+# libraries (IO, OS, package loading, debug, etc.) are not part of the target,
+# so scene assets cannot acquire those capabilities accidentally.
+add_library(alkanzar_lua STATIC
+    ${lua_runtime_SOURCE_DIR}/lapi.c
+    ${lua_runtime_SOURCE_DIR}/lauxlib.c
+    ${lua_runtime_SOURCE_DIR}/lcode.c
+    ${lua_runtime_SOURCE_DIR}/lctype.c
+    ${lua_runtime_SOURCE_DIR}/ldebug.c
+    ${lua_runtime_SOURCE_DIR}/ldo.c
+    ${lua_runtime_SOURCE_DIR}/ldump.c
+    ${lua_runtime_SOURCE_DIR}/lfunc.c
+    ${lua_runtime_SOURCE_DIR}/lgc.c
+    ${lua_runtime_SOURCE_DIR}/llex.c
+    ${lua_runtime_SOURCE_DIR}/lmem.c
+    ${lua_runtime_SOURCE_DIR}/lobject.c
+    ${lua_runtime_SOURCE_DIR}/lopcodes.c
+    ${lua_runtime_SOURCE_DIR}/lparser.c
+    ${lua_runtime_SOURCE_DIR}/lstate.c
+    ${lua_runtime_SOURCE_DIR}/lstring.c
+    ${lua_runtime_SOURCE_DIR}/ltable.c
+    ${lua_runtime_SOURCE_DIR}/ltm.c
+    ${lua_runtime_SOURCE_DIR}/lundump.c
+    ${lua_runtime_SOURCE_DIR}/lvm.c
+    ${lua_runtime_SOURCE_DIR}/lzio.c
+)
+set_target_properties(alkanzar_lua PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON)
+target_include_directories(alkanzar_lua PUBLIC ${lua_runtime_SOURCE_DIR})
+target_link_libraries(alkanzar_lua PUBLIC ${CMAKE_DL_LIBS})
+if(UNIX)
+    target_link_libraries(alkanzar_lua PUBLIC m)
+endif()
 
 add_library(alkanzar_content INTERFACE)
 target_include_directories(alkanzar_content
@@ -38,6 +81,7 @@ add_subdirectory(src/render)
 
 add_library(alkanzar_core STATIC
     src/core/animation/AnimationSystem.cpp
+    src/core/app/AppMode.cpp
     src/core/app/AppState.cpp
     src/core/app/Application.cpp
     src/core/app/ApplicationInput.cpp
@@ -98,6 +142,11 @@ add_library(alkanzar_core STATIC
     third_party/polyanya/expansion.cpp
     third_party/polyanya/geometry.cpp
     src/core/scene/Camera.cpp
+    src/core/scene/SceneAsset.cpp
+    src/core/scene/SceneAssetCharacter.cpp
+    src/core/scene/SceneAssetLights.cpp
+    src/core/scene/SceneAssetLuaFields.cpp
+    src/core/scene/SceneAssetParser.cpp
     src/core/scene/SceneFactory.cpp
     src/core/scene/SceneMeshFactory.cpp
     src/core/scene/SceneModelFactory.cpp
@@ -130,6 +179,8 @@ target_link_libraries(alkanzar_core
         alkanzar_rules
         spdlog::spdlog
         Threads::Threads
+    PRIVATE
+        alkanzar_lua
 )
 
 add_executable(AlKanzar
@@ -154,6 +205,18 @@ if(BUILD_TESTING)
         tests/rules_layer_tests.cpp
     )
 
+    add_executable(alkanzar_app_mode_tests
+        tests/app_mode_tests.cpp
+    )
+
+    add_executable(alkanzar_content_file_header_tests
+        tests/content_file_header_tests.cpp
+    )
+
+    add_executable(alkanzar_scene_asset_tests
+        tests/scene_asset_tests.cpp
+    )
+
     target_include_directories(alkanzar_core_tests
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -174,9 +237,27 @@ if(BUILD_TESTING)
             alkanzar_rules
     )
 
+    target_link_libraries(alkanzar_app_mode_tests
+        PRIVATE
+            alkanzar_core
+    )
+
+    target_link_libraries(alkanzar_content_file_header_tests
+        PRIVATE
+            alkanzar_content
+    )
+
+    target_link_libraries(alkanzar_scene_asset_tests
+        PRIVATE
+            alkanzar_core
+    )
+
     add_test(NAME alkanzar_core_tests COMMAND alkanzar_core_tests)
     add_test(NAME alkanzar_character_rules_tests COMMAND alkanzar_character_rules_tests)
     add_test(NAME alkanzar_rules_layer_tests COMMAND alkanzar_rules_layer_tests)
+    add_test(NAME alkanzar_app_mode_tests COMMAND alkanzar_app_mode_tests)
+    add_test(NAME alkanzar_content_file_header_tests COMMAND alkanzar_content_file_header_tests)
+    add_test(NAME alkanzar_scene_asset_tests COMMAND alkanzar_scene_asset_tests)
 
     add_test(
         NAME alkanzar_architecture_layers

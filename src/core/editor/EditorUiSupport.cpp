@@ -92,11 +92,11 @@ void drawProfilerCounterTable(
 }
 
 std::string editorSelectionLabel(const EngineServices& services) {
-    if (!services.selection.current().has_value()) {
+    if (!services.editorSelection.current().has_value()) {
         return "None";
     }
 
-    return editorEntityLabel(services, services.selection.current()->entity);
+    return editorEntityLabel(services, services.editorSelection.current()->entity);
 }
 
 std::string editorHierarchyLabel(const EngineServices& services, EntityId entity) {

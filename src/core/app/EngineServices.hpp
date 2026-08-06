@@ -15,6 +15,7 @@
 #include "core/navigation/Navigation.hpp"
 #include "core/physics/PhysicsSystem.hpp"
 #include "core/systems/PickingSystem.hpp"
+#include "core/systems/PartySelectionModel.hpp"
 #include "core/profiling/ProfilerService.hpp"
 #include "core/systems/RenderExtractionSystem.hpp"
 #include "core/scene/SceneFactory.hpp"
@@ -36,10 +37,11 @@ struct InputSession {
 };
 
 struct EngineServices {
-    explicit EngineServices(int width, int height)
+    explicit EngineServices(int width, int height, AppMode initialMode = AppMode::Gameplay)
         : renderer(width, height),
           scheduler(),
-          events(512u) {
+          events(512u),
+          startupMode(normalizeStartupMode(initialMode)) {
         renderer.setProfiler(&profiler);
         scheduler.setProfiler(&profiler);
         navigationSystem.setProfiler(&profiler);
@@ -50,7 +52,8 @@ struct EngineServices {
     TaskScheduler scheduler;
     EventBus<AppEvent> events;
     CommandHistory commands;
-    SelectionModel selection;
+    SelectionModel editorSelection;
+    PartySelectionModel partySelection;
     SceneRegistry sceneRegistry;
     SceneFactory sceneFactory;
     SceneBlueprint currentScene{};
@@ -74,6 +77,7 @@ struct EngineServices {
     bool showLightDebug{false};
     bool sceneLoaded{false};
     bool running{true};
+    AppMode startupMode{AppMode::Gameplay};
     std::optional<AppMode> requestedMode{};
 };
 

@@ -142,6 +142,17 @@ bool NavigationSystem::saveAsset(const NavigationRuntime& runtime, std::string* 
         return false;
     }
 
+    std::string serializationError{};
+    const std::string serialized = serializeNavMeshAsset(runtime.asset, &serializationError);
+    if (serialized.empty()) {
+        if (error != nullptr) {
+            *error = serializationError.empty()
+                ? "Failed to serialize navmesh asset."
+                : serializationError;
+        }
+        return false;
+    }
+
     std::error_code createError{};
     const std::filesystem::path path(runtime.assetPath);
     if (path.has_parent_path()) {
@@ -161,8 +172,16 @@ bool NavigationSystem::saveAsset(const NavigationRuntime& runtime, std::string* 
         }
         return false;
     }
-    output << serializeNavMeshAsset(runtime.asset);
-    return output.good();
+    output.write(serialized.data(), static_cast<std::streamsize>(serialized.size()));
+    const bool writeSucceeded = output.good();
+    if (error != nullptr) {
+        if (writeSucceeded) {
+            error->clear();
+        } else {
+            *error = "Failed to write navmesh asset.";
+        }
+    }
+    return writeSucceeded;
 }
 
 }  // namespace core

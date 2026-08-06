@@ -98,7 +98,7 @@ glm::vec4 groundIndicatorColor(CharacterAffiliation affiliation) {
 
 void RenderExtractionSystem::extract(
     const World& world,
-    const SelectionModel& selection,
+    const SelectionModel* editorSelection,
     FrameSceneData& outFrame,
     TaskScheduler& scheduler,
     bool useParallel
@@ -368,11 +368,11 @@ void RenderExtractionSystem::extract(
         );
     }
 
-    if (!selection.current().has_value()) {
+    if (editorSelection == nullptr || !editorSelection->current().has_value()) {
         return;
     }
 
-    const SelectionTarget selectedTarget = *selection.current();
+    const SelectionTarget selectedTarget = *editorSelection->current();
     const EntityId selected = selectedTarget.entity;
     outFrame.selection.entity = selected;
     outFrame.selection.component = selectedTarget.component;

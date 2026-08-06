@@ -3,6 +3,12 @@
 #include <SDL.h>
 #include <SDL_opengl.h>
 
+#include <chrono>
+#include <cstdlib>
+#include <memory>
+#include <string_view>
+#include <vector>
+
 #include "core/app/Application.hpp"
 #include "render/engine/RenderEngine.hpp"
 #include <spdlog/spdlog.h>
@@ -93,7 +99,9 @@ int main(int argc, char** argv) {
     }
 
     if (glAvailable) {
-        core::Application app(1280, 720);
+        const core::AppMode startupMode = core::startupModeFromArguments(argc, argv);
+        spdlog::info("AlKanzar: requested {} startup mode", core::appModeName(startupMode));
+        core::Application app(1280, 720, startupMode);
         app.run();
     }
 

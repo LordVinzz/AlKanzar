@@ -9,7 +9,7 @@ namespace core {
 
 class Application {
 public:
-    Application(int width, int height);
+    Application(int width, int height, AppMode startupMode = AppMode::Gameplay);
 
     void run();
 
@@ -21,12 +21,9 @@ private:
     void releaseFreeCameraMouse();
 
     EngineServices services_;
-    BootstrapState bootstrapState_{};
-    GameplayState gameplayState_{};
-    EditorState editorState_{};
-    ShutdownState shutdownState_{};
+    AppStateCollection states_{};
+    AppModeSession modeSession_{};
     IAppState* currentState_{nullptr};
-    AppMode currentMode_{AppMode::Shutdown};
 };
 
 }  // namespace core

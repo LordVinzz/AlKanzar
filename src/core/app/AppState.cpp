@@ -34,21 +34,40 @@ void BootstrapState::onEnter(EngineServices& services) {
         return;
     }
     registerEditorSessionImGuiSettings(services.editorSession);
-    services.currentScene = services.sceneRegistry.defaultScene();
+    std::string sceneError{};
+    services.currentScene = appModeCapabilities(services.startupMode).usesDeterministicScene
+        ? services.sceneRegistry.deterministicTestScene(&sceneError)
+        : services.sceneRegistry.defaultScene(&sceneError);
+    if (!sceneError.empty()) {
+        spdlog::error("Application: failed to load scene asset: {}", sceneError);
+        services.requestedMode = AppMode::Shutdown;
+        return;
+    }
     services.sceneLoaded = services.sceneFactory.buildScene(
         services.currentScene,
         services.world,
         services.renderer
     );
     if (!services.sceneLoaded) {
-        spdlog::error("Application: failed to build default scene");
+        spdlog::error(
+            "Application: failed to build scene for {} mode",
+            appModeName(services.startupMode)
+        );
         services.requestedMode = AppMode::Shutdown;
         return;
     }
     if (!services.navigationSystem.initializeScene(services.currentScene, services.world, services.navigation)) {
         spdlog::error("Application: navigation init failed: {}", services.navigation.statusMessage);
     }
-    services.requestedMode = AppMode::Gameplay;
+    services.editorSelection.clear();
+    services.partySelection.clear();
+    for (const EntityId entity : services.world.characters.entities()) {
+        if (services.world.characters.get(entity).affiliation == CharacterAffiliation::Player) {
+            services.partySelection.setLeader(entity);
+            break;
+        }
+    }
+    services.requestedMode = services.startupMode;
 }
 
 void BootstrapState::onExit(EngineServices&) {}
@@ -95,6 +114,15 @@ void EditorState::renderUi(EngineServices& services) {
     drawInspectorWindow(services);
 }
 
+void TestToolState::onEnter(EngineServices& services) {
+    services.time.paused = false;
+    services.time.timeScale = 1.0f;
+}
+
+void TestToolState::onExit(EngineServices&) {}
+void TestToolState::update(EngineServices&) {}
+void TestToolState::renderUi(EngineServices&) {}
+
 void ShutdownState::onEnter(EngineServices& services) {
     services.running = false;
 }
@@ -102,5 +130,21 @@ void ShutdownState::onEnter(EngineServices& services) {
 void ShutdownState::onExit(EngineServices&) {}
 void ShutdownState::update(EngineServices&) {}
 void ShutdownState::renderUi(EngineServices&) {}
+
+IAppState& AppStateCollection::forMode(AppMode mode) {
+    switch (mode) {
+        case AppMode::Bootstrap:
+            return bootstrap_;
+        case AppMode::Gameplay:
+            return gameplay_;
+        case AppMode::Editor:
+            return editor_;
+        case AppMode::TestTool:
+            return testTool_;
+        case AppMode::Shutdown:
+        default:
+            return shutdown_;
+    }
+}
 
 }  // namespace core

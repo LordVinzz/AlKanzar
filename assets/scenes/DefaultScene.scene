@@ -1,0 +1,191 @@
+V1SCN-----
+-- AlKanzar SCN V1
+-- This payload is ordinary Lua, executed in the restricted scene DSL.
+
+scene = Create({
+    type = "Scene",
+    ground_half_extent = 500.0,
+    wall_height = 2.5,
+    wall_offset = 3.0,
+    wall_length = 5.0,
+    wall_thickness = 0.5,
+    navmesh = "navmeshes/DefaultScene.navmesh",
+})
+
+player = Create({
+    type = "Model",
+    name = "Player - Human Fighter",
+    asset = "Adventurer.glb",
+    layer = "Actors",
+})
+player.transform({
+    position = { x = 0.0, y = 0.0, z = 0.0 },
+    rotation = { x = 0.0, y = 0.0, z = 0.0 },
+    scale = { x = 1.0, y = 1.0, z = 1.0 },
+})
+player.character({
+    affiliation = "Player",
+    race = "Human",
+    kit = "Fighter",
+    experience = 0,
+    indicator_radius = 0.65,
+    abilities = {
+        strength = 14,
+        agility = 12,
+        physique = 14,
+        intelligence = 10,
+        faith = 10,
+        charisma = 10,
+    },
+    skills = {
+        "Running",
+        "Intimidation",
+        "Command",
+        "Perception",
+        "FirstAid",
+        "Acrobatics",
+    },
+    vitals = {
+        current_hp = 53,
+        maximum_hp = 53,
+        mana = 0,
+    },
+})
+scene.add(player)
+
+friendly_npc = Create({
+    type = "Model",
+    name = "Friendly NPC - Human Cleric",
+    asset = "Adventurer.glb",
+    layer = "Actors",
+})
+friendly_npc.transform({
+    position = { x = -2.5, y = 0.0, z = 1.5 },
+})
+friendly_npc.character({
+    affiliation = "FriendlyNpc",
+    race = "Human",
+    kit = "Cleric",
+    experience = 0,
+    indicator_radius = 0.65,
+    abilities = {
+        strength = 10,
+        agility = 10,
+        physique = 12,
+        intelligence = 12,
+        faith = 14,
+        charisma = 12,
+    },
+    skills = {
+        "FirstAid",
+        "Knowledge",
+        "Command",
+        "Perception",
+        "Persuasion",
+        "Survival",
+    },
+    vitals = {
+        current_hp = 44,
+        maximum_hp = 44,
+        mana = 33,
+    },
+})
+scene.add(friendly_npc)
+
+hostile_npc = Create({
+    type = "Model",
+    name = "Hostile NPC - Orc Rogue",
+    asset = "Adventurer.glb",
+    layer = "Actors",
+})
+hostile_npc.transform({
+    position = { x = 2.5, y = 0.0, z = 1.5 },
+})
+hostile_npc.character({
+    affiliation = "HostileNpc",
+    race = "Orc",
+    kit = "Rogue",
+    experience = 0,
+    indicator_radius = 0.65,
+    abilities = {
+        strength = 12,
+        agility = 14,
+        physique = 10,
+        intelligence = 10,
+        faith = 10,
+        charisma = 8,
+    },
+    skills = {
+        "Acrobatics",
+        "Stealth",
+        "Investigation",
+        "Deception",
+        "Perception",
+        "Intimidation",
+    },
+    vitals = {
+        current_hp = 40,
+        maximum_hp = 40,
+        mana = 0,
+    },
+})
+scene.add(hostile_npc)
+
+house = Create({
+    type = "Model",
+    name = "House",
+    asset = "FantasyHouse.glb",
+    layer = "Geometry",
+})
+house.transform({
+    position = { x = -3.0, y = 0.0, z = -8.0 },
+    rotation = { x = 0.0, y = -35.0, z = 0.0 },
+})
+house.fit_to_footprint(7.5)
+scene.add(house)
+
+global_light_volume = Create({
+    type = "LightVolume",
+    name = "Global Light Volume",
+    half_extents = { x = 100.0, y = 100.0, z = 100.0 },
+})
+scene.add(global_light_volume)
+
+point_light = Create({
+    type = "PointLight",
+    name = "Point Light",
+    radius = 40.0,
+    color = { x = 0.9, y = 0.7, z = 1.0 },
+    intensity = 20.0,
+    phase = 0.0,
+    movable = false,
+    casts_shadow = true,
+    shadow_bias_min = 0.000015,
+    shadow_bias_slope = 0.0045,
+})
+point_light.transform({
+    position = { x = 1.5, y = 1.2, z = 0.0 },
+})
+scene.add(point_light)
+
+spot_light = Create({
+    type = "SpotLight",
+    name = "Spot Light",
+    radius = 32.0,
+    color = { x = 0.55, y = 0.70, z = 0.95 },
+    intensity = 1.4,
+    target = { x = -3.0, y = 1.2, z = -8.0 },
+    inner_angle = 15.0,
+    outer_angle = 25.0,
+    phase = 0.0,
+    movable = false,
+    casts_shadow = true,
+    shadow_bias_min = 0.0012,
+    shadow_bias_slope = 0.004,
+})
+spot_light.transform({
+    position = { x = 5.5, y = 10.2, z = 0.0 },
+})
+scene.add(spot_light)
+
+scene.build()

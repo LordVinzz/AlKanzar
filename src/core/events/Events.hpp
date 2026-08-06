@@ -50,8 +50,12 @@ struct ViewportClickedEvent {
     int y{0};
 };
 
-struct SelectionChangedEvent {
+struct EditorSelectionChangedEvent {
     std::optional<SelectionTarget> selection{};
+};
+
+struct PartySelectionChangedEvent {
+    std::optional<EntityId> leader{};
 };
 
 struct TransformChangedEvent {
@@ -84,7 +88,8 @@ using AppEvent = std::variant<
     ViewportWheelEvent,
     ViewportPanEvent,
     ViewportClickedEvent,
-    SelectionChangedEvent,
+    EditorSelectionChangedEvent,
+    PartySelectionChangedEvent,
     TransformChangedEvent,
     LightChangedEvent,
     MaterialChangedEvent>;

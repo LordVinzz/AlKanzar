@@ -132,8 +132,8 @@ void throttleFrameRate(Uint64 frameStartCounter, Uint64 performanceFrequency) {
 
 }  // namespace
 
-Application::Application(int width, int height)
-    : services_(width, height) {
+Application::Application(int width, int height, AppMode startupMode)
+    : services_(width, height, startupMode) {
     bindEventHandlers();
 }
 
@@ -186,6 +186,7 @@ void Application::run() {
             transitionTo(*services_.requestedMode);
             services_.requestedMode.reset();
         }
+        const AppModeCapabilities& capabilities = modeSession_.capabilities();
 
         const Uint64 currentCounter = SDL_GetPerformanceCounter();
         const double frameSeconds = secondsBetween(previousCounter, currentCounter, performanceFrequency);
@@ -212,114 +213,125 @@ void Application::run() {
             services_.time.simulationTick = simulationClock.tickCount();
             runtimeDecision = &runtimePolicy.evaluate(buildRuntimePolicyFrameContext(services_));
 
-            if (currentState_ != nullptr) {
-            ALKANZAR_PROFILE_SCOPE(services_.profiler, "State Update");
-            if (diagnostics.shouldLogFrameStage(frameIndex)) {
-                logFrameStageBoundary("begin", "State Update", frameIndex, "main");
-            }
+            if (capabilities.runs(AppRuntimeSystem::StateUpdate) && currentState_ != nullptr) {
+                ALKANZAR_PROFILE_SCOPE(services_.profiler, "State Update");
+                if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                    logFrameStageBoundary("begin", "State Update", frameIndex, "main");
+                }
                 currentState_->update(services_);
-            if (diagnostics.shouldLogFrameStage(frameIndex)) {
-                logFrameStageBoundary("end", "State Update", frameIndex, "main");
+                if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                    logFrameStageBoundary("end", "State Update", frameIndex, "main");
+                }
             }
-            }
-        {
-            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Navigation Path Apply");
-            services_.navigationSystem.applyCompletedPathRequests(services_.world, services_.navigation);
-        }
-        {
-            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Navigation Update");
-            services_.navigationSystem.updateAgents(services_.world, services_.navigation, services_.time);
-        }
 
-        {
-            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Animation Update");
-            if (diagnostics.shouldLogFrameStage(frameIndex)) {
-                logFrameStageBoundary("begin", "Animation Update", frameIndex, "main");
+            if (capabilities.runs(AppRuntimeSystem::Navigation)) {
+                {
+                    ALKANZAR_PROFILE_SCOPE(services_.profiler, "Navigation Path Apply");
+                    services_.navigationSystem.applyCompletedPathRequests(services_.world, services_.navigation);
+                }
+                {
+                    ALKANZAR_PROFILE_SCOPE(services_.profiler, "Navigation Update");
+                    services_.navigationSystem.updateAgents(services_.world, services_.navigation, services_.time);
+                }
             }
-            services_.animationSystem.update(services_.world, services_.time, services_.scheduler, true);
-            if (diagnostics.shouldLogFrameStage(frameIndex)) {
-                logFrameStageBoundary("end", "Animation Update", frameIndex, "main");
+
+            if (capabilities.runs(AppRuntimeSystem::Animation)) {
+                ALKANZAR_PROFILE_SCOPE(services_.profiler, "Animation Update");
+                if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                    logFrameStageBoundary("begin", "Animation Update", frameIndex, "main");
+                }
+                services_.animationSystem.update(services_.world, services_.time, services_.scheduler, true);
+                if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                    logFrameStageBoundary("end", "Animation Update", frameIndex, "main");
+                }
             }
-        }
-        {
-            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Physics Update");
-            services_.physicsSystem.update(services_.world, services_.time, services_.scheduler, true);
-        }
-        {
-            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Transform Update");
-            if (diagnostics.shouldLogFrameStage(frameIndex)) {
-                logFrameStageBoundary(
-                    "begin",
-                    "Transform Update",
-                    frameIndex,
-                    runtimeDecision->parallelTransformUpdate ? "parallel" : "sequential"
+
+            if (capabilities.runs(AppRuntimeSystem::Physics)) {
+                ALKANZAR_PROFILE_SCOPE(services_.profiler, "Physics Update");
+                services_.physicsSystem.update(services_.world, services_.time, services_.scheduler, true);
+            }
+
+            if (capabilities.runs(AppRuntimeSystem::Transforms)) {
+                ALKANZAR_PROFILE_SCOPE(services_.profiler, "Transform Update");
+                if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                    logFrameStageBoundary(
+                        "begin",
+                        "Transform Update",
+                        frameIndex,
+                        runtimeDecision->parallelTransformUpdate ? "parallel" : "sequential"
+                    );
+                }
+                services_.transformSystem.update(
+                    services_.world,
+                    services_.scheduler,
+                    runtimeDecision->parallelTransformUpdate
                 );
+                if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                    logFrameStageBoundary(
+                        "end",
+                        "Transform Update",
+                        frameIndex,
+                        runtimeDecision->parallelTransformUpdate ? "parallel" : "sequential"
+                    );
+                }
             }
-            services_.transformSystem.update(services_.world, services_.scheduler, runtimeDecision->parallelTransformUpdate);
-            if (diagnostics.shouldLogFrameStage(frameIndex)) {
-                logFrameStageBoundary(
-                    "end",
-                    "Transform Update",
-                    frameIndex,
-                    runtimeDecision->parallelTransformUpdate ? "parallel" : "sequential"
+
+            if (capabilities.runs(AppRuntimeSystem::Lighting)) {
+                ALKANZAR_PROFILE_SCOPE(services_.profiler, "Light Update");
+                if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                    logFrameStageBoundary(
+                        "begin",
+                        "Light Update",
+                        frameIndex,
+                        runtimeDecision->parallelLightUpdate ? "parallel" : "sequential"
+                    );
+                }
+                services_.lightSystem.update(
+                    services_.world,
+                    services_.time,
+                    services_.scheduler,
+                    runtimeDecision->parallelLightUpdate
                 );
+                if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                    logFrameStageBoundary(
+                        "end",
+                        "Light Update",
+                        frameIndex,
+                        runtimeDecision->parallelLightUpdate ? "parallel" : "sequential"
+                    );
+                }
             }
-        }
-        {
-            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Light Update");
-            if (diagnostics.shouldLogFrameStage(frameIndex)) {
-                logFrameStageBoundary(
-                    "begin",
-                    "Light Update",
-                    frameIndex,
-                    runtimeDecision->parallelLightUpdate ? "parallel" : "sequential"
+
+            if (capabilities.runs(AppRuntimeSystem::RenderExtraction)) {
+                ALKANZAR_PROFILE_SCOPE(services_.profiler, "Render Extraction");
+                if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                    logFrameStageBoundary(
+                        "begin",
+                        "Render Extraction",
+                        frameIndex,
+                        runtimeDecision->parallelRenderExtraction ? "parallel" : "sequential"
+                    );
+                }
+                services_.renderExtractionSystem.extract(
+                    services_.world,
+                    capabilities.usesEditorSelection ? &services_.editorSelection : nullptr,
+                    services_.frame,
+                    services_.scheduler,
+                    runtimeDecision->parallelRenderExtraction
                 );
+                if (diagnostics.shouldLogFrameStage(frameIndex)) {
+                    logFrameStageBoundary(
+                        "end",
+                        "Render Extraction",
+                        frameIndex,
+                        runtimeDecision->parallelRenderExtraction ? "parallel" : "sequential"
+                    );
+                }
             }
-            services_.lightSystem.update(
-                services_.world,
-                services_.time,
-                services_.scheduler,
-                runtimeDecision->parallelLightUpdate
-            );
-            if (diagnostics.shouldLogFrameStage(frameIndex)) {
-                logFrameStageBoundary(
-                    "end",
-                    "Light Update",
-                    frameIndex,
-                    runtimeDecision->parallelLightUpdate ? "parallel" : "sequential"
-                );
-            }
-        }
-        {
-            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Render Extraction");
-            if (diagnostics.shouldLogFrameStage(frameIndex)) {
-                logFrameStageBoundary(
-                    "begin",
-                    "Render Extraction",
-                    frameIndex,
-                    runtimeDecision->parallelRenderExtraction ? "parallel" : "sequential"
-                );
-            }
-            services_.renderExtractionSystem.extract(
-                services_.world,
-                services_.selection,
-                services_.frame,
-                services_.scheduler,
-                runtimeDecision->parallelRenderExtraction
-            );
-            if (diagnostics.shouldLogFrameStage(frameIndex)) {
-                logFrameStageBoundary(
-                    "end",
-                    "Render Extraction",
-                    frameIndex,
-                    runtimeDecision->parallelRenderExtraction ? "parallel" : "sequential"
-                );
-            }
-        }
         }
         services_.time.interpolationAlpha = static_cast<float>(simulationClock.interpolationAlpha());
 
-        if (currentState_ != nullptr) {
+        if (capabilities.rendersEditorUi && currentState_ != nullptr) {
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary("begin", "State UI", frameIndex, "main");
             }
@@ -329,7 +341,9 @@ void Application::run() {
             }
         }
 
-        services_.navigationSystem.syncFrame(services_.world, services_.navigation, services_.frame);
+        if (capabilities.syncsNavigationDebug) {
+            services_.navigationSystem.syncFrame(services_.world, services_.navigation, services_.frame);
+        }
 
         const render::CameraMatrices camera = computeCameraMatrices(
             services_.camera,
@@ -340,11 +354,11 @@ void Application::run() {
             services_.debugView,
             services_.shadowDebugCascade,
             services_.showLightDebug,
-            currentMode_ == AppMode::Editor,
-            currentMode_ == AppMode::Editor && services_.editorSession.navMeshOverlayVisible,
-            currentMode_ == AppMode::Editor && services_.editorSession.navMeshPolygonWireframeVisible,
+            capabilities.showsEditorOverlays,
+            capabilities.showsEditorOverlays && services_.editorSession.navMeshOverlayVisible,
+            capabilities.showsEditorOverlays && services_.editorSession.navMeshPolygonWireframeVisible,
         };
-        {
+        if (capabilities.rendersWorld) {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Render Frame");
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary(
@@ -437,7 +451,7 @@ void Application::run() {
 }
 
 void Application::transitionTo(AppMode mode) {
-    if (currentState_ != nullptr && currentMode_ == mode) {
+    if (currentState_ != nullptr && modeSession_.current() == mode) {
         return;
     }
 
@@ -445,26 +459,15 @@ void Application::transitionTo(AppMode mode) {
         currentState_->onExit(services_);
     }
 
-    currentMode_ = mode;
-    switch (mode) {
-        case AppMode::Bootstrap:
-            currentState_ = &bootstrapState_;
-            break;
-        case AppMode::Gameplay:
-            currentState_ = &gameplayState_;
-            break;
-        case AppMode::Editor:
-            currentState_ = &editorState_;
-            break;
-        case AppMode::Shutdown:
-        default:
-            currentState_ = &shutdownState_;
-            break;
+    if (!appModeCapabilities(mode).acceptsCameraInput) {
+        releaseFreeCameraMouse();
+        setFreeCameraEnabled(services_.camera, false);
     }
 
-    if (currentState_ != nullptr) {
-        currentState_->onEnter(services_);
-    }
+    modeSession_.transitionTo(mode);
+    currentState_ = &states_.forMode(mode);
+    spdlog::info("Application: entering {} mode", appModeName(mode));
+    currentState_->onEnter(services_);
 }
 
 }  // namespace core

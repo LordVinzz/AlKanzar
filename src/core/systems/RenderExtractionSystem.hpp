@@ -19,6 +19,16 @@ public:
         FrameSceneData& outFrame,
         TaskScheduler& scheduler,
         bool useParallel = false
+    ) const {
+        extract(world, &selection, outFrame, scheduler, useParallel);
+    }
+
+    void extract(
+        const World& world,
+        const SelectionModel* editorSelection,
+        FrameSceneData& outFrame,
+        TaskScheduler& scheduler,
+        bool useParallel = false
     ) const;
 };
 
