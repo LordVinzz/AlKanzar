@@ -1,6 +1,7 @@
 #include <array>
 #include <cassert>
 #include <cstdlib>
+#include <vector>
 
 #include "core/app/AppMode.hpp"
 #include "core/app/AppState.hpp"
@@ -9,8 +10,10 @@
 #include "core/ecs/World.hpp"
 #include "core/scene/SceneRegistry.hpp"
 #include "core/systems/PartySelectionModel.hpp"
+#include "core/systems/PartySelectionSystem.hpp"
 #include "core/systems/RenderExtractionSystem.hpp"
 #include "core/systems/TaskScheduler.hpp"
+#include "render/engine/RenderSceneView.hpp"
 
 namespace {
 
@@ -40,6 +43,7 @@ void testModeCapabilitiesAreExplicitAndIsolated() {
     }
 
     assert(gameplay.acceptsGameplayOrders);
+    assert(gameplay.acceptsPartySelection);
     assert(gameplay.acceptsTimeControls);
     assert(!gameplay.acceptsEditorInput);
     assert(!gameplay.usesEditorSelection);
@@ -50,12 +54,14 @@ void testModeCapabilitiesAreExplicitAndIsolated() {
     assert(editor.showsEditorOverlays);
     assert(editor.syncsNavigationDebug);
     assert(!editor.acceptsGameplayOrders);
+    assert(!editor.acceptsPartySelection);
 
     assert(testTool.rendersWorld);
     assert(testTool.usesDeterministicScene);
     assert(!testTool.rendersEditorUi);
     assert(!testTool.acceptsEditorInput);
     assert(!testTool.acceptsGameplayOrders);
+    assert(!testTool.acceptsPartySelection);
     assert(!testTool.acceptsTimeControls);
     assert(!testTool.acceptsCameraInput);
     assert(!testTool.usesEditorSelection);
@@ -122,6 +128,127 @@ void testEditorAndPartySelectionsAreIndependent() {
     assert(!partySelection.leader().has_value());
 }
 
+void testPartySelectionModelTracksMultipleCharactersAndLeader() {
+    core::PartySelectionModel selection{};
+    const core::EntityId first{4u, 1u};
+    const core::EntityId second{8u, 2u};
+
+    selection.setSelection({first, second, first, core::EntityId{}});
+    assert(selection.selected().size() == 2u);
+    assert(selection.selected()[0] == first);
+    assert(selection.selected()[1] == second);
+    assert(*selection.leader() == first);
+    assert(selection.contains(second));
+
+    selection.setLeader(second);
+    assert(selection.selected().size() == 2u);
+    assert(selection.selected()[0] == second);
+    assert(selection.selected()[1] == first);
+    assert(*selection.leader() == second);
+}
+
+void testPartySelectionRectangleSelectsOnlyOwnedCharacters() {
+    assert(!core::isPartySelectionDrag(10, 10, 13, 14));
+    assert(core::isPartySelectionDrag(10, 10, 16, 10));
+
+    const core::ScreenSelectionRect normalized = core::makeScreenSelectionRect(
+        250,
+        90,
+        -20,
+        5,
+        200,
+        100
+    );
+    assert(normalized.minX == 0.0f);
+    assert(normalized.minY == 5.0f);
+    assert(normalized.maxX == 200.0f);
+    assert(normalized.maxY == 90.0f);
+
+    core::World world{};
+    core::FrameSceneData frame{};
+    const auto addCharacter = [&](
+        core::CharacterAffiliation affiliation,
+        const render::Bounds3& bounds
+    ) {
+        const core::EntityId entity = world.createEntity();
+        core::CharacterComponent character{};
+        character.affiliation = affiliation;
+        world.characters.emplace(entity, character);
+        core::FrameRenderable renderable{};
+        renderable.entity = entity;
+        renderable.worldBounds = bounds;
+        renderable.hasWorldBounds = true;
+        frame.renderables.push_back(renderable);
+        return entity;
+    };
+
+    const core::EntityId first = addCharacter(
+        core::CharacterAffiliation::Player,
+        render::Bounds3{glm::vec3(-0.9f, -0.2f, 0.0f), glm::vec3(-0.6f, 0.2f, 0.1f)}
+    );
+    const core::EntityId second = addCharacter(
+        core::CharacterAffiliation::Player,
+        render::Bounds3{glm::vec3(0.5f, -0.2f, 0.0f), glm::vec3(0.8f, 0.2f, 0.1f)}
+    );
+    addCharacter(
+        core::CharacterAffiliation::FriendlyNpc,
+        render::Bounds3{glm::vec3(-0.4f, -0.2f, 0.0f), glm::vec3(-0.1f, 0.2f, 0.1f)}
+    );
+    addCharacter(
+        core::CharacterAffiliation::HostileNpc,
+        render::Bounds3{glm::vec3(0.0f, -0.2f, 0.0f), glm::vec3(0.2f, 0.2f, 0.1f)}
+    );
+
+    render::CameraMatrices camera{};
+    const core::PartySelectionSystem system{};
+    const std::vector<core::EntityId> leftSelection = system.selectOwnedCharacters(
+        world,
+        frame,
+        camera,
+        200,
+        100,
+        core::ScreenSelectionRect{0.0f, 30.0f, 45.0f, 70.0f}
+    );
+    assert(leftSelection == std::vector<core::EntityId>{first});
+
+    const std::vector<core::EntityId> fullSelection = system.selectOwnedCharacters(
+        world,
+        frame,
+        camera,
+        200,
+        100,
+        core::ScreenSelectionRect{0.0f, 0.0f, 200.0f, 100.0f}
+    );
+    assert((fullSelection == std::vector<core::EntityId>{first, second}));
+
+    const std::vector<core::EntityId> emptySelection = system.selectOwnedCharacters(
+        world,
+        frame,
+        camera,
+        200,
+        100,
+        core::ScreenSelectionRect{105.0f, 0.0f, 125.0f, 20.0f}
+    );
+    assert(emptySelection.empty());
+}
+
+void testRenderSceneCarriesTheGreenSelectionMarquee() {
+    core::FrameSceneData frame{};
+    frame.partySelectionMarquee.visible = true;
+    frame.partySelectionMarquee.min = glm::vec2(12.0f, 20.0f);
+    frame.partySelectionMarquee.max = glm::vec2(80.0f, 75.0f);
+    core::TaskScheduler scheduler{};
+    const render::RenderSceneView scene = render::buildRenderSceneView(frame, {}, scheduler, false);
+
+    assert(scene.partySelectionMarquee.visible);
+    assert(scene.partySelectionMarquee.min == frame.partySelectionMarquee.min);
+    assert(scene.partySelectionMarquee.max == frame.partySelectionMarquee.max);
+    assert(scene.partySelectionMarquee.color.g > 0.9f);
+
+    frame.clear();
+    assert(!frame.partySelectionMarquee.visible);
+}
+
 void testRenderExtractionCannotLeakEditorSelectionIntoRuntimeModes() {
     core::World world{};
     const core::EntityId entity = world.createEntity();
@@ -174,6 +301,9 @@ int main() {
     testModeTransitionsRestoreThePreviousRuntime();
     testEveryModeResolvesToItsOwnState();
     testEditorAndPartySelectionsAreIndependent();
+    testPartySelectionModelTracksMultipleCharactersAndLeader();
+    testPartySelectionRectangleSelectsOnlyOwnedCharacters();
+    testRenderSceneCarriesTheGreenSelectionMarquee();
     testRenderExtractionCannotLeakEditorSelectionIntoRuntimeModes();
     testDeterministicTestSceneHasAStableMinimalLayout();
     return EXIT_SUCCESS;

@@ -47,6 +47,7 @@ add_library(alkanzar_render STATIC
     pipeline/SceneOverlayRenderer.cpp
     pipeline/SceneOverlayMath.cpp
     pipeline/SceneOverlayDrawing.cpp
+    pipeline/SceneOverlayMarquee.cpp
     pipeline/SceneOverlayResources.cpp
     pipeline/ShadowSystem.cpp
     pipeline/ShadowSystemRender.cpp

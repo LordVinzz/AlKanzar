@@ -76,7 +76,9 @@ void BootstrapState::renderUi(EngineServices&) {}
 
 void GameplayState::onEnter(EngineServices&) {}
 
-void GameplayState::onExit(EngineServices&) {}
+void GameplayState::onExit(EngineServices& services) {
+    services.input.partySelectionDrag.reset();
+}
 
 void GameplayState::update(EngineServices& services) {
     updateOrbitCamera(services.camera, services.time);

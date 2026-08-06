@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <glm/mat4x4.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
@@ -73,6 +74,13 @@ struct FrameGroundIndicator {
     glm::vec3 center{0.0f};
     float radius{0.65f};
     glm::vec4 color{1.0f};
+};
+
+struct FramePartySelectionMarquee {
+    bool visible{false};
+    glm::vec2 min{0.0f};
+    glm::vec2 max{0.0f};
+    glm::vec4 color{0.16f, 0.95f, 0.32f, 0.95f};
 };
 
 struct FrameSelection {
@@ -145,6 +153,7 @@ struct FrameSceneData {
     std::vector<FrameColliderDebug> colliderDebug{};
     std::vector<FrameGroundIndicator> groundIndicators{};
     std::vector<glm::mat4> jointMatrices{};
+    FramePartySelectionMarquee partySelectionMarquee{};
     FrameSelection selection{};
     FrameSkeletonDebug selectionSkeleton{};
     FrameNavigationDebug navigation{};
@@ -164,6 +173,7 @@ struct FrameSceneData {
         colliderDebug.clear();
         groundIndicators.clear();
         jointMatrices.clear();
+        partySelectionMarquee = FramePartySelectionMarquee{};
         selection = FrameSelection{};
         selectionSkeleton.clear();
         navigation.clear();

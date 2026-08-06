@@ -25,6 +25,7 @@ constexpr AppModeCapabilities kGameplayCapabilities{
     .fixedStepSystems = kRuntimeSystems,
     .rendersWorld = true,
     .acceptsGameplayOrders = true,
+    .acceptsPartySelection = true,
     .acceptsTimeControls = true,
     .acceptsCameraInput = true,
 };

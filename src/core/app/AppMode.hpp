@@ -28,6 +28,7 @@ struct AppModeCapabilities {
     bool rendersEditorUi{false};
     bool acceptsEditorInput{false};
     bool acceptsGameplayOrders{false};
+    bool acceptsPartySelection{false};
     bool acceptsTimeControls{false};
     bool acceptsCameraInput{false};
     bool usesEditorSelection{false};

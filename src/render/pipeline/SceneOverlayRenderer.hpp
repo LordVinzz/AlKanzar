@@ -78,6 +78,12 @@ public:
         const CameraMatrices& camera
     ) const;
 
+    void renderPartySelectionMarquee(
+        const RenderSceneView& scene,
+        int width,
+        int height
+    ) const;
+
 private:
     bool buildVolumeMeshes();
     bool buildDebugMeshes();

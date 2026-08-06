@@ -16,6 +16,7 @@
 #include "core/physics/PhysicsSystem.hpp"
 #include "core/systems/PickingSystem.hpp"
 #include "core/systems/PartySelectionModel.hpp"
+#include "core/systems/PartySelectionSystem.hpp"
 #include "core/profiling/ProfilerService.hpp"
 #include "core/systems/RenderExtractionSystem.hpp"
 #include "core/scene/SceneFactory.hpp"
@@ -29,11 +30,37 @@
 
 namespace core {
 
+struct PartySelectionDragSession {
+    bool active{false};
+    int startX{0};
+    int startY{0};
+    int currentX{0};
+    int currentY{0};
+
+    void begin(int x, int y) {
+        active = true;
+        startX = x;
+        startY = y;
+        currentX = x;
+        currentY = y;
+    }
+
+    void update(int x, int y) {
+        currentX = x;
+        currentY = y;
+    }
+
+    void reset() {
+        *this = PartySelectionDragSession{};
+    }
+};
+
 struct InputSession {
     bool middleDragging{false};
     bool rightMouseLooking{false};
     int lastMouseX{0};
     int lastMouseY{0};
+    PartySelectionDragSession partySelectionDrag{};
 };
 
 struct EngineServices {
@@ -54,6 +81,7 @@ struct EngineServices {
     CommandHistory commands;
     SelectionModel editorSelection;
     PartySelectionModel partySelection;
+    PartySelectionSystem partySelectionSystem;
     SceneRegistry sceneRegistry;
     SceneFactory sceneFactory;
     SceneBlueprint currentScene{};

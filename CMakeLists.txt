@@ -85,6 +85,7 @@ add_library(alkanzar_core STATIC
     src/core/app/AppState.cpp
     src/core/app/Application.cpp
     src/core/app/ApplicationInput.cpp
+    src/core/app/ApplicationPartySelection.cpp
     src/core/app/RuntimePolicy.cpp
     src/core/editor/ComponentRegistry.cpp
     src/core/editor/ComponentDescriptors.cpp
@@ -160,6 +161,7 @@ add_library(alkanzar_core STATIC
     src/core/profiling/ProfilerService.cpp
     src/core/profiling/ProfilerRuntime.cpp
     src/core/systems/PickingSystem.cpp
+    src/core/systems/PartySelectionSystem.cpp
     src/core/systems/RenderExtractionAnimation.cpp
     src/core/systems/RenderExtractionSystem.cpp
     src/core/systems/TaskScheduler.cpp

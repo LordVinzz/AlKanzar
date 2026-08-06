@@ -125,6 +125,7 @@ RenderSceneView buildRenderSceneView(
             indicator.color
         });
     }
+    scene.partySelectionMarquee = frame.partySelectionMarquee;
     scene.selection = resolveRenderSelection(frame);
     scene.selectionSkeleton.showOverlay = frame.selectionSkeleton.showOverlay;
     scene.selectionSkeleton.parentIndices = frame.selectionSkeleton.parentIndices;

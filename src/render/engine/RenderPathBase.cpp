@@ -35,6 +35,11 @@ void RenderPathBase::render(const RenderPathContext& context) {
             context.directionalLightDirection
         );
     }
+    context.overlayRenderer.renderPartySelectionMarquee(
+        context.scene,
+        context.width,
+        context.height
+    );
 }
 
 void RenderPathBase::drawStandardSceneLayers(
@@ -71,4 +76,3 @@ void RenderPathBase::drawStandardSceneLayers(
 }
 
 }  // namespace render
-

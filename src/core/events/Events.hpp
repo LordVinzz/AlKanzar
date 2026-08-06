@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <variant>
+#include <vector>
 
 #include "core/ecs/Entity.hpp"
 #include "core/editor/SelectionModel.hpp"
@@ -50,11 +51,27 @@ struct ViewportClickedEvent {
     int y{0};
 };
 
+struct ViewportPrimaryPressedEvent {
+    int x{0};
+    int y{0};
+};
+
+struct ViewportPrimaryMovedEvent {
+    int x{0};
+    int y{0};
+};
+
+struct ViewportPrimaryReleasedEvent {
+    int x{0};
+    int y{0};
+};
+
 struct EditorSelectionChangedEvent {
     std::optional<SelectionTarget> selection{};
 };
 
 struct PartySelectionChangedEvent {
+    std::vector<EntityId> selected{};
     std::optional<EntityId> leader{};
 };
 
@@ -88,6 +105,9 @@ using AppEvent = std::variant<
     ViewportWheelEvent,
     ViewportPanEvent,
     ViewportClickedEvent,
+    ViewportPrimaryPressedEvent,
+    ViewportPrimaryMovedEvent,
+    ViewportPrimaryReleasedEvent,
     EditorSelectionChangedEvent,
     PartySelectionChangedEvent,
     TransformChangedEvent,

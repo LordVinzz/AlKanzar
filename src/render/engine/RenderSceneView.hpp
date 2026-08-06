@@ -133,6 +133,7 @@ struct RenderSceneView {
     std::vector<core::FrameLightVolume> lightVolumes{};
     std::vector<RenderColliderDebugView> colliderDebug{};
     std::vector<RenderGroundIndicatorView> groundIndicators{};
+    core::FramePartySelectionMarquee partySelectionMarquee{};
     RenderSelectionView selection{};
     RenderSelectionSkeletonView selectionSkeleton{};
     RenderNavigationView navigation{};

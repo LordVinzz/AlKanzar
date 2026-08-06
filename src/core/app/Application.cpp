@@ -344,6 +344,7 @@ void Application::run() {
         if (capabilities.syncsNavigationDebug) {
             services_.navigationSystem.syncFrame(services_.world, services_.navigation, services_.frame);
         }
+        syncPartySelectionPresentation();
 
         const render::CameraMatrices camera = computeCameraMatrices(
             services_.camera,

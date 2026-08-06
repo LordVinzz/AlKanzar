@@ -310,8 +310,11 @@ ImGui code belongs under `core/editor`. Major entry points are:
 - `EditorUiProfiler.cpp`: profiling UI;
 - `EditorSession.hpp`: persisted window/tool state;
 - `SelectionModel.hpp`: editor-only entity/component selection state;
-- `PartySelectionModel.hpp`: runtime party leader selection used by gameplay
-  orders independently from editor selection.
+- `PartySelectionModel.hpp`: ordered runtime party selection and leader used
+  by gameplay orders independently from editor selection;
+- `PartySelectionSystem.hpp/.cpp`: screen-space drag selection restricted to
+  player-controlled character profiles and per-frame selected/deselected ring
+  presentation.
 
 User-visible edits should normally be represented by `ICommand` or
 `SnapshotCommand<T>` and executed through `CommandHistory`. Supply stable,
@@ -536,7 +539,8 @@ Current controls relevant to testing:
 | `E` or `F1` | Toggle Editor and the previous runtime mode (Gameplay or TestTool). |
 | `Space` | Pause/resume fixed-step simulation in Gameplay or Editor. |
 | `-`, `=` or keypad `+` | Cycle Gameplay/Editor simulation speed through 0.5×, 1×, 2× and 4×. |
-| Left click | Move the controlled player in Gameplay; select/test navigation in Editor depending on tool mode. |
+| Left click | Select a controlled character or move the current leader in Gameplay; select/test navigation in Editor depending on tool mode. |
+| Left-drag | Draw a green Gameplay marquee and replace the party selection; releasing over no controlled character clears it. |
 | Middle-drag / wheel | Pan / zoom the isometric camera. |
 | `C` | Toggle free camera; right-drag looks around while enabled. |
 | `0`–`8` | Select final/deferred debug views. |
@@ -577,6 +581,7 @@ captures can be exported from the profiler UI for Perfetto analysis.
 | Character data missing/stale | `CharacterComponents.hpp`, `World.hpp` | scene blueprint/factory, component descriptor, normalization |
 | Wrong NPC/player ring | `RenderExtractionSystem*`, `FrameGroundIndicator` | overlay renderer direct/deferred paths, affiliation data |
 | Picking selects a mesh child | `PickingSystem.*`, `World::characterOwnerEntity()` | `SelectionModel`, scene/skinned hierarchy |
+| Gameplay marquee selection issue | `ApplicationPartySelection.cpp`, `PartySelectionSystem.*` | `PartySelectionModel.hpp`, `FramePartySelectionMarquee`, `SceneOverlayMarquee.cpp` |
 | Click-to-move/path issue | `ApplicationInput.cpp`, `Navigation.hpp` | request/result, hit-test, Polyanya/corridor/funnel files |
 | Navmesh bake issue | `NavigationBakeSources.cpp`, `NavigationGenerator.cpp` | Delaunay/cell/coverage files and editor UI |
 | Scene syntax/load issue | `SceneAsset.cpp`, `assets/scenes/DefaultScene.scene` | field parser files, `SceneRegistry.cpp`, scene-asset tests |

@@ -117,5 +117,12 @@ pas disperser de tests directs du mode dans les sous-systèmes.
   éditeur, sélection d'édition ni ordre de gameplay.
 
 La sélection éditeur et la sélection du groupe sont deux états indépendants.
-Seule la première peut alimenter l'outline et les gizmos de l'éditeur ; les
-ordres de jeu ciblent le leader de la seconde.
+`PartySelectionModel` conserve la sélection runtime ordonnée et son premier
+membre comme leader. En Gameplay, `PartySelectionSystem` projette les limites
+des personnages `Player` pour résoudre le cadre de sélection ; un cadre vide
+vide la sélection. À chaque frame de présentation, il assombrit également les
+`FrameGroundIndicator` des personnages `Player` non sélectionnés, y compris
+quand la simulation est en pause. Le rectangle vert est transmis au rendu par
+`FramePartySelectionMarquee`, sans requête du renderer vers l'ECS. Seule la
+sélection éditeur peut alimenter l'outline et les gizmos de l'éditeur ; les
+ordres de jeu ciblent le leader de la sélection runtime.

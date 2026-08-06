@@ -13,8 +13,11 @@ void Application::bindEventHandlers() {
     services_.editorSelection.changed().connect([this](const std::optional<SelectionTarget>& selection) {
         services_.events.publish(EditorSelectionChangedEvent{selection});
     });
-    services_.partySelection.changed().connect([this](const std::optional<EntityId>& leader) {
-        services_.events.publish(PartySelectionChangedEvent{leader});
+    services_.partySelection.changed().connect([this](const std::vector<EntityId>& selected) {
+        const std::optional<EntityId> leader = selected.empty()
+            ? std::nullopt
+            : std::optional<EntityId>{selected.front()};
+        services_.events.publish(PartySelectionChangedEvent{selected, leader});
     });
 
     services_.events.subscribe<QuitRequestedEvent>([this](const QuitRequestedEvent&) {
@@ -98,6 +101,22 @@ void Application::bindEventHandlers() {
     services_.events.subscribe<ShadowCascadeStepEvent>([this](const ShadowCascadeStepEvent& event) {
         services_.shadowDebugCascade = std::max(0, services_.shadowDebugCascade + event.delta);
     });
+    services_.events.subscribe<ViewportPrimaryPressedEvent>([this](const ViewportPrimaryPressedEvent& event) {
+        if (!modeSession_.capabilities().acceptsPartySelection || services_.renderer.wantsMouse()) {
+            return;
+        }
+        services_.input.partySelectionDrag.begin(event.x, event.y);
+    });
+    services_.events.subscribe<ViewportPrimaryMovedEvent>([this](const ViewportPrimaryMovedEvent& event) {
+        if (!modeSession_.capabilities().acceptsPartySelection ||
+            !services_.input.partySelectionDrag.active) {
+            return;
+        }
+        services_.input.partySelectionDrag.update(event.x, event.y);
+    });
+    services_.events.subscribe<ViewportPrimaryReleasedEvent>([this](const ViewportPrimaryReleasedEvent& event) {
+        finishPartySelectionDrag(event.x, event.y);
+    });
     services_.events.subscribe<ViewportClickedEvent>([this](const ViewportClickedEvent& event) {
         ALKANZAR_PROFILE_SCOPE(services_.profiler, "Viewport Click");
         if (services_.renderer.wantsMouse()) {
@@ -109,44 +128,6 @@ void Application::bindEventHandlers() {
             services_.renderer.width(),
             services_.renderer.height()
         );
-        const auto moveAgent = [&](EntityId agent) {
-            if (!agent.valid() || !services_.world.navAgents.contains(agent)) {
-                return false;
-            }
-            std::optional<NavHitResult> hit{};
-            {
-                ALKANZAR_PROFILE_SCOPE(services_.profiler, "Navigation Hit Test");
-                hit = services_.navigationSystem.hitTest(
-                    services_.navigation,
-                    camera,
-                    services_.renderer.width(),
-                    services_.renderer.height(),
-                    event.x,
-                    event.y
-                );
-            }
-            if (!hit.has_value()) {
-                return false;
-            }
-            {
-                ALKANZAR_PROFILE_SCOPE(services_.profiler, "Navigation Path Request");
-                return services_.navigationSystem.requestAgentDestination(
-                    services_.world,
-                    services_.navigation,
-                    services_.scheduler,
-                    agent,
-                    hit->position
-                );
-            }
-        };
-
-        if (capabilities.acceptsGameplayOrders) {
-            ALKANZAR_PROFILE_SCOPE(services_.profiler, "Gameplay Click Move");
-            if (services_.partySelection.leader().has_value()) {
-                moveAgent(*services_.partySelection.leader());
-            }
-            return;
-        }
         if (!capabilities.acceptsEditorInput) {
             return;
         }
@@ -165,7 +146,11 @@ void Application::bindEventHandlers() {
         if (services_.navigation.editor.testMoveMode) {
             ALKANZAR_PROFILE_SCOPE(services_.profiler, "Editor Test Move");
             if (!services_.world.navAgents.entities().empty()) {
-                moveAgent(services_.world.navAgents.entities().front());
+                moveAgentToViewportPosition(
+                    services_.world.navAgents.entities().front(),
+                    event.x,
+                    event.y
+                );
             }
             return;
         }
@@ -344,7 +329,11 @@ void Application::translateSdlEvent(const SDL_Event& event) {
             break;
         case SDL_MOUSEBUTTONDOWN:
             if (event.button.button == SDL_BUTTON_LEFT) {
-                services_.events.publish(ViewportClickedEvent{event.button.x, event.button.y});
+                if (modeSession_.capabilities().acceptsPartySelection) {
+                    services_.events.publish(ViewportPrimaryPressedEvent{event.button.x, event.button.y});
+                } else {
+                    services_.events.publish(ViewportClickedEvent{event.button.x, event.button.y});
+                }
             }
             if (event.button.button == SDL_BUTTON_MIDDLE) {
                 services_.input.middleDragging = true;
@@ -360,6 +349,9 @@ void Application::translateSdlEvent(const SDL_Event& event) {
             }
             break;
         case SDL_MOUSEBUTTONUP:
+            if (event.button.button == SDL_BUTTON_LEFT) {
+                services_.events.publish(ViewportPrimaryReleasedEvent{event.button.x, event.button.y});
+            }
             if (event.button.button == SDL_BUTTON_MIDDLE) {
                 services_.input.middleDragging = false;
             }
@@ -368,6 +360,9 @@ void Application::translateSdlEvent(const SDL_Event& event) {
             }
             break;
         case SDL_MOUSEMOTION:
+            if ((event.motion.state & SDL_BUTTON_LMASK) != 0u) {
+                services_.events.publish(ViewportPrimaryMovedEvent{event.motion.x, event.motion.y});
+            }
             if (modeSession_.capabilities().acceptsCameraInput &&
                 services_.input.rightMouseLooking &&
                 services_.camera.freeCameraEnabled) {
@@ -388,6 +383,7 @@ void Application::translateSdlEvent(const SDL_Event& event) {
             }
             if (event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
                 services_.input.middleDragging = false;
+                services_.input.partySelectionDrag.reset();
                 releaseFreeCameraMouse();
             }
             break;

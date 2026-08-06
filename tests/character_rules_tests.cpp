@@ -8,6 +8,8 @@
 #include "core/rules/CharacterRules.hpp"
 #include "core/navigation/Navigation.hpp"
 #include "core/scene/SceneRegistry.hpp"
+#include "core/systems/PartySelectionModel.hpp"
+#include "core/systems/PartySelectionSystem.hpp"
 #include "core/systems/RenderExtractionSystem.hpp"
 #include "core/systems/TaskScheduler.hpp"
 #include "core/simulation/CharacterSimulation.hpp"
@@ -328,6 +330,22 @@ void testGroundIndicatorsExtractAffiliationColorsAndRootTransforms() {
     assert(frame.groundIndicators[1].color.b > frame.groundIndicators[1].color.r);
     assert(frame.groundIndicators[2].color.r > frame.groundIndicators[2].color.b);
 
+    core::PartySelectionModel partySelection{};
+    const core::PartySelectionSystem partySelectionSystem{};
+    partySelection.setSelection({player});
+    partySelectionSystem.syncGroundIndicatorSelection(world, partySelection, frame);
+    const glm::vec4 selectedPlayerColor = frame.groundIndicators[0].color;
+    const glm::vec4 friendlyColor = frame.groundIndicators[1].color;
+
+    partySelection.clear();
+    partySelectionSystem.syncGroundIndicatorSelection(world, partySelection, frame);
+    const glm::vec4 deselectedPlayerColor = frame.groundIndicators[0].color;
+    assert(deselectedPlayerColor.g < selectedPlayerColor.g * 0.5f);
+    assert(deselectedPlayerColor.g > deselectedPlayerColor.r);
+    assert(frame.groundIndicators[1].color.r == friendlyColor.r);
+    assert(frame.groundIndicators[1].color.g == friendlyColor.g);
+    assert(frame.groundIndicators[1].color.b == friendlyColor.b);
+
     const render::RenderSceneView renderScene = render::buildRenderSceneView(
         frame,
         {},
@@ -335,6 +353,7 @@ void testGroundIndicatorsExtractAffiliationColorsAndRootTransforms() {
         true
     );
     assert(renderScene.groundIndicators.size() == frame.groundIndicators.size());
+    assert(renderScene.groundIndicators[0].color.g == deselectedPlayerColor.g);
     assert(renderScene.groundIndicators[2].owner == hostile);
     assert(renderScene.groundIndicators[2].radius == 0.75f);
 }

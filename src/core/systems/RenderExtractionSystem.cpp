@@ -9,6 +9,7 @@
 
 #include <glm/geometric.hpp>
 
+#include "core/presentation/CharacterPresentation.hpp"
 #include "core/transform/TransformMath.hpp"
 #include "render/resources/StaticGltfModel.hpp"
 
@@ -80,18 +81,6 @@ float maxAxisScale(const glm::mat4& modelMatrix) {
     const float yScale = glm::length(glm::vec3(modelMatrix[1]));
     const float zScale = glm::length(glm::vec3(modelMatrix[2]));
     return std::max(xScale, std::max(yScale, zScale));
-}
-
-glm::vec4 groundIndicatorColor(CharacterAffiliation affiliation) {
-    switch (affiliation) {
-        case CharacterAffiliation::Player:
-            return glm::vec4(0.10f, 0.95f, 0.18f, 0.90f);
-        case CharacterAffiliation::FriendlyNpc:
-            return glm::vec4(0.12f, 0.42f, 1.00f, 0.90f);
-        case CharacterAffiliation::HostileNpc:
-            return glm::vec4(0.95f, 0.12f, 0.10f, 0.90f);
-    }
-    return glm::vec4(1.0f);
 }
 
 }  // namespace
@@ -210,7 +199,7 @@ void RenderExtractionSystem::extract(
                 entity,
                 center,
                 std::max(character.groundIndicatorRadius, 0.01f),
-                groundIndicatorColor(character.affiliation)
+                characterGroundIndicatorColor(character.affiliation)
             });
         }
     };

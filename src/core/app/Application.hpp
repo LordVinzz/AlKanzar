@@ -19,6 +19,9 @@ private:
     void bindEventHandlers();
     void updateFreeCameraControls();
     void releaseFreeCameraMouse();
+    void finishPartySelectionDrag(int x, int y);
+    void syncPartySelectionPresentation();
+    bool moveAgentToViewportPosition(EntityId agent, int x, int y);
 
     EngineServices services_;
     AppStateCollection states_{};
