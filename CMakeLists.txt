@@ -16,6 +16,24 @@ find_package(Threads REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(glm CONFIG REQUIRED)
 
+add_library(alkanzar_content INTERFACE)
+target_include_directories(alkanzar_content
+    INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+add_library(alkanzar_rules STATIC
+    src/core/rules/CharacterRules.cpp
+)
+target_include_directories(alkanzar_rules
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(alkanzar_rules
+    PUBLIC
+        alkanzar_content
+)
+
 add_subdirectory(src/render)
 
 add_library(alkanzar_core STATIC
@@ -24,12 +42,11 @@ add_library(alkanzar_core STATIC
     src/core/app/Application.cpp
     src/core/app/ApplicationInput.cpp
     src/core/app/RuntimePolicy.cpp
-    src/core/ecs/ComponentRegistry.cpp
-    src/core/ecs/ComponentDescriptors.cpp
-    src/core/ecs/CharacterComponentDescriptor.cpp
-    src/core/ecs/ComponentInspector.cpp
-    src/core/gameplay/CharacterInspector.cpp
-    src/core/gameplay/CharacterRules.cpp
+    src/core/editor/ComponentRegistry.cpp
+    src/core/editor/ComponentDescriptors.cpp
+    src/core/editor/CharacterComponentDescriptor.cpp
+    src/core/editor/ComponentInspector.cpp
+    src/core/editor/CharacterInspector.cpp
     src/core/editor/EditorSessionImGuiSettings.cpp
     src/core/editor/EditorUiAnimation.cpp
     src/core/editor/EditorUiHierarchy.cpp
@@ -85,6 +102,7 @@ add_library(alkanzar_core STATIC
     src/core/scene/SceneMeshFactory.cpp
     src/core/scene/SceneModelFactory.cpp
     src/core/scene/SceneRegistry.cpp
+    src/core/simulation/CharacterSimulation.cpp
     src/core/lighting/LightSystem.cpp
     src/core/transform/TransformMath.cpp
     src/core/transform/TransformSystem.cpp
@@ -109,6 +127,7 @@ target_include_directories(alkanzar_core
 target_link_libraries(alkanzar_core
     PUBLIC
         alkanzar_render
+        alkanzar_rules
         spdlog::spdlog
         Threads::Threads
 )
@@ -131,6 +150,10 @@ if(BUILD_TESTING)
         tests/character_rules_tests.cpp
     )
 
+    add_executable(alkanzar_rules_layer_tests
+        tests/rules_layer_tests.cpp
+    )
+
     target_include_directories(alkanzar_core_tests
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -146,8 +169,26 @@ if(BUILD_TESTING)
             alkanzar_core
     )
 
+    target_link_libraries(alkanzar_rules_layer_tests
+        PRIVATE
+            alkanzar_rules
+    )
+
     add_test(NAME alkanzar_core_tests COMMAND alkanzar_core_tests)
     add_test(NAME alkanzar_character_rules_tests COMMAND alkanzar_character_rules_tests)
+    add_test(NAME alkanzar_rules_layer_tests COMMAND alkanzar_rules_layer_tests)
+
+    add_test(
+        NAME alkanzar_architecture_layers
+        COMMAND
+            ${CMAKE_COMMAND}
+            -DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/src
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_architecture_layers.cmake
+    )
+    set_tests_properties(
+        alkanzar_architecture_layers
+        PROPERTIES LABELS "architecture;quality"
+    )
 
     add_test(
         NAME alkanzar_src_file_length

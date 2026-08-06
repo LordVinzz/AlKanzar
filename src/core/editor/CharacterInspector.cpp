@@ -9,14 +9,29 @@
 
 #include <imgui.h>
 
-#include "CharacterComponents.hpp"
-#include "CharacterRules.hpp"
 #include "core/app/EngineServices.hpp"
-#include "core/ecs/ComponentInspector.hpp"
+#include "core/editor/ComponentInspector.hpp"
 #include "core/ecs/World.hpp"
+#include "core/rules/CharacterRules.hpp"
+#include "core/simulation/CharacterComponents.hpp"
+#include "core/simulation/CharacterSimulation.hpp"
 
 namespace core {
 namespace {
+
+const char* characterSkillLabel(CharacterSkill skill) {
+    static constexpr std::array names{
+        "Running", "Acrobatics", "Stealth", "Perception", "Survival", "Tracking",
+        "First Aid", "Climbing", "Crafting", "Knowledge", "Investigation", "Persuasion",
+        "Intimidation", "Deception", "Performance", "Command"
+    };
+    return names[static_cast<std::size_t>(skill)];
+}
+
+const char* casterProgressionLabel(CasterProgression progression) {
+    static constexpr std::array names{"None", "Half caster", "Full caster"};
+    return names[static_cast<std::size_t>(progression)];
+}
 
 struct CharacterEditorSnapshot {
     CharacterComponent character{};
@@ -53,7 +68,7 @@ void applyCharacterSnapshot(
     }
 
     CharacterEditorSnapshot normalized = requested;
-    normalizeCharacterData(
+    normalizeCharacterComponents(
         normalized.character,
         normalized.abilities,
         normalized.skills,
@@ -220,7 +235,7 @@ void drawAbilityEditor(EngineServices& services, EntityId entity, bool& changed)
         return;
     }
     const CharacterDerivedStats derived = deriveCharacterStats(
-        current->character,
+        characterRuleData(current->character),
         current->abilities,
         current->skills
     );
@@ -268,7 +283,7 @@ void drawSkillEditor(EngineServices& services, EntityId entity, bool& changed) {
         return;
     }
     const CharacterDerivedStats derived = deriveCharacterStats(
-        current->character,
+        characterRuleData(current->character),
         current->abilities,
         current->skills
     );
@@ -294,13 +309,13 @@ void drawSkillEditor(EngineServices& services, EntityId entity, bool& changed) {
         ImGui::PushID(static_cast<int>(index));
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        ImGui::TextUnformatted(characterSkillName(skill));
+        ImGui::TextUnformatted(characterSkillLabel(skill));
         ImGui::TableSetColumnIndex(1);
         changed |= editCharacterValue(
             services,
             entity,
             "SkillRank",
-            std::string("Edit ") + characterSkillName(skill) + " Rank",
+            std::string("Edit ") + characterSkillLabel(skill) + " Rank",
             "character-skill-" + std::to_string(entity.index) + "-" + std::to_string(index),
             [index, maximumRank](CharacterEditorSnapshot& edited) {
                 int value = static_cast<int>(edited.skills.ranks[index]);
@@ -343,13 +358,13 @@ void drawVitalsEditor(EngineServices& services, EntityId entity, bool& changed) 
 
 void drawDerivedStats(const CharacterEditorSnapshot& snapshot) {
     const CharacterDerivedStats derived = deriveCharacterStats(
-        snapshot.character,
+        characterRuleData(snapshot.character),
         snapshot.abilities,
         snapshot.skills
     );
     ImGui::SeparatorText("Derived Statistics");
     ImGui::Text("Level: %d   Level Bonus: %+d", derived.level, derived.levelBonus);
-    ImGui::Text("Robustness: %+d   Caster: %s", derived.robustness, casterProgressionName(derived.casterProgression));
+    ImGui::Text("Robustness: %+d   Caster: %s", derived.robustness, casterProgressionLabel(derived.casterProgression));
     ImGui::Text("Maximum Mana: %d   Initiative: %+d", derived.maximumMana, derived.initiativeBonus);
     ImGui::Text("Dodge: %d   Armor: %d", derived.dodge, derived.armor);
     ImGui::Text("Fortitude: %d   Reflexes: %d", derived.fortitude, derived.reflexes);

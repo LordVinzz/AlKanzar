@@ -9,7 +9,7 @@
 #include <glm/vec4.hpp>
 
 #include "core/ecs/Entity.hpp"
-#include "core/ecs/ComponentRegistry.hpp"
+#include "core/presentation/ComponentKind.hpp"
 #include "render/resources/Material.hpp"
 #include "render/engine/RenderTypes.hpp"
 

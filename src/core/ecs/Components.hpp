@@ -10,7 +10,7 @@
 #include <glm/vec3.hpp>
 
 #include "Entity.hpp"
-#include "core/gameplay/CharacterComponents.hpp"
+#include "core/simulation/CharacterComponents.hpp"
 #include "render/engine/RenderTypes.hpp"
 #include "render/resources/Geometry.hpp"
 #include "render/resources/Material.hpp"

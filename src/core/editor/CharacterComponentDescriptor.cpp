@@ -1,9 +1,10 @@
 #include "ComponentRegistry.hpp"
 
-#include "World.hpp"
+#include "core/ecs/World.hpp"
 #include "core/app/EngineServices.hpp"
-#include "core/gameplay/CharacterInspector.hpp"
-#include "core/gameplay/CharacterRules.hpp"
+#include "core/editor/CharacterInspector.hpp"
+#include "core/rules/CharacterRules.hpp"
+#include "core/simulation/CharacterSimulation.hpp"
 
 namespace core {
 
@@ -30,7 +31,7 @@ void ComponentRegistry::registerCharacterDescriptor() {
                 maximumHitPoints,
                 currentMana
             };
-            normalizeCharacterData(character, abilities, skills, vitals);
+            normalizeCharacterComponents(character, abilities, skills, vitals);
             world.characters.emplace(entity, character);
             world.abilityScores.emplace(entity, abilities);
             world.skillRanks.emplace(entity, skills);

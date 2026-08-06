@@ -3,13 +3,13 @@
 #include <array>
 #include <cstdint>
 
-#include "CharacterComponents.hpp"
+#include "core/content/CharacterData.hpp"
 
 namespace core {
 
 struct CharacterDerivedStats {
-    AbilityScoresComponent effectiveAbilities{};
-    AbilityScoresComponent abilityModifiers{};
+    AbilityScores effectiveAbilities{};
+    AbilityScores abilityModifiers{};
     int level{1};
     int levelBonus{1};
     int robustness{0};
@@ -33,9 +33,9 @@ struct CharacterDerivedStats {
 };
 
 [[nodiscard]] int abilityModifier(int value);
-[[nodiscard]] AbilityScoresComponent racialAbilityModifiers(CharacterRace race);
-[[nodiscard]] AbilityScoresComponent effectiveAbilityScores(
-    const AbilityScoresComponent& base,
+[[nodiscard]] AbilityScores racialAbilityModifiers(CharacterRace race);
+[[nodiscard]] AbilityScores effectiveAbilityScores(
+    const AbilityScores& base,
     CharacterRace race
 );
 [[nodiscard]] int experienceForLevel(int level);
@@ -43,32 +43,25 @@ struct CharacterDerivedStats {
 [[nodiscard]] int levelBonus(int level);
 [[nodiscard]] int kitRobustness(CharacterKit kit);
 [[nodiscard]] CasterProgression kitCasterProgression(CharacterKit kit);
-[[nodiscard]] int startingHitPoints(const AbilityScoresComponent& effective, CharacterKit kit);
-[[nodiscard]] int hitPointsPerLevel(const AbilityScoresComponent& effective, CharacterKit kit);
+[[nodiscard]] int startingHitPoints(const AbilityScores& effective, CharacterKit kit);
+[[nodiscard]] int hitPointsPerLevel(const AbilityScores& effective, CharacterKit kit);
 [[nodiscard]] int maximumMana(
-    const AbilityScoresComponent& effective,
+    const AbilityScores& effective,
     CharacterKit kit,
     int level
 );
 [[nodiscard]] int skillRankBonus(SkillRank rank);
 [[nodiscard]] SkillRank maximumSkillRankForLevel(int level);
 [[nodiscard]] CharacterDerivedStats deriveCharacterStats(
-    const CharacterComponent& character,
-    const AbilityScoresComponent& abilities,
-    const SkillRanksComponent& skills
+    const CharacterRuleData& character,
+    const AbilityScores& abilities,
+    const SkillRanks& skills
 );
-void normalizeCharacterData(
-    CharacterComponent& character,
-    AbilityScoresComponent& abilities,
-    SkillRanksComponent& skills,
-    CharacterVitalsComponent& vitals
+void normalizeCharacterRuleData(
+    CharacterRuleData& character,
+    AbilityScores& abilities,
+    SkillRanks& skills,
+    CharacterVitals& vitals
 );
-
-[[nodiscard]] const char* characterAffiliationName(CharacterAffiliation affiliation);
-[[nodiscard]] const char* characterRaceName(CharacterRace race);
-[[nodiscard]] const char* characterKitName(CharacterKit kit);
-[[nodiscard]] const char* characterSkillName(CharacterSkill skill);
-[[nodiscard]] const char* skillRankName(SkillRank rank);
-[[nodiscard]] const char* casterProgressionName(CasterProgression progression);
 
 }  // namespace core

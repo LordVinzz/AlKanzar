@@ -5,29 +5,13 @@
 #include <string>
 #include <vector>
 
-#include "Entity.hpp"
+#include "core/ecs/Entity.hpp"
+#include "core/presentation/ComponentKind.hpp"
 
 namespace core {
 
 class World;
 struct EngineServices;
-
-enum class ComponentKind {
-    Transform = 0,
-    Visibility,
-    Renderable,
-    Material,
-    LightVolume,
-    PointLight,
-    SpotLight,
-    BoxCollider,
-    SphereCollider,
-    Rigidbody,
-    NavAgent,
-    Locomotion,
-    NavSource,
-    Character,
-};
 
 struct ComponentDescriptor {
     ComponentKind kind{ComponentKind::Transform};

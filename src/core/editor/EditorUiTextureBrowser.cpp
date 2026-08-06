@@ -9,7 +9,7 @@
 #include <imgui.h>
 
 #include "core/app/EngineServices.hpp"
-#include "core/ecs/ComponentRegistry.hpp"
+#include "core/editor/ComponentRegistry.hpp"
 #include "render/resources/Material.hpp"
 
 namespace core {

@@ -6,7 +6,7 @@
 
 #include <imgui.h>
 
-#include "World.hpp"
+#include "core/ecs/World.hpp"
 #include "core/app/EngineServices.hpp"
 
 namespace core {
@@ -102,4 +102,3 @@ void ComponentRegistry::drawComponentTabs(
 }
 
 }  // namespace core
-

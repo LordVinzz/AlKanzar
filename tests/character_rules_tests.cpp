@@ -2,14 +2,15 @@
 #include <cstdlib>
 #include <memory>
 
-#include "core/ecs/ComponentRegistry.hpp"
+#include "core/editor/ComponentRegistry.hpp"
 #include "core/ecs/World.hpp"
 #include "core/editor/SelectionModel.hpp"
-#include "core/gameplay/CharacterRules.hpp"
+#include "core/rules/CharacterRules.hpp"
 #include "core/navigation/Navigation.hpp"
 #include "core/scene/SceneRegistry.hpp"
 #include "core/systems/RenderExtractionSystem.hpp"
 #include "core/systems/TaskScheduler.hpp"
+#include "core/simulation/CharacterSimulation.hpp"
 #include "core/transform/TransformSystem.hpp"
 #include "render/engine/RenderSceneView.hpp"
 #include "render/resources/StaticGltfModel.hpp"
@@ -88,7 +89,11 @@ void testDerivedStatsAndSkillBonuses() {
     skills.ranks[static_cast<std::size_t>(core::CharacterSkill::Running)] = core::SkillRank::Initiate;
     skills.ranks[static_cast<std::size_t>(core::CharacterSkill::Acrobatics)] = core::SkillRank::Initiate;
 
-    const core::CharacterDerivedStats derived = core::deriveCharacterStats(character, abilities, skills);
+    const core::CharacterDerivedStats derived = core::deriveCharacterStats(
+        core::characterRuleData(character),
+        abilities,
+        skills
+    );
     assert(derived.level == 1);
     assert(derived.levelBonus == 1);
     assert(derived.initiativeBonus == 1);
@@ -110,7 +115,7 @@ void testDerivedStatsAndSkillBonuses() {
 
     character.race = core::CharacterRace::Orc;
     const core::CharacterDerivedStats orcDerived =
-        core::deriveCharacterStats(character, abilities, skills);
+        core::deriveCharacterStats(core::characterRuleData(character), abilities, skills);
     assert(orcDerived.effectiveAbilities.strength == 16);
     assert(orcDerived.comfortableCarry == 100);
     assert(orcDerived.maximumCarry == 200);
@@ -125,7 +130,7 @@ void testNormalizationKeepsHistoricalMaximumHitPoints() {
     skills.ranks[0] = core::SkillRank::Legendary;
     core::CharacterVitalsComponent vitals{80, 47, 999};
 
-    core::normalizeCharacterData(character, abilities, skills, vitals);
+    core::normalizeCharacterComponents(character, abilities, skills, vitals);
 
     assert(character.experience == 0);
     assert(character.groundIndicatorRadius == 0.1f);
@@ -138,7 +143,7 @@ void testNormalizationKeepsHistoricalMaximumHitPoints() {
 
     abilities.physique = 30;
     character.kit = core::CharacterKit::Barbarian;
-    core::normalizeCharacterData(character, abilities, skills, vitals);
+    core::normalizeCharacterComponents(character, abilities, skills, vitals);
     assert(vitals.maximumHitPoints == 47);
 }
 

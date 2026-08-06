@@ -23,7 +23,7 @@
 
 #include "core/app/EngineServices.hpp"
 #include "core/editor/EditorSessionImGuiSettings.hpp"
-#include "core/ecs/ComponentRegistry.hpp"
+#include "core/editor/ComponentRegistry.hpp"
 #include "render/resources/StaticGltfModel.hpp"
 
 
@@ -294,4 +294,3 @@ void drawAnimationInspector(EngineServices& services, EntityId selected) {
 }
 
 }  // namespace core
-

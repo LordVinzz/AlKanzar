@@ -23,12 +23,26 @@
 
 #include "core/app/EngineServices.hpp"
 #include "core/editor/EditorSessionImGuiSettings.hpp"
-#include "core/ecs/ComponentRegistry.hpp"
-#include "core/gameplay/CharacterRules.hpp"
+#include "core/editor/ComponentRegistry.hpp"
 #include "render/resources/StaticGltfModel.hpp"
 
 
 namespace core {
+namespace {
+
+const char* affiliationLabel(CharacterAffiliation affiliation) {
+    switch (affiliation) {
+        case CharacterAffiliation::Player:
+            return "Player";
+        case CharacterAffiliation::FriendlyNpc:
+            return "Friendly NPC";
+        case CharacterAffiliation::HostileNpc:
+            return "Hostile NPC";
+    }
+    return "Character";
+}
+
+}  // namespace
 
 std::string editorEntityLabel(const EngineServices& services, EntityId entity) {
     if (const NameComponent* name = services.world.names.tryGet(entity)) {
@@ -89,7 +103,7 @@ std::string editorHierarchyLabel(const EngineServices& services, EntityId entity
     std::string label = editorEntityLabel(services, entity);
     if (const CharacterComponent* character = services.world.characters.tryGet(entity)) {
         label += " [";
-        label += characterAffiliationName(character->affiliation);
+        label += affiliationLabel(character->affiliation);
         label += "]";
     } else if (services.world.pointLights.contains(entity)) {
         label += " [Point Light]";

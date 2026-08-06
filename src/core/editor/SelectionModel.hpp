@@ -2,7 +2,7 @@
 
 #include <optional>
 
-#include "core/ecs/ComponentRegistry.hpp"
+#include "core/presentation/ComponentKind.hpp"
 #include "core/ecs/Entity.hpp"
 #include "core/events/Signal.hpp"
 

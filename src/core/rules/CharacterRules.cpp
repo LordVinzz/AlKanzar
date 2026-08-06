@@ -1,7 +1,6 @@
 #include "CharacterRules.hpp"
 
 #include <algorithm>
-#include <array>
 
 namespace core {
 namespace {
@@ -10,7 +9,7 @@ int clampedLevel(int level) {
     return std::clamp(level, 1, 40);
 }
 
-int modifierForSkill(CharacterSkill skill, const AbilityScoresComponent& modifiers) {
+int modifierForSkill(CharacterSkill skill, const AbilityScores& modifiers) {
     switch (skill) {
         case CharacterSkill::Running:
             return modifiers.strength;
@@ -50,8 +49,8 @@ int abilityModifier(int value) {
     return std::max(1, value) / 2 - 5;
 }
 
-AbilityScoresComponent racialAbilityModifiers(CharacterRace race) {
-    AbilityScoresComponent modifiers{0, 0, 0, 0, 0, 0};
+AbilityScores racialAbilityModifiers(CharacterRace race) {
+    AbilityScores modifiers{0, 0, 0, 0, 0, 0};
     switch (race) {
         case CharacterRace::Human:
             break;
@@ -84,12 +83,12 @@ AbilityScoresComponent racialAbilityModifiers(CharacterRace race) {
     return modifiers;
 }
 
-AbilityScoresComponent effectiveAbilityScores(
-    const AbilityScoresComponent& base,
+AbilityScores effectiveAbilityScores(
+    const AbilityScores& base,
     CharacterRace race
 ) {
-    const AbilityScoresComponent racial = racialAbilityModifiers(race);
-    return AbilityScoresComponent{
+    const AbilityScores racial = racialAbilityModifiers(race);
+    return AbilityScores{
         std::max(1, base.strength + racial.strength),
         std::max(1, base.agility + racial.agility),
         std::max(1, base.physique + racial.physique),
@@ -158,16 +157,16 @@ CasterProgression kitCasterProgression(CharacterKit kit) {
     return CasterProgression::None;
 }
 
-int startingHitPoints(const AbilityScoresComponent& effective, CharacterKit kit) {
+int startingHitPoints(const AbilityScores& effective, CharacterKit kit) {
     return 15 + std::max(1, effective.physique) * 2 + kitRobustness(kit) * 5;
 }
 
-int hitPointsPerLevel(const AbilityScoresComponent& effective, CharacterKit kit) {
+int hitPointsPerLevel(const AbilityScores& effective, CharacterKit kit) {
     return std::max(1, 3 + abilityModifier(effective.physique) + kitRobustness(kit));
 }
 
 int maximumMana(
-    const AbilityScoresComponent& effective,
+    const AbilityScores& effective,
     CharacterKit kit,
     int level
 ) {
@@ -206,13 +205,13 @@ SkillRank maximumSkillRankForLevel(int level) {
 }
 
 CharacterDerivedStats deriveCharacterStats(
-    const CharacterComponent& character,
-    const AbilityScoresComponent& abilities,
-    const SkillRanksComponent& skills
+    const CharacterRuleData& character,
+    const AbilityScores& abilities,
+    const SkillRanks& skills
 ) {
     CharacterDerivedStats out{};
     out.effectiveAbilities = effectiveAbilityScores(abilities, character.race);
-    out.abilityModifiers = AbilityScoresComponent{
+    out.abilityModifiers = AbilityScores{
         abilityModifier(out.effectiveAbilities.strength),
         abilityModifier(out.effectiveAbilities.agility),
         abilityModifier(out.effectiveAbilities.physique),
@@ -257,14 +256,13 @@ CharacterDerivedStats deriveCharacterStats(
     return out;
 }
 
-void normalizeCharacterData(
-    CharacterComponent& character,
-    AbilityScoresComponent& abilities,
-    SkillRanksComponent& skills,
-    CharacterVitalsComponent& vitals
+void normalizeCharacterRuleData(
+    CharacterRuleData& character,
+    AbilityScores& abilities,
+    SkillRanks& skills,
+    CharacterVitals& vitals
 ) {
     character.experience = std::max<std::int64_t>(0, character.experience);
-    character.groundIndicatorRadius = std::clamp(character.groundIndicatorRadius, 0.1f, 10.0f);
 
     abilities.strength = std::max(1, abilities.strength);
     abilities.agility = std::max(1, abilities.agility);
@@ -286,43 +284,6 @@ void normalizeCharacterData(
     vitals.currentHitPoints = std::clamp(vitals.currentHitPoints, 0, vitals.maximumHitPoints);
     const CharacterDerivedStats derived = deriveCharacterStats(character, abilities, skills);
     vitals.currentMana = std::clamp(vitals.currentMana, 0, derived.maximumMana);
-}
-
-const char* characterAffiliationName(CharacterAffiliation affiliation) {
-    static constexpr std::array names{"Player", "Friendly NPC", "Hostile NPC"};
-    return names[static_cast<std::size_t>(affiliation)];
-}
-
-const char* characterRaceName(CharacterRace race) {
-    static constexpr std::array names{"Human", "Elf", "Half-Elf", "Orc", "Half-Orc", "Demon", "Dwarf"};
-    return names[static_cast<std::size_t>(race)];
-}
-
-const char* characterKitName(CharacterKit kit) {
-    static constexpr std::array names{
-        "Fighter", "Tracker", "Paladin", "Barbarian", "Cleric", "Druid",
-        "Mage", "Specialist", "Sorcerer", "Rogue", "Bard"
-    };
-    return names[static_cast<std::size_t>(kit)];
-}
-
-const char* characterSkillName(CharacterSkill skill) {
-    static constexpr std::array names{
-        "Running", "Acrobatics", "Stealth", "Perception", "Survival", "Tracking",
-        "First Aid", "Climbing", "Crafting", "Knowledge", "Investigation", "Persuasion",
-        "Intimidation", "Deception", "Performance", "Command"
-    };
-    return names[static_cast<std::size_t>(skill)];
-}
-
-const char* skillRankName(SkillRank rank) {
-    static constexpr std::array names{"Untrained", "Initiate", "Expert", "Master", "Legendary"};
-    return names[static_cast<std::size_t>(rank)];
-}
-
-const char* casterProgressionName(CasterProgression progression) {
-    static constexpr std::array names{"None", "Half caster", "Full caster"};
-    return names[static_cast<std::size_t>(progression)];
 }
 
 }  // namespace core

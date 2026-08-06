@@ -12,7 +12,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <spdlog/spdlog.h>
 
-#include "core/gameplay/CharacterRules.hpp"
+#include "core/simulation/CharacterSimulation.hpp"
 #include "core/transform/TransformMath.hpp"
 #include "render/resources/Geometry.hpp"
 #include "render/engine/RenderEngine.hpp"
@@ -363,7 +363,7 @@ bool SceneFactory::buildScene(
         }
         if (modelBlueprint.character.has_value()) {
             CharacterBlueprint character = *modelBlueprint.character;
-            normalizeCharacterData(
+            normalizeCharacterComponents(
                 character.character,
                 character.abilities,
                 character.skills,

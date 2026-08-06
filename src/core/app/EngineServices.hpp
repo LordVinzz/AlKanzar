@@ -4,7 +4,7 @@
 
 #include "AppState.hpp"
 #include "core/animation/AnimationSystem.hpp"
-#include "core/ecs/ComponentRegistry.hpp"
+#include "core/editor/ComponentRegistry.hpp"
 #include "core/scene/Camera.hpp"
 #include "core/editor/CommandHistory.hpp"
 #include "core/editor/EditorSession.hpp"

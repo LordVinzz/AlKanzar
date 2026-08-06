@@ -6,12 +6,6 @@
 
 namespace core {
 
-enum class CharacterAffiliation {
-    Player = 0,
-    FriendlyNpc,
-    HostileNpc,
-};
-
 enum class CharacterRace {
     Human = 0,
     Elf,
@@ -73,17 +67,15 @@ enum class CasterProgression {
 inline constexpr std::size_t kCharacterSkillCount =
     static_cast<std::size_t>(CharacterSkill::Count);
 
-struct CharacterComponent {
-    CharacterAffiliation affiliation{CharacterAffiliation::FriendlyNpc};
+struct CharacterRuleData {
     CharacterRace race{CharacterRace::Human};
     CharacterKit kit{CharacterKit::Fighter};
     std::int64_t experience{0};
-    float groundIndicatorRadius{0.65f};
 
-    friend bool operator==(const CharacterComponent&, const CharacterComponent&) = default;
+    friend bool operator==(const CharacterRuleData&, const CharacterRuleData&) = default;
 };
 
-struct AbilityScoresComponent {
+struct AbilityScores {
     int strength{10};
     int agility{10};
     int physique{10};
@@ -91,21 +83,21 @@ struct AbilityScoresComponent {
     int faith{10};
     int charisma{10};
 
-    friend bool operator==(const AbilityScoresComponent&, const AbilityScoresComponent&) = default;
+    friend bool operator==(const AbilityScores&, const AbilityScores&) = default;
 };
 
-struct SkillRanksComponent {
+struct SkillRanks {
     std::array<SkillRank, kCharacterSkillCount> ranks{};
 
-    friend bool operator==(const SkillRanksComponent&, const SkillRanksComponent&) = default;
+    friend bool operator==(const SkillRanks&, const SkillRanks&) = default;
 };
 
-struct CharacterVitalsComponent {
+struct CharacterVitals {
     int currentHitPoints{1};
     int maximumHitPoints{1};
     int currentMana{0};
 
-    friend bool operator==(const CharacterVitalsComponent&, const CharacterVitalsComponent&) = default;
+    friend bool operator==(const CharacterVitals&, const CharacterVitals&) = default;
 };
 
 }  // namespace core
