@@ -1,6 +1,8 @@
 #include <array>
 #include <cassert>
+#include <cstdint>
 #include <cstdlib>
+#include <optional>
 #include <vector>
 
 #include "core/app/AppMode.hpp"
@@ -145,6 +147,15 @@ void testPartySelectionModelTracksMultipleCharactersAndLeader() {
     assert(selection.selected()[0] == second);
     assert(selection.selected()[1] == first);
     assert(*selection.leader() == second);
+
+    std::vector<core::EntityId> oversized{};
+    for (std::uint32_t index = 0u; index < 8u; ++index) {
+        oversized.push_back(core::EntityId{20u + index, 1u});
+    }
+    selection.setSelection(oversized);
+    assert(selection.selected().size() == core::kMaximumPartySize);
+    assert(selection.selected().front() == oversized.front());
+    assert(selection.selected().back() == oversized[core::kMaximumPartySize - 1u]);
 }
 
 void testPartySelectionRectangleSelectsOnlyOwnedCharacters() {
@@ -168,12 +179,24 @@ void testPartySelectionRectangleSelectsOnlyOwnedCharacters() {
     core::FrameSceneData frame{};
     const auto addCharacter = [&](
         core::CharacterAffiliation affiliation,
-        const render::Bounds3& bounds
+        const render::Bounds3& bounds,
+        std::optional<core::PartyMemberComponent> partyMember = std::nullopt
     ) {
         const core::EntityId entity = world.createEntity();
         core::CharacterComponent character{};
         character.affiliation = affiliation;
         world.characters.emplace(entity, character);
+        world.characterControllers.emplace(
+            entity,
+            core::CharacterControllerComponent{
+                partyMember.has_value()
+                    ? core::CharacterControllerKind::Player
+                    : core::CharacterControllerKind::Uncontrolled
+            }
+        );
+        if (partyMember.has_value()) {
+            world.partyMembers.emplace(entity, *partyMember);
+        }
         core::FrameRenderable renderable{};
         renderable.entity = entity;
         renderable.worldBounds = bounds;
@@ -184,11 +207,13 @@ void testPartySelectionRectangleSelectsOnlyOwnedCharacters() {
 
     const core::EntityId first = addCharacter(
         core::CharacterAffiliation::Player,
-        render::Bounds3{glm::vec3(-0.9f, -0.2f, 0.0f), glm::vec3(-0.6f, 0.2f, 0.1f)}
+        render::Bounds3{glm::vec3(-0.9f, -0.2f, 0.0f), glm::vec3(-0.6f, 0.2f, 0.1f)},
+        core::PartyMemberComponent{0u, true}
     );
     const core::EntityId second = addCharacter(
-        core::CharacterAffiliation::Player,
-        render::Bounds3{glm::vec3(0.5f, -0.2f, 0.0f), glm::vec3(0.8f, 0.2f, 0.1f)}
+        core::CharacterAffiliation::FriendlyNpc,
+        render::Bounds3{glm::vec3(0.5f, -0.2f, 0.0f), glm::vec3(0.8f, 0.2f, 0.1f)},
+        core::PartyMemberComponent{1u, true}
     );
     addCharacter(
         core::CharacterAffiliation::FriendlyNpc,
@@ -197,6 +222,11 @@ void testPartySelectionRectangleSelectsOnlyOwnedCharacters() {
     addCharacter(
         core::CharacterAffiliation::HostileNpc,
         render::Bounds3{glm::vec3(0.0f, -0.2f, 0.0f), glm::vec3(0.2f, 0.2f, 0.1f)}
+    );
+    addCharacter(
+        core::CharacterAffiliation::Player,
+        render::Bounds3{glm::vec3(-0.8f, -0.2f, 0.0f), glm::vec3(-0.7f, 0.2f, 0.1f)},
+        core::PartyMemberComponent{2u, false}
     );
 
     render::CameraMatrices camera{};
@@ -230,6 +260,15 @@ void testPartySelectionRectangleSelectsOnlyOwnedCharacters() {
         core::ScreenSelectionRect{105.0f, 0.0f, 125.0f, 20.0f}
     );
     assert(emptySelection.empty());
+
+    core::PartySelectionModel selection{};
+    selection.setSelection({first, second});
+    world.destroyEntity(first);
+    system.pruneInvalidSelection(world, selection);
+    assert(selection.selected() == std::vector<core::EntityId>{second});
+    world.partyMembers.get(second).active = false;
+    system.pruneInvalidSelection(world, selection);
+    assert(selection.selected().empty());
 }
 
 void testRenderSceneCarriesTheGreenSelectionMarquee() {

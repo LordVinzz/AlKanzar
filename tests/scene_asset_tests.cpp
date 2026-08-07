@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "core/content/ContentFileHeader.hpp"
 #include "core/scene/SceneAsset.hpp"
@@ -16,6 +18,41 @@ std::string makeSceneAsset(std::string_view lua, std::uint32_t version = 1u, std
     std::string asset(header.data(), header.size());
     asset.append(lua);
     return asset;
+}
+
+std::string characterObjectLua(
+    std::string_view variable,
+    std::string_view controlFields
+) {
+    std::string lua{};
+    lua += std::string(variable) + " = Create({ type = \"Model\", name = \"" +
+        std::string(variable) + "\", asset = \"Hero.glb\", layer = \"Actors\" })\n";
+    lua += std::string(variable) + ".character({\n";
+    lua += "    affiliation = \"FriendlyNpc\",\n";
+    lua += controlFields;
+    lua += R"lua(    race = "Human",
+    kit = "Fighter",
+    abilities = {
+        strength = 10, agility = 10, physique = 10,
+        intelligence = 10, faith = 10, charisma = 10,
+    },
+    skills = {},
+    vitals = { current_hp = 45, maximum_hp = 45, mana = 0 },
+})
+)lua";
+    lua += "scene.add(" + std::string(variable) + ")\n";
+    return lua;
+}
+
+std::string makeCharacterControlAsset(
+    const std::vector<std::pair<std::string_view, std::string_view>>& characters
+) {
+    std::string lua = "\nscene = Create({ type = \"Scene\" })\n";
+    for (const auto& [variable, controlFields] : characters) {
+        lua += characterObjectLua(variable, controlFields);
+    }
+    lua += "scene.build()\n";
+    return makeSceneAsset(lua);
 }
 
 void testSceneDslBuildsTypedBlueprint() {
@@ -69,9 +106,55 @@ scene.build()
     assert(scene.models[0].transform.rotationDeg == glm::vec3(0.0f, 90.0f, 0.0f));
     assert(scene.models[0].character.has_value());
     assert(scene.models[0].character->character.affiliation == core::CharacterAffiliation::Player);
+    assert(core::isPlayerControlled(scene.models[0].character->controller));
+    assert(scene.models[0].character->partyMember.has_value());
+    assert(scene.models[0].character->partyMember->slot == 0u);
     assert(scene.models[0].character->skills.ranks[
         static_cast<std::size_t>(core::CharacterSkill::Perception)
     ] == core::SkillRank::Initiate);
+}
+
+void testSceneCharacterControlFieldsAreStrictAndPartySlotsAreUnique() {
+    core::SceneBlueprint scene{};
+    std::string error{};
+    assert(core::parseSceneAsset(
+        makeCharacterControlAsset({
+            {"companion", "    controller = \"Player\",\n    party_slot = 3,\n"}
+        }),
+        scene,
+        &error
+    ));
+    assert(scene.models[0].character.has_value());
+    assert(core::isPlayerControlled(scene.models[0].character->controller));
+    assert(scene.models[0].character->partyMember->slot == 3u);
+
+    assert(!core::parseSceneAsset(
+        makeCharacterControlAsset({
+            {"missing_slot", "    controller = \"Player\",\n"}
+        }),
+        scene,
+        &error
+    ));
+    assert(error.find("party_slot") != std::string::npos);
+
+    assert(!core::parseSceneAsset(
+        makeCharacterControlAsset({
+            {"unknown", "    controller = \"Remote\",\n"}
+        }),
+        scene,
+        &error
+    ));
+    assert(error.find("controller") != std::string::npos);
+
+    assert(!core::parseSceneAsset(
+        makeCharacterControlAsset({
+            {"first", "    controller = \"Player\",\n    party_slot = 1,\n"},
+            {"second", "    controller = \"Player\",\n    party_slot = 1,\n"}
+        }),
+        scene,
+        &error
+    ));
+    assert(error.find("same party_slot") != std::string::npos);
 }
 
 void testSceneHeaderTypeAndVersionAreValidated() {
@@ -157,15 +240,21 @@ void testDefaultSceneAssetLoadsFromStagedAssets() {
         &error
     ));
     assert(error.empty());
-    assert(scene.models.size() == 4u);
+    assert(scene.models.size() == 6u);
     assert(scene.lightVolumes.size() == 1u);
     assert(scene.pointLights.size() == 1u);
     assert(scene.spotLights.size() == 1u);
     assert(scene.navMeshAssetPath == "navmeshes/DefaultScene.navmesh");
-    assert(scene.models[3].name == "House");
-    assert(scene.models[3].fitToFootprint);
-    assert(scene.models[3].footprint == 7.5f);
-    assert(scene.models[3].transform.position == glm::vec3(-3.0f, 0.0f, -8.0f));
+    assert(scene.models[3].character.has_value());
+    assert(scene.models[4].character.has_value());
+    assert(core::isPlayerControlled(scene.models[3].character->controller));
+    assert(core::isPlayerControlled(scene.models[4].character->controller));
+    assert(scene.models[3].character->partyMember->slot == 1u);
+    assert(scene.models[4].character->partyMember->slot == 2u);
+    assert(scene.models[5].name == "House");
+    assert(scene.models[5].fitToFootprint);
+    assert(scene.models[5].footprint == 7.5f);
+    assert(scene.models[5].transform.position == glm::vec3(-3.0f, 0.0f, -8.0f));
     assert(scene.pointLights[0].castsShadow);
     assert(scene.pointLights[0].radius == 40.0f);
     assert(scene.spotLights[0].target == glm::vec3(-3.0f, 1.2f, -8.0f));
@@ -175,6 +264,7 @@ void testDefaultSceneAssetLoadsFromStagedAssets() {
 
 int main() {
     testSceneDslBuildsTypedBlueprint();
+    testSceneCharacterControlFieldsAreStrictAndPartySlotsAreUnique();
     testSceneHeaderTypeAndVersionAreValidated();
     testSceneMustBuildAndAddEveryObject();
     testSceneDslIsRestrictedAndStrict();

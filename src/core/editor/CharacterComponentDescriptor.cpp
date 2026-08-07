@@ -33,11 +33,16 @@ void ComponentRegistry::registerCharacterDescriptor() {
             };
             normalizeCharacterComponents(character, abilities, skills, vitals);
             world.characters.emplace(entity, character);
+            world.characterControllers.emplace(entity, CharacterControllerComponent{});
             world.abilityScores.emplace(entity, abilities);
             world.skillRanks.emplace(entity, skills);
             world.characterVitals.emplace(entity, vitals);
         },
         [](World& world, EntityId entity) {
+            world.locomotion.remove(entity);
+            world.navAgents.remove(entity);
+            world.partyMembers.remove(entity);
+            world.characterControllers.remove(entity);
             world.characterVitals.remove(entity);
             world.skillRanks.remove(entity);
             world.abilityScores.remove(entity);

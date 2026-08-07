@@ -1,5 +1,6 @@
 #include "SceneAssetDetail.hpp"
 
+#include <array>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -290,6 +291,22 @@ bool parseSceneTable(
         }
     }
     lua_pop(state, 1);
+
+    std::array<bool, kMaximumPartySize> occupiedPartySlots{};
+    for (const ModelInstanceBlueprint& model : blueprint.models) {
+        if (!model.character.has_value() || !model.character->partyMember.has_value()) {
+            continue;
+        }
+        const std::size_t slot = model.character->partyMember->slot;
+        if (occupiedPartySlots[slot]) {
+            return fail(
+                error,
+                "scene.objects",
+                "contains more than one character in the same party_slot"
+            );
+        }
+        occupiedPartySlots[slot] = true;
+    }
 
     outBlueprint = std::move(blueprint);
     return true;

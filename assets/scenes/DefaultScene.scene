@@ -25,6 +25,8 @@ player.transform({
 })
 player.character({
     affiliation = "Player",
+    controller = "Player",
+    party_slot = 0,
     race = "Human",
     kit = "Fighter",
     experience = 0,
@@ -130,6 +132,88 @@ hostile_npc.character({
     },
 })
 scene.add(hostile_npc)
+
+party_scout = Create({
+    type = "Model",
+    name = "Party Scout - Elf Tracker",
+    asset = "Adventurer.glb",
+    layer = "Actors",
+})
+party_scout.transform({
+    position = { x = -1.4, y = 0.0, z = -1.5 },
+})
+party_scout.character({
+    affiliation = "FriendlyNpc",
+    controller = "Player",
+    party_slot = 1,
+    race = "Elf",
+    kit = "Tracker",
+    experience = 0,
+    indicator_radius = 0.65,
+    abilities = {
+        strength = 10,
+        agility = 15,
+        physique = 11,
+        intelligence = 12,
+        faith = 10,
+        charisma = 10,
+    },
+    skills = {
+        "Running",
+        "Acrobatics",
+        "Stealth",
+        "Perception",
+        "Survival",
+        "Tracking",
+    },
+    vitals = {
+        current_hp = 42,
+        maximum_hp = 42,
+        mana = 0,
+    },
+})
+scene.add(party_scout)
+
+party_guardian = Create({
+    type = "Model",
+    name = "Party Guardian - Dwarf Cleric",
+    asset = "Adventurer.glb",
+    layer = "Actors",
+})
+party_guardian.transform({
+    position = { x = 1.4, y = 0.0, z = -1.5 },
+})
+party_guardian.character({
+    affiliation = "FriendlyNpc",
+    controller = "Player",
+    party_slot = 2,
+    race = "Dwarf",
+    kit = "Cleric",
+    experience = 0,
+    indicator_radius = 0.65,
+    abilities = {
+        strength = 12,
+        agility = 9,
+        physique = 15,
+        intelligence = 10,
+        faith = 15,
+        charisma = 10,
+    },
+    skills = {
+        "FirstAid",
+        "Knowledge",
+        "Command",
+        "Perception",
+        "Persuasion",
+        "Survival",
+    },
+    vitals = {
+        current_hp = 55,
+        maximum_hp = 55,
+        mana = 36,
+    },
+})
+scene.add(party_guardian)
 
 house = Create({
     type = "Model",

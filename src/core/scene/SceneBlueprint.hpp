@@ -12,6 +12,8 @@ namespace core {
 
 struct CharacterBlueprint {
     CharacterComponent character{};
+    CharacterControllerComponent controller{};
+    std::optional<PartyMemberComponent> partyMember{};
     AbilityScoresComponent abilities{};
     SkillRanksComponent skills{};
     CharacterVitalsComponent vitals{};

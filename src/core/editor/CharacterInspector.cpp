@@ -10,6 +10,7 @@
 #include <imgui.h>
 
 #include "core/app/EngineServices.hpp"
+#include "core/editor/CharacterControlInspector.hpp"
 #include "core/editor/ComponentInspector.hpp"
 #include "core/ecs/World.hpp"
 #include "core/rules/CharacterRules.hpp"
@@ -386,6 +387,7 @@ bool drawCharacterInspector(EngineServices& services, EntityId entity) {
 
     bool changed = false;
     drawIdentityEditor(services, entity, changed);
+    changed |= drawCharacterControlInspector(services, entity);
     drawAbilityEditor(services, entity, changed);
     drawSkillEditor(services, entity, changed);
     drawVitalsEditor(services, entity, changed);

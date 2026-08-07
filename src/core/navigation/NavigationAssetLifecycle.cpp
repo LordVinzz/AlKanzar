@@ -77,26 +77,46 @@ bool NavigationSystem::initializeScene(const SceneBlueprint& blueprint, World& w
     }
 
     for (EntityId entity : world.animatedModels.entities()) {
-        const CharacterComponent* character = world.characters.tryGet(entity);
-        if (character == nullptr || character->affiliation != CharacterAffiliation::Player) {
-            continue;
-        }
-        if (!world.navAgents.contains(entity)) {
-            world.navAgents.emplace(entity, NavAgentComponent{});
-        }
-        const AnimatedModelComponent& animated = world.animatedModels.get(entity);
-        if (animated.model) {
-            const int idleClip = render::findDefaultAnimationClipIndex(*animated.model);
-            int walkClip = findClipContaining(*animated.model, "walk");
-            if (walkClip < 0) {
-                walkClip = findClipContaining(*animated.model, "run");
-            }
-            world.locomotion.emplace(entity, LocomotionComponent{idleClip, walkClip});
+        if (world.characters.contains(entity)) {
+            syncCharacterAgentControl(world, entity);
         }
     }
 
     const bool rebuilt = rebuildRuntime(runtime);
     return loaded && rebuilt;
+}
+
+void NavigationSystem::syncCharacterAgentControl(
+    World& world,
+    EntityId entity
+) const {
+    const bool controlled = isActivePlayerPartyMember(
+        world.characterControllers.tryGet(entity),
+        world.partyMembers.tryGet(entity)
+    );
+    const AnimatedModelComponent* animated = world.animatedModels.tryGet(entity);
+    if (!controlled || animated == nullptr) {
+        discardPendingPathRequest(entity);
+        world.navAgents.remove(entity);
+        world.locomotion.remove(entity);
+        return;
+    }
+
+    if (!world.navAgents.contains(entity)) {
+        world.navAgents.emplace(entity, NavAgentComponent{});
+    }
+    if (animated->model == nullptr) {
+        world.locomotion.remove(entity);
+        return;
+    }
+    const int idleClip = render::findDefaultAnimationClipIndex(*animated->model);
+    int walkClip = findClipContaining(*animated->model, "walk");
+    if (walkClip < 0) {
+        walkClip = findClipContaining(*animated->model, "run");
+    }
+    if (!world.locomotion.contains(entity)) {
+        world.locomotion.emplace(entity, LocomotionComponent{idleClip, walkClip});
+    }
 }
 
 bool NavigationSystem::loadAsset(NavigationRuntime& runtime) const {

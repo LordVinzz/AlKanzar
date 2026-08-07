@@ -145,6 +145,7 @@ public:
     void setProfiler(ProfilerService* profiler) { profiler_ = profiler; }
 
     bool initializeScene(const SceneBlueprint& blueprint, World& world, NavigationRuntime& runtime) const;
+    void syncCharacterAgentControl(World& world, EntityId entity) const;
     bool loadAsset(NavigationRuntime& runtime) const;
     bool reloadAsset(NavigationRuntime& runtime) const;
     bool saveAsset(const NavigationRuntime& runtime, std::string* error = nullptr) const;
@@ -170,6 +171,12 @@ public:
         World& world,
         const NavigationRuntime& runtime,
         TaskScheduler& scheduler,
+        EntityId agentEntity,
+        const glm::vec3& destination
+    ) const;
+    [[nodiscard]] std::optional<glm::vec3> projectAgentDestination(
+        const World& world,
+        const NavigationRuntime& runtime,
         EntityId agentEntity,
         const glm::vec3& destination
     ) const;

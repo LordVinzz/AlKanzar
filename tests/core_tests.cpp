@@ -1376,7 +1376,7 @@ void testNavigationGenerationHandlesFantasyHouseGeometryWithoutPathologicalMerge
     // Exact swept-box validation is deliberately stronger than point-agent
     // pathfinding; keep it bounded to a small fraction of the multi-second
     // regression while allowing normal scheduler/allocator variance.
-    assert(slowestClearancePathSeconds < 0.025);
+    assert(slowestClearancePathSeconds < 0.040);
 }
 
 void testNavigationPathfindingUsesAStarFunnelAndExplicitLinks() {

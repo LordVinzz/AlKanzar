@@ -18,8 +18,10 @@ Dear ImGui and CMake. It currently provides:
 - a fixed-step simulation loop with pause and speed control;
 - player, friendly NPC and hostile NPC character profiles;
 - pure character rules, derived statistics and an ImGui character inspector;
-- green, blue and red ground indicators for player, friendly and hostile
-  characters respectively;
+- explicit player controllers, active party membership, six-member selection
+  limits and minimal formation-based group movement;
+- green, blue and red ground indicators for controlled party members,
+  uncontrolled friendly NPCs and hostile NPCs respectively;
 - architecture, unit, integration and source-size checks through CTest.
 
 NPC AI is intentionally not implemented yet. Do not infer that friendly or
@@ -147,8 +149,8 @@ guide was written:
   policies; broader product-level test tooling remains a requirement;
 - character inspection and formulas exist, but combat, abilities, inventory,
   dialogue, quests, campaign state, save/load and NPC AI are not complete;
-- navigation/pathfinding exists, but party formations and general combat
-  orders are not implemented;
+- navigation/pathfinding and a minimal movement formation exist, but dynamic
+  reformation, laggard recovery and general combat orders are not implemented;
 - the full asynchronous resource manager, content validators and authoring
   tools remain pending;
 - there is no permission to copy Baldur's Gate content, rules text, assets or
@@ -262,6 +264,10 @@ When adding a component, audit every one of these places:
 Characters currently use a bundle of:
 
 - `CharacterComponent` for affiliation, race, kit, XP and ground-ring radius;
+- `CharacterControllerComponent` for explicit player control, independently
+  from affiliation;
+- optional `PartyMemberComponent` for active membership and stable slots from
+  zero to five;
 - `AbilityScoresComponent`;
 - `SkillRanksComponent`;
 - `CharacterVitalsComponent`.
@@ -270,10 +276,11 @@ Characters currently use a bundle of:
 the character root. Preserve this behavior when changing scene hierarchies,
 selection or skinned-model ownership.
 
-The default scene defines three demonstrators in `SceneRegistry.cpp`: player,
-friendly NPC and hostile NPC. `SceneFactory.cpp` turns blueprints into ECS
-entities and render resources. NPCs must remain uncontrolled until an explicit
-AI requirement is implemented.
+The default SCN scene defines a three-member controllable party plus one
+uncontrolled friendly NPC and one hostile NPC. `SceneFactory.cpp` turns
+blueprints into ECS entities and render resources. Friendly affiliation alone
+never grants control. Uncontrolled NPCs remain non-autonomous until a future
+explicit AI requirement implements that behavior.
 
 ## 7. Rules workflow
 
@@ -306,6 +313,8 @@ ImGui code belongs under `core/editor`. Major entry points are:
 - `ComponentRegistry.*` and `ComponentDescriptors.cpp`: component tabs and
   add/remove behavior;
 - `CharacterInspector.cpp`: editable/derived character statistics;
+- `CharacterControlInspector.cpp`: undoable controller, active-party and slot
+  editing;
 - `EditorUiNavigation.cpp`: navmesh authoring and test controls;
 - `EditorUiProfiler.cpp`: profiling UI;
 - `EditorSession.hpp`: persisted window/tool state;
@@ -314,7 +323,9 @@ ImGui code belongs under `core/editor`. Major entry points are:
   by gameplay orders independently from editor selection;
 - `PartySelectionSystem.hpp/.cpp`: screen-space drag selection restricted to
   player-controlled character profiles and per-frame selected/deselected ring
-  presentation.
+  presentation;
+- `PartyOrderSystem.hpp/.cpp`: formation-slot generation and one projected
+  asynchronous movement request per selected party member.
 
 User-visible edits should normally be represented by `ICommand` or
 `SnapshotCommand<T>` and executed through `CommandHistory`. Supply stable,
@@ -343,6 +354,7 @@ must stay below 500 lines. Start at `Navigation.hpp` and route by concern:
 - exact pathfinding: `Polyanya*.cpp` and vendored `third_party/polyanya`;
 - async requests/results: `NavigationAgentRequests.cpp`,
   `NavigationAgentResults.cpp`;
+- per-agent destination projection: `NavigationAgentProjection.cpp`;
 - movement: `NavigationAgentMotion.cpp`;
 - render/debug snapshot: `NavigationFrameSync.cpp`.
 
@@ -364,6 +376,12 @@ newline and restricted Lua. `assets/scenes/DefaultScene.scene` is the canonical
 example. Author objects with `Create({...})`, configure them through captured
 methods such as `object.transform(...)`, add every object exactly once with
 `scene.add(object)`, and finish with `scene.build()`.
+
+Character tables may declare `controller = "Player"` together with a unique
+`party_slot` from zero to five. Omitting `controller` keeps non-player
+affiliations uncontrolled; legacy SCN V1 characters with affiliation `Player`
+and no controller retain slot-zero player control. Slots are validated for
+range and uniqueness across the scene.
 
 Start scene-format changes in `SceneAsset.hpp/.cpp`. Field/type validation is
 split across `SceneAssetLuaFields.cpp`, `SceneAssetCharacter.cpp`,
@@ -500,6 +518,7 @@ Focused checks:
 ```bash
 ctest --test-dir build -R alkanzar_rules_layer_tests --output-on-failure
 ctest --test-dir build -R alkanzar_character_rules_tests --output-on-failure
+ctest --test-dir build -R alkanzar_party_order_tests --output-on-failure
 ctest --test-dir build -R alkanzar_architecture_layers --output-on-failure
 ctest --test-dir build -R alkanzar_src_file_length --output-on-failure
 cmake --build build --target AlKanzar --parallel
@@ -513,6 +532,9 @@ CTest currently registers:
 | `alkanzar_character_rules_tests` | Character rules integrated with ECS, scenes, descriptors, selection and indicators. |
 | `alkanzar_rules_layer_tests` | Pure rules linked without the engine/render target. |
 | `alkanzar_app_mode_tests` | Mode capabilities/transitions, selection isolation, CLI launch mode and deterministic test scene. |
+| `alkanzar_content_file_header_tests` | Fixed 10-byte content-header encoding, decoding and validation. |
+| `alkanzar_scene_asset_tests` | Restricted SCN parsing, controller/party validation and staged default-scene loading. |
+| `alkanzar_party_order_tests` | Six-member limit, formation layout, navmesh projection, group requests and stale-order replacement. |
 | `alkanzar_architecture_layers` | Forbidden dependency scan. |
 | `alkanzar_src_file_length` | Strict `< 500` line limit for owned source files. |
 
@@ -539,7 +561,7 @@ Current controls relevant to testing:
 | `E` or `F1` | Toggle Editor and the previous runtime mode (Gameplay or TestTool). |
 | `Space` | Pause/resume fixed-step simulation in Gameplay or Editor. |
 | `-`, `=` or keypad `+` | Cycle Gameplay/Editor simulation speed through 0.5×, 1×, 2× and 4×. |
-| Left click | Select a controlled character or move the current leader in Gameplay; select/test navigation in Editor depending on tool mode. |
+| Left click | Select a controlled character or move every currently selected party member in formation in Gameplay; select/test navigation in Editor depending on tool mode. |
 | Left-drag | Draw a green Gameplay marquee and replace the party selection; releasing over no controlled character clears it. |
 | Middle-drag / wheel | Pan / zoom the isometric camera. |
 | `C` | Toggle free camera; right-drag looks around while enabled. |
@@ -579,10 +601,11 @@ captures can be exported from the profiler UI for Perfetto analysis.
 | Pause, speed or delta-time issue | `SimulationClock.hpp`, `TimeContext.hpp` | fixed-step section of `Application.cpp`, input events |
 | Incorrect character statistic | rules DOCX, `CharacterRules.*` | `CharacterData.hpp`, rules tests, inspector display |
 | Character data missing/stale | `CharacterComponents.hpp`, `World.hpp` | scene blueprint/factory, component descriptor, normalization |
-| Wrong NPC/player ring | `RenderExtractionSystem*`, `FrameGroundIndicator` | overlay renderer direct/deferred paths, affiliation data |
+| Wrong NPC/player ring | `PartySelectionSystem.*`, `FrameGroundIndicator` | controller/party components, affiliation data, overlay renderer paths |
 | Picking selects a mesh child | `PickingSystem.*`, `World::characterOwnerEntity()` | `SelectionModel`, scene/skinned hierarchy |
 | Gameplay marquee selection issue | `ApplicationPartySelection.cpp`, `PartySelectionSystem.*` | `PartySelectionModel.hpp`, `FramePartySelectionMarquee`, `SceneOverlayMarquee.cpp` |
-| Click-to-move/path issue | `ApplicationInput.cpp`, `Navigation.hpp` | request/result, hit-test, Polyanya/corridor/funnel files |
+| Group click-to-move/formation issue | `ApplicationPartySelection.cpp`, `PartyOrderSystem.*` | `NavigationAgentProjection.cpp`, request/result and formation tests |
+| Single-agent path issue | `Navigation.hpp`, request/result files | hit-test, Polyanya/corridor/funnel files |
 | Navmesh bake issue | `NavigationBakeSources.cpp`, `NavigationGenerator.cpp` | Delaunay/cell/coverage files and editor UI |
 | Scene syntax/load issue | `SceneAsset.cpp`, `assets/scenes/DefaultScene.scene` | field parser files, `SceneRegistry.cpp`, scene-asset tests |
 | Transform or bounds stale | `TransformSystem.*`, `World` dirty flags | editor commands, render extraction |

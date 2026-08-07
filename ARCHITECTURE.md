@@ -86,6 +86,12 @@ flux suivant :
 scene = Create({ type = "Scene", navmesh = "navmeshes/DefaultScene.navmesh" })
 player = Create({ type = "Model", name = "Player", asset = "Adventurer.glb" })
 player.transform({ position = { x = 0, y = 0, z = 0 } })
+player.character({
+    affiliation = "Player",
+    controller = "Player",
+    party_slot = 0,
+    -- race, kit, abilities, skills and vitals omitted here
+})
 scene.add(player)
 scene.build()
 ```
@@ -117,12 +123,27 @@ pas disperser de tests directs du mode dans les sous-systèmes.
   éditeur, sélection d'édition ni ordre de gameplay.
 
 La sélection éditeur et la sélection du groupe sont deux états indépendants.
+`CharacterControllerComponent` décrit qui peut donner des ordres et
+`PartyMemberComponent` décrit l'appartenance active ainsi que l'emplacement
+stable dans un groupe limité à six. Ces informations sont indépendantes de
+`CharacterAffiliation` : un compagnon à affiliation amicale peut donc être
+contrôlé et afficher un anneau vert.
+
 `PartySelectionModel` conserve la sélection runtime ordonnée et son premier
 membre comme leader. En Gameplay, `PartySelectionSystem` projette les limites
-des personnages `Player` pour résoudre le cadre de sélection ; un cadre vide
-vide la sélection. À chaque frame de présentation, il assombrit également les
-`FrameGroundIndicator` des personnages `Player` non sélectionnés, y compris
-quand la simulation est en pause. Le rectangle vert est transmis au rendu par
+des membres actifs contrôlés par le joueur pour résoudre le cadre de sélection
+et les trie par emplacement de groupe ; un cadre vide vide la sélection. À
+chaque frame de présentation, il assombrit leur `FrameGroundIndicator` vert
+lorsqu'ils ne sont pas sélectionnés, y compris quand la simulation est en
+pause. Le rectangle vert est transmis au rendu par
 `FramePartySelectionMarquee`, sans requête du renderer vers l'ECS. Seule la
-sélection éditeur peut alimenter l'outline et les gizmos de l'éditeur ; les
-ordres de jeu ciblent le leader de la sélection runtime.
+sélection éditeur peut alimenter l'outline et les gizmos de l'éditeur.
+
+Un clic de déplacement est transformé par `PartyOrderSystem` en destinations
+de formation distinctes, centrées sur le point demandé et espacées selon les
+rayons des personnages. `NavigationSystem::projectAgentDestination` valide
+chaque destination sur le snapshot de navmesh avant de lancer une requête
+asynchrone par agent. Une nouvelle requête remplace et annule l'ancienne pour
+le même agent. Les ordres peuvent être saisis pendant la pause ; le mouvement
+reste toutefois exclusivement exécuté par les mises à jour à pas fixe après
+la reprise.

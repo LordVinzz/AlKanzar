@@ -1,6 +1,8 @@
 #include <cassert>
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 
 #include "core/editor/ComponentRegistry.hpp"
 #include "core/ecs/World.hpp"
@@ -155,6 +157,11 @@ void testCharacterWorldLifecycleAndOwnerResolution() {
     const core::EntityId child = world.createEntity();
     const core::EntityId skinnedChild = world.createEntity();
     world.characters.emplace(root, core::CharacterComponent{});
+    world.characterControllers.emplace(
+        root,
+        core::CharacterControllerComponent{core::CharacterControllerKind::Player}
+    );
+    world.partyMembers.emplace(root, core::PartyMemberComponent{0u, true});
     world.abilityScores.emplace(root, core::AbilityScoresComponent{});
     world.skillRanks.emplace(root, core::SkillRanksComponent{});
     world.characterVitals.emplace(root, core::CharacterVitalsComponent{});
@@ -170,6 +177,8 @@ void testCharacterWorldLifecycleAndOwnerResolution() {
 
     world.destroyEntity(root);
     assert(!world.characters.contains(root));
+    assert(!world.characterControllers.contains(root));
+    assert(!world.partyMembers.contains(root));
     assert(!world.abilityScores.contains(root));
     assert(!world.skillRanks.contains(root));
     assert(!world.characterVitals.contains(root));
@@ -178,6 +187,8 @@ void testCharacterWorldLifecycleAndOwnerResolution() {
 
     world.clear();
     assert(world.characters.size() == 0u);
+    assert(world.characterControllers.size() == 0u);
+    assert(world.partyMembers.size() == 0u);
     assert(world.abilityScores.size() == 0u);
     assert(world.skillRanks.size() == 0u);
     assert(world.characterVitals.size() == 0u);
@@ -194,6 +205,8 @@ void testCharacterDescriptorOwnsTheCompleteComponentBundle() {
     descriptor->addComponent(world, entity);
     assert(descriptor->hasComponent(world, entity));
     assert(world.characters.contains(entity));
+    assert(world.characterControllers.contains(entity));
+    assert(!world.partyMembers.contains(entity));
     assert(world.abilityScores.contains(entity));
     assert(world.skillRanks.contains(entity));
     assert(world.characterVitals.contains(entity));
@@ -202,14 +215,16 @@ void testCharacterDescriptorOwnsTheCompleteComponentBundle() {
 
     descriptor->removeComponent(world, entity);
     assert(!world.characters.contains(entity));
+    assert(!world.characterControllers.contains(entity));
+    assert(!world.partyMembers.contains(entity));
     assert(!world.abilityScores.contains(entity));
     assert(!world.skillRanks.contains(entity));
     assert(!world.characterVitals.contains(entity));
 }
 
-void testDefaultSceneDefinesThreeCharacterProfiles() {
+void testDefaultSceneDefinesAControllablePartyAndNpcProfiles() {
     const core::SceneBlueprint scene = core::SceneRegistry{}.defaultScene();
-    assert(scene.models.size() >= 3u);
+    assert(scene.models.size() >= 6u);
     assert(scene.models[0].character.has_value());
     assert(scene.models[1].character.has_value());
     assert(scene.models[2].character.has_value());
@@ -217,16 +232,33 @@ void testDefaultSceneDefinesThreeCharacterProfiles() {
     const core::CharacterBlueprint& player = *scene.models[0].character;
     const core::CharacterBlueprint& friendly = *scene.models[1].character;
     const core::CharacterBlueprint& hostile = *scene.models[2].character;
+    const core::CharacterBlueprint& scout = *scene.models[3].character;
+    const core::CharacterBlueprint& guardian = *scene.models[4].character;
     assert(player.character.affiliation == core::CharacterAffiliation::Player);
     assert(player.character.race == core::CharacterRace::Human);
     assert(player.character.kit == core::CharacterKit::Fighter);
     assert(player.vitals.maximumHitPoints == 53);
+    assert(core::isPlayerControlled(player.controller));
+    assert(player.partyMember.has_value());
+    assert(player.partyMember->slot == 0u);
     assert(friendly.character.affiliation == core::CharacterAffiliation::FriendlyNpc);
     assert(friendly.character.kit == core::CharacterKit::Cleric);
     assert(friendly.vitals.currentMana == 33);
+    assert(!core::isPlayerControlled(friendly.controller));
+    assert(!friendly.partyMember.has_value());
     assert(hostile.character.affiliation == core::CharacterAffiliation::HostileNpc);
     assert(hostile.character.race == core::CharacterRace::Orc);
     assert(hostile.character.kit == core::CharacterKit::Rogue);
+    assert(!core::isPlayerControlled(hostile.controller));
+    assert(!hostile.partyMember.has_value());
+    assert(scout.character.affiliation == core::CharacterAffiliation::FriendlyNpc);
+    assert(core::isPlayerControlled(scout.controller));
+    assert(scout.partyMember.has_value());
+    assert(scout.partyMember->slot == 1u);
+    assert(guardian.character.affiliation == core::CharacterAffiliation::FriendlyNpc);
+    assert(core::isPlayerControlled(guardian.controller));
+    assert(guardian.partyMember.has_value());
+    assert(guardian.partyMember->slot == 2u);
 
     const auto isInitiate = [](const core::CharacterBlueprint& blueprint, core::CharacterSkill skill) {
         return blueprint.skills.ranks[static_cast<std::size_t>(skill)] == core::SkillRank::Initiate;
@@ -242,31 +274,84 @@ void testDefaultSceneDefinesThreeCharacterProfiles() {
     assert(isInitiate(hostile, core::CharacterSkill::Intimidation));
 }
 
-void testNavigationControlIsGrantedOnlyToThePlayer() {
+void testNavigationControlUsesExplicitActivePartyMembership() {
     core::World world{};
     const auto model = std::make_shared<render::GltfModelData>();
-    const auto addAnimatedCharacter = [&world, &model](core::CharacterAffiliation affiliation) {
+    const auto addAnimatedCharacter = [&world, &model](
+        core::CharacterAffiliation affiliation,
+        core::CharacterControllerKind controller,
+        std::optional<core::PartyMemberComponent> partyMember
+    ) {
         const core::EntityId entity = world.createEntity();
         world.animatedModels.emplace(entity, core::AnimatedModelComponent{model});
         core::CharacterComponent character{};
         character.affiliation = affiliation;
         world.characters.emplace(entity, character);
+        world.characterControllers.emplace(
+            entity,
+            core::CharacterControllerComponent{controller}
+        );
+        if (partyMember.has_value()) {
+            world.partyMembers.emplace(entity, *partyMember);
+        }
         return entity;
     };
-    const core::EntityId player = addAnimatedCharacter(core::CharacterAffiliation::Player);
-    const core::EntityId friendly = addAnimatedCharacter(core::CharacterAffiliation::FriendlyNpc);
-    const core::EntityId hostile = addAnimatedCharacter(core::CharacterAffiliation::HostileNpc);
+    const core::EntityId player = addAnimatedCharacter(
+        core::CharacterAffiliation::Player,
+        core::CharacterControllerKind::Player,
+        core::PartyMemberComponent{0u, true}
+    );
+    const core::EntityId companion = addAnimatedCharacter(
+        core::CharacterAffiliation::FriendlyNpc,
+        core::CharacterControllerKind::Player,
+        core::PartyMemberComponent{1u, true}
+    );
+    const core::EntityId inactive = addAnimatedCharacter(
+        core::CharacterAffiliation::FriendlyNpc,
+        core::CharacterControllerKind::Player,
+        core::PartyMemberComponent{2u, false}
+    );
+    const core::EntityId uncontrolledPlayer = addAnimatedCharacter(
+        core::CharacterAffiliation::Player,
+        core::CharacterControllerKind::Uncontrolled,
+        std::nullopt
+    );
+    const core::EntityId hostile = addAnimatedCharacter(
+        core::CharacterAffiliation::HostileNpc,
+        core::CharacterControllerKind::Uncontrolled,
+        std::nullopt
+    );
 
     core::NavigationRuntime runtime{};
     const core::SceneBlueprint emptyScene{};
-    core::NavigationSystem{}.initializeScene(emptyScene, world, runtime);
+    core::NavigationSystem navigation{};
+    navigation.initializeScene(emptyScene, world, runtime);
 
     assert(world.navAgents.contains(player));
     assert(world.locomotion.contains(player));
-    assert(!world.navAgents.contains(friendly));
-    assert(!world.locomotion.contains(friendly));
+    assert(world.navAgents.contains(companion));
+    assert(world.locomotion.contains(companion));
+    assert(!world.navAgents.contains(inactive));
+    assert(!world.locomotion.contains(inactive));
+    assert(!world.navAgents.contains(uncontrolledPlayer));
+    assert(!world.locomotion.contains(uncontrolledPlayer));
     assert(!world.navAgents.contains(hostile));
     assert(!world.locomotion.contains(hostile));
+
+    world.partyMembers.get(companion).active = false;
+    navigation.syncCharacterAgentControl(world, companion);
+    assert(!world.navAgents.contains(companion));
+    assert(!world.locomotion.contains(companion));
+
+    world.characterControllers.get(uncontrolledPlayer).kind =
+        core::CharacterControllerKind::Player;
+    world.partyMembers.emplace(
+        uncontrolledPlayer,
+        core::PartyMemberComponent{3u, true}
+    );
+    navigation.syncCharacterAgentControl(world, uncontrolledPlayer);
+    assert(world.navAgents.contains(uncontrolledPlayer));
+    assert(world.locomotion.contains(uncontrolledPlayer));
 }
 
 void testGroundIndicatorsExtractAffiliationColorsAndRootTransforms() {
@@ -274,7 +359,8 @@ void testGroundIndicatorsExtractAffiliationColorsAndRootTransforms() {
     const auto addCharacter = [&world](
         core::CharacterAffiliation affiliation,
         const glm::vec3& position,
-        bool visible
+        bool visible,
+        std::optional<std::uint8_t> partySlot = std::nullopt
     ) {
         const core::EntityId entity = world.createEntity();
         world.transforms.emplace(
@@ -286,6 +372,20 @@ void testGroundIndicatorsExtractAffiliationColorsAndRootTransforms() {
         character.affiliation = affiliation;
         character.groundIndicatorRadius = 0.75f;
         world.characters.emplace(entity, character);
+        world.characterControllers.emplace(
+            entity,
+            core::CharacterControllerComponent{
+                partySlot.has_value()
+                    ? core::CharacterControllerKind::Player
+                    : core::CharacterControllerKind::Uncontrolled
+            }
+        );
+        if (partySlot.has_value()) {
+            world.partyMembers.emplace(
+                entity,
+                core::PartyMemberComponent{*partySlot, true}
+            );
+        }
         world.markTransformsDirty(entity);
         return entity;
     };
@@ -293,7 +393,8 @@ void testGroundIndicatorsExtractAffiliationColorsAndRootTransforms() {
     const core::EntityId player = addCharacter(
         core::CharacterAffiliation::Player,
         glm::vec3(1.0f, 0.0f, 2.0f),
-        true
+        true,
+        0u
     );
     const core::EntityId friendly = addCharacter(
         core::CharacterAffiliation::FriendlyNpc,
@@ -304,6 +405,12 @@ void testGroundIndicatorsExtractAffiliationColorsAndRootTransforms() {
         core::CharacterAffiliation::HostileNpc,
         glm::vec3(5.0f, 0.0f, 6.0f),
         true
+    );
+    const core::EntityId companion = addCharacter(
+        core::CharacterAffiliation::FriendlyNpc,
+        glm::vec3(7.0f, 0.0f, 8.0f),
+        true,
+        1u
     );
     addCharacter(core::CharacterAffiliation::HostileNpc, glm::vec3(9.0f), false);
 
@@ -318,10 +425,11 @@ void testGroundIndicatorsExtractAffiliationColorsAndRootTransforms() {
         true
     );
 
-    assert(frame.groundIndicators.size() == 3u);
+    assert(frame.groundIndicators.size() == 4u);
     assert(frame.groundIndicators[0].owner == player);
     assert(frame.groundIndicators[1].owner == friendly);
     assert(frame.groundIndicators[2].owner == hostile);
+    assert(frame.groundIndicators[3].owner == companion);
     assert(frame.groundIndicators[0].center.x == 1.0f);
     assert(frame.groundIndicators[0].center.y == 0.02f);
     assert(frame.groundIndicators[0].center.z == 2.0f);
@@ -336,6 +444,9 @@ void testGroundIndicatorsExtractAffiliationColorsAndRootTransforms() {
     partySelectionSystem.syncGroundIndicatorSelection(world, partySelection, frame);
     const glm::vec4 selectedPlayerColor = frame.groundIndicators[0].color;
     const glm::vec4 friendlyColor = frame.groundIndicators[1].color;
+    const glm::vec4 deselectedCompanionColor = frame.groundIndicators[3].color;
+    assert(deselectedCompanionColor.g > deselectedCompanionColor.r);
+    assert(deselectedCompanionColor.g < selectedPlayerColor.g * 0.5f);
 
     partySelection.clear();
     partySelectionSystem.syncGroundIndicatorSelection(world, partySelection, frame);
@@ -345,6 +456,10 @@ void testGroundIndicatorsExtractAffiliationColorsAndRootTransforms() {
     assert(frame.groundIndicators[1].color.r == friendlyColor.r);
     assert(frame.groundIndicators[1].color.g == friendlyColor.g);
     assert(frame.groundIndicators[1].color.b == friendlyColor.b);
+
+    partySelection.setSelection({companion});
+    partySelectionSystem.syncGroundIndicatorSelection(world, partySelection, frame);
+    assert(frame.groundIndicators[3].color.g > deselectedCompanionColor.g * 2.0f);
 
     const render::RenderSceneView renderScene = render::buildRenderSceneView(
         frame,
@@ -368,8 +483,8 @@ int main() {
     testNormalizationKeepsHistoricalMaximumHitPoints();
     testCharacterWorldLifecycleAndOwnerResolution();
     testCharacterDescriptorOwnsTheCompleteComponentBundle();
-    testDefaultSceneDefinesThreeCharacterProfiles();
-    testNavigationControlIsGrantedOnlyToThePlayer();
+    testDefaultSceneDefinesAControllablePartyAndNpcProfiles();
+    testNavigationControlUsesExplicitActivePartyMembership();
     testGroundIndicatorsExtractAffiliationColorsAndRootTransforms();
     return EXIT_SUCCESS;
 }

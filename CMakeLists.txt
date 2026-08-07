@@ -90,6 +90,7 @@ add_library(alkanzar_core STATIC
     src/core/editor/ComponentRegistry.cpp
     src/core/editor/ComponentDescriptors.cpp
     src/core/editor/CharacterComponentDescriptor.cpp
+    src/core/editor/CharacterControlInspector.cpp
     src/core/editor/ComponentInspector.cpp
     src/core/editor/CharacterInspector.cpp
     src/core/editor/EditorSessionImGuiSettings.cpp
@@ -104,6 +105,7 @@ add_library(alkanzar_core STATIC
     src/core/physics/PhysicsSystem.cpp
     src/core/navigation/Navigation.cpp
     src/core/navigation/NavigationAgentMotion.cpp
+    src/core/navigation/NavigationAgentProjection.cpp
     src/core/navigation/NavigationAgentRequests.cpp
     src/core/navigation/NavigationAgentResults.cpp
     src/core/navigation/NavigationAgentSupport.cpp
@@ -161,6 +163,7 @@ add_library(alkanzar_core STATIC
     src/core/profiling/ProfilerService.cpp
     src/core/profiling/ProfilerRuntime.cpp
     src/core/systems/PickingSystem.cpp
+    src/core/systems/PartyOrderSystem.cpp
     src/core/systems/PartySelectionSystem.cpp
     src/core/systems/RenderExtractionAnimation.cpp
     src/core/systems/RenderExtractionSystem.cpp
@@ -219,6 +222,10 @@ if(BUILD_TESTING)
         tests/scene_asset_tests.cpp
     )
 
+    add_executable(alkanzar_party_order_tests
+        tests/party_order_tests.cpp
+    )
+
     target_include_directories(alkanzar_core_tests
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -254,12 +261,18 @@ if(BUILD_TESTING)
             alkanzar_core
     )
 
+    target_link_libraries(alkanzar_party_order_tests
+        PRIVATE
+            alkanzar_core
+    )
+
     add_test(NAME alkanzar_core_tests COMMAND alkanzar_core_tests)
     add_test(NAME alkanzar_character_rules_tests COMMAND alkanzar_character_rules_tests)
     add_test(NAME alkanzar_rules_layer_tests COMMAND alkanzar_rules_layer_tests)
     add_test(NAME alkanzar_app_mode_tests COMMAND alkanzar_app_mode_tests)
     add_test(NAME alkanzar_content_file_header_tests COMMAND alkanzar_content_file_header_tests)
     add_test(NAME alkanzar_scene_asset_tests COMMAND alkanzar_scene_asset_tests)
+    add_test(NAME alkanzar_party_order_tests COMMAND alkanzar_party_order_tests)
 
     add_test(
         NAME alkanzar_architecture_layers

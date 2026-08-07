@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <optional>
+#include <utility>
 
 #include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
@@ -139,6 +140,44 @@ std::optional<ScreenSelectionRect> characterScreenBounds(
 
 }  // namespace
 
+bool PartySelectionSystem::isControllablePartyMember(
+    const World& world,
+    EntityId entity
+) const {
+    return world.isAlive(entity) && world.characters.contains(entity) &&
+        isActivePlayerPartyMember(
+            world.characterControllers.tryGet(entity),
+            world.partyMembers.tryGet(entity)
+        );
+}
+
+std::vector<EntityId> PartySelectionSystem::orderedActivePartyMembers(
+    const World& world
+) const {
+    std::vector<EntityId> members{};
+    members.reserve(std::min(world.partyMembers.size(), kMaximumPartySize));
+    for (const EntityId entity : world.partyMembers.entities()) {
+        if (isControllablePartyMember(world, entity)) {
+            members.push_back(entity);
+        }
+    }
+    std::sort(members.begin(), members.end(), [&world](EntityId lhs, EntityId rhs) {
+        const PartyMemberComponent& lhsMember = world.partyMembers.get(lhs);
+        const PartyMemberComponent& rhsMember = world.partyMembers.get(rhs);
+        if (lhsMember.slot != rhsMember.slot) {
+            return lhsMember.slot < rhsMember.slot;
+        }
+        if (lhs.index != rhs.index) {
+            return lhs.index < rhs.index;
+        }
+        return lhs.generation < rhs.generation;
+    });
+    if (members.size() > kMaximumPartySize) {
+        members.resize(kMaximumPartySize);
+    }
+    return members;
+}
+
 bool isPartySelectionDrag(
     int startX,
     int startY,
@@ -183,11 +222,7 @@ std::vector<EntityId> PartySelectionSystem::selectOwnedCharacters(
         return selected;
     }
 
-    for (const EntityId entity : world.characters.entities()) {
-        const CharacterComponent& character = world.characters.get(entity);
-        if (character.affiliation != CharacterAffiliation::Player) {
-            continue;
-        }
+    for (const EntityId entity : orderedActivePartyMembers(world)) {
         const std::optional<ScreenSelectionRect> bounds = characterScreenBounds(
             entity,
             world,
@@ -213,11 +248,29 @@ void PartySelectionSystem::syncGroundIndicatorSelection(
         if (character == nullptr) {
             continue;
         }
-        indicator.color = characterGroundIndicatorColor(
-            character->affiliation,
-            character->affiliation != CharacterAffiliation::Player || selection.contains(indicator.owner)
-        );
+        if (isControllablePartyMember(world, indicator.owner)) {
+            indicator.color = characterGroundIndicatorColor(
+                CharacterAffiliation::Player,
+                selection.contains(indicator.owner)
+            );
+        } else {
+            indicator.color = characterGroundIndicatorColor(character->affiliation);
+        }
     }
+}
+
+void PartySelectionSystem::pruneInvalidSelection(
+    const World& world,
+    PartySelectionModel& selection
+) const {
+    std::vector<EntityId> valid{};
+    valid.reserve(selection.selected().size());
+    for (const EntityId entity : selection.selected()) {
+        if (isControllablePartyMember(world, entity)) {
+            valid.push_back(entity);
+        }
+    }
+    selection.setSelection(std::move(valid));
 }
 
 }  // namespace core

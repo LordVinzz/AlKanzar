@@ -36,6 +36,11 @@ constexpr std::array kAffiliations{
     std::pair{"HostileNpc"sv, CharacterAffiliation::HostileNpc},
 };
 
+constexpr std::array kControllers{
+    std::pair{"Uncontrolled"sv, CharacterControllerKind::Uncontrolled},
+    std::pair{"Player"sv, CharacterControllerKind::Player},
+};
+
 constexpr std::array kRaces{
     std::pair{"Human"sv, CharacterRace::Human},
     std::pair{"Elf"sv, CharacterRace::Elf},
@@ -191,17 +196,28 @@ bool parseCharacterTable(
     if (!validateStringFields(
             state,
             absoluteIndex,
-            {"affiliation", "race", "kit", "experience", "indicator_radius", "abilities", "skills", "vitals"},
+            {"affiliation", "controller", "party_slot", "race", "kit", "experience", "indicator_radius", "abilities", "skills", "vitals"},
             error,
             path)) {
         return false;
     }
 
     CharacterBlueprint character{};
+    lua_getfield(state, absoluteIndex, "controller");
+    const bool controllerIsExplicit = !lua_isnil(state, -1);
+    lua_pop(state, 1);
+    lua_getfield(state, absoluteIndex, "party_slot");
+    const bool partySlotIsExplicit = !lua_isnil(state, -1);
+    lua_pop(state, 1);
+
     std::string affiliationToken{};
+    std::string controllerToken{};
     std::string raceToken{};
     std::string kitToken{};
+    std::int64_t partySlot = -1;
     if (!readStringField(state, absoluteIndex, "affiliation", affiliationToken, true, error, path) ||
+        !readStringField(state, absoluteIndex, "controller", controllerToken, false, error, path) ||
+        !readIntegerField(state, absoluteIndex, "party_slot", partySlot, false, error, path) ||
         !readStringField(state, absoluteIndex, "race", raceToken, true, error, path) ||
         !readStringField(state, absoluteIndex, "kit", kitToken, true, error, path) ||
         !readIntegerField(state, absoluteIndex, "experience", character.character.experience, false, error, path) ||
@@ -210,6 +226,30 @@ bool parseCharacterTable(
     }
     if (!parseEnum(std::string_view(affiliationToken), kAffiliations, character.character.affiliation)) {
         return fail(error, std::string(path) + ".affiliation", "contains an unknown affiliation");
+    }
+    if (controllerIsExplicit) {
+        if (!parseEnum(std::string_view(controllerToken), kControllers, character.controller.kind)) {
+            return fail(error, std::string(path) + ".controller", "contains an unknown controller");
+        }
+    } else if (character.character.affiliation == CharacterAffiliation::Player) {
+        // Preserve the control semantics of SCN V1 assets authored before the
+        // controller and party fields became explicit.
+        character.controller.kind = CharacterControllerKind::Player;
+        partySlot = 0;
+    }
+    if (isPlayerControlled(character.controller)) {
+        if (!partySlotIsExplicit && controllerIsExplicit) {
+            return fail(error, std::string(path) + ".party_slot", "is required for a Player controller");
+        }
+        if (partySlot < 0 || partySlot >= static_cast<std::int64_t>(kMaximumPartySize)) {
+            return fail(error, std::string(path) + ".party_slot", "is outside the supported party range");
+        }
+        character.partyMember = PartyMemberComponent{
+            static_cast<std::uint8_t>(partySlot),
+            true
+        };
+    } else if (partySlotIsExplicit) {
+        return fail(error, std::string(path) + ".party_slot", "requires a Player controller");
     }
     if (!parseEnum(std::string_view(raceToken), kRaces, character.character.race)) {
         return fail(error, std::string(path) + ".race", "contains an unknown race");

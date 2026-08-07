@@ -370,6 +370,10 @@ bool SceneFactory::buildScene(
                 character.vitals
             );
             world.characters.emplace(rootEntity, character.character);
+            world.characterControllers.emplace(rootEntity, character.controller);
+            if (character.partyMember.has_value()) {
+                world.partyMembers.emplace(rootEntity, *character.partyMember);
+            }
             world.abilityScores.emplace(rootEntity, character.abilities);
             world.skillRanks.emplace(rootEntity, character.skills);
             world.characterVitals.emplace(rootEntity, character.vitals);

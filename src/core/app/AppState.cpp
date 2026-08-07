@@ -61,11 +61,10 @@ void BootstrapState::onEnter(EngineServices& services) {
     }
     services.editorSelection.clear();
     services.partySelection.clear();
-    for (const EntityId entity : services.world.characters.entities()) {
-        if (services.world.characters.get(entity).affiliation == CharacterAffiliation::Player) {
-            services.partySelection.setLeader(entity);
-            break;
-        }
+    const std::vector<EntityId> partyMembers =
+        services.partySelectionSystem.orderedActivePartyMembers(services.world);
+    if (!partyMembers.empty()) {
+        services.partySelection.setLeader(partyMembers.front());
     }
     services.requestedMode = services.startupMode;
 }

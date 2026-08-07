@@ -22,6 +22,7 @@ private:
     void finishPartySelectionDrag(int x, int y);
     void syncPartySelectionPresentation();
     bool moveAgentToViewportPosition(EntityId agent, int x, int y);
+    bool moveSelectedPartyToViewportPosition(int x, int y);
 
     EngineServices services_;
     AppStateCollection states_{};

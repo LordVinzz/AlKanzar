@@ -7,6 +7,7 @@
 
 #include "core/ecs/Entity.hpp"
 #include "core/events/Signal.hpp"
+#include "core/simulation/CharacterComponents.hpp"
 
 namespace core {
 
@@ -33,12 +34,15 @@ public:
 
     void setSelection(std::vector<EntityId> entities) {
         std::vector<EntityId> normalized{};
-        normalized.reserve(entities.size());
+        normalized.reserve(std::min(entities.size(), kMaximumPartySize));
         for (const EntityId entity : entities) {
             if (!entity.valid() || std::find(normalized.begin(), normalized.end(), entity) != normalized.end()) {
                 continue;
             }
             normalized.push_back(entity);
+            if (normalized.size() == kMaximumPartySize) {
+                break;
+            }
         }
         if (selected_ == normalized) {
             return;

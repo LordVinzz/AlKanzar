@@ -15,6 +15,7 @@
 #include "core/navigation/Navigation.hpp"
 #include "core/physics/PhysicsSystem.hpp"
 #include "core/systems/PickingSystem.hpp"
+#include "core/systems/PartyOrderSystem.hpp"
 #include "core/systems/PartySelectionModel.hpp"
 #include "core/systems/PartySelectionSystem.hpp"
 #include "core/profiling/ProfilerService.hpp"
@@ -81,6 +82,7 @@ struct EngineServices {
     CommandHistory commands;
     SelectionModel editorSelection;
     PartySelectionModel partySelection;
+    PartyOrderSystem partyOrderSystem;
     PartySelectionSystem partySelectionSystem;
     SceneRegistry sceneRegistry;
     SceneFactory sceneFactory;

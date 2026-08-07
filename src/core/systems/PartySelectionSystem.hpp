@@ -45,6 +45,15 @@ struct ScreenSelectionRect {
 
 class PartySelectionSystem {
 public:
+    [[nodiscard]] bool isControllablePartyMember(
+        const World& world,
+        EntityId entity
+    ) const;
+
+    [[nodiscard]] std::vector<EntityId> orderedActivePartyMembers(
+        const World& world
+    ) const;
+
     [[nodiscard]] std::vector<EntityId> selectOwnedCharacters(
         const World& world,
         const FrameSceneData& frame,
@@ -58,6 +67,11 @@ public:
         const World& world,
         const PartySelectionModel& selection,
         FrameSceneData& frame
+    ) const;
+
+    void pruneInvalidSelection(
+        const World& world,
+        PartySelectionModel& selection
     ) const;
 };
 
