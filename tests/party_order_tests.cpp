@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <optional>
 #include <string_view>
 #include <thread>
@@ -13,6 +14,7 @@
 #include "core/navigation/Navigation.hpp"
 #include "core/systems/PartyOrderSystem.hpp"
 #include "core/systems/TaskScheduler.hpp"
+#include "render/resources/StaticGltfModel.hpp"
 
 namespace {
 
@@ -84,6 +86,63 @@ core::NavigationRuntime makeOpenNavigationRuntime(core::NavigationSystem& naviga
     };
     assert(navigation.rebuildRuntime(runtime));
     return runtime;
+}
+
+void testControllableAgentGetsDefaultPhysicsAndColliderClearance() {
+    core::World world{};
+    const auto model = std::make_shared<render::GltfModelData>();
+    const core::EntityId entity = world.createEntity();
+    world.characters.emplace(entity, core::CharacterComponent{});
+    world.characterControllers.emplace(
+        entity,
+        core::CharacterControllerComponent{core::CharacterControllerKind::Player}
+    );
+    world.partyMembers.emplace(entity, core::PartyMemberComponent{0u, true});
+    world.animatedModels.emplace(
+        entity,
+        core::AnimatedModelComponent{model}
+    );
+
+    core::NavigationSystem navigation{};
+    navigation.syncCharacterAgentControl(world, entity);
+
+    assert(world.navAgents.contains(entity));
+    assert(world.boxColliders.contains(entity));
+    assert(world.rigidbodies.contains(entity));
+    const core::NavAgentComponent& agent = world.navAgents.get(entity);
+    const core::BoxColliderComponent& collider = world.boxColliders.get(entity);
+    const core::RigidbodyComponent& rigidbody = world.rigidbodies.get(entity);
+    assert(agent.clearanceSource == core::NavAgentClearanceSource::BoxCollider);
+    assert(glm::distance(collider.halfExtents * 2.0f, glm::vec3(0.44f, 2.0f, 0.44f)) < 1.0e-6f);
+    assert(glm::distance(collider.center, glm::vec3(0.0f, 1.0f, 0.0f)) < 1.0e-6f);
+    assert(!rigidbody.isKinematic);
+    assert(!rigidbody.useGravity);
+
+    world.boxColliders.get(entity).halfExtents = glm::vec3(0.5f);
+    world.rigidbodies.get(entity).useGravity = true;
+    world.navAgents.get(entity).clearanceSource = core::NavAgentClearanceSource::None;
+    navigation.syncCharacterAgentControl(world, entity);
+    assert(glm::distance(
+        world.boxColliders.get(entity).halfExtents,
+        glm::vec3(0.5f)
+    ) < 1.0e-6f);
+    assert(world.rigidbodies.get(entity).useGravity);
+    assert(world.navAgents.get(entity).clearanceSource == core::NavAgentClearanceSource::None);
+
+    const core::EntityId uncontrolledNpc = world.createEntity();
+    world.characters.emplace(uncontrolledNpc, core::CharacterComponent{});
+    world.characterControllers.emplace(
+        uncontrolledNpc,
+        core::CharacterControllerComponent{}
+    );
+    world.animatedModels.emplace(
+        uncontrolledNpc,
+        core::AnimatedModelComponent{model}
+    );
+    navigation.syncCharacterAgentControl(world, uncontrolledNpc);
+    assert(!world.navAgents.contains(uncontrolledNpc));
+    assert(!world.boxColliders.contains(uncontrolledNpc));
+    assert(!world.rigidbodies.contains(uncontrolledNpc));
 }
 
 void testFormationSlotsStayCenteredDistinctAndBounded() {
@@ -214,6 +273,7 @@ void testGroupMoveRequestsWithoutSimulationStepAndReplacesStaleOrders() {
 }  // namespace
 
 int main() {
+    testControllableAgentGetsDefaultPhysicsAndColliderClearance();
     testFormationSlotsStayCenteredDistinctAndBounded();
     testAgentDestinationProjectionStaysOnTheNavmesh();
     testGroupMoveRequestsWithoutSimulationStepAndReplacesStaleOrders();

@@ -49,6 +49,29 @@ std::string resolveNavAssetPath(const std::string& assetPath) {
 
 using namespace navigation_detail;
 
+namespace {
+
+constexpr glm::vec3 kDefaultPlayerColliderDimensions{0.44f, 2.0f, 0.44f};
+
+void ensureDefaultPlayerPhysics(World& world, EntityId entity) {
+    if (!world.boxColliders.contains(entity)) {
+        world.boxColliders.emplace(entity, BoxColliderComponent{
+            glm::vec3(0.0f, kDefaultPlayerColliderDimensions.y * 0.5f, 0.0f),
+            kDefaultPlayerColliderDimensions * 0.5f,
+            false,
+            false
+        });
+    }
+    if (!world.rigidbodies.contains(entity)) {
+        RigidbodyComponent rigidbody{};
+        rigidbody.isKinematic = false;
+        rigidbody.useGravity = false;
+        world.rigidbodies.emplace(entity, rigidbody);
+    }
+}
+
+}  // namespace
+
 bool NavigationSystem::initializeScene(const SceneBlueprint& blueprint, World& world, NavigationRuntime& runtime) const {
     runtime.assetPath = resolveNavAssetPath(blueprint.navMeshAssetPath);
     runtime.editor = NavigationEditorState{};
@@ -102,8 +125,11 @@ void NavigationSystem::syncCharacterAgentControl(
         return;
     }
 
+    ensureDefaultPlayerPhysics(world, entity);
     if (!world.navAgents.contains(entity)) {
-        world.navAgents.emplace(entity, NavAgentComponent{});
+        NavAgentComponent agent{};
+        agent.clearanceSource = NavAgentClearanceSource::BoxCollider;
+        world.navAgents.emplace(entity, agent);
     }
     if (animated->model == nullptr) {
         world.locomotion.remove(entity);

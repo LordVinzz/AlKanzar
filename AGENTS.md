@@ -20,6 +20,8 @@ Dear ImGui and CMake. It currently provides:
 - pure character rules, derived statistics and an ImGui character inspector;
 - explicit player controllers, active party membership, six-member selection
   limits and minimal formation-based group movement;
+- default gravity-free dynamic bodies and nav-bound box colliders for active
+  player-controlled party members;
 - green, blue and red ground indicators for controlled party members,
   uncontrolled friendly NPCs and hostile NPCs respectively;
 - architecture, unit, integration and source-size checks through CTest.
@@ -282,6 +284,13 @@ blueprints into ECS entities and render resources. Friendly affiliation alone
 never grants control. Uncontrolled NPCs remain non-autonomous until a future
 explicit AI requirement implements that behavior.
 
+`NavigationSystem::syncCharacterAgentControl()` provisions missing physics for
+an active player-controlled member: a non-kinematic rigidbody without gravity
+and a `0.44 × 2.0 × 0.44` full-size box collider centered at `y = 1.0`. A newly
+created nav agent uses that box as its clearance source. Treat these as
+missing-component defaults: never overwrite an existing collider, rigidbody or
+nav-agent clearance selection during synchronization.
+
 ## 7. Rules workflow
 
 For a new or changed game rule:
@@ -534,7 +543,7 @@ CTest currently registers:
 | `alkanzar_app_mode_tests` | Mode capabilities/transitions, selection isolation, CLI launch mode and deterministic test scene. |
 | `alkanzar_content_file_header_tests` | Fixed 10-byte content-header encoding, decoding and validation. |
 | `alkanzar_scene_asset_tests` | Restricted SCN parsing, controller/party validation and staged default-scene loading. |
-| `alkanzar_party_order_tests` | Six-member limit, formation layout, navmesh projection, group requests and stale-order replacement. |
+| `alkanzar_party_order_tests` | Controlled-member physics defaults, six-member limit, formation layout, navmesh projection, group requests and stale-order replacement. |
 | `alkanzar_architecture_layers` | Forbidden dependency scan. |
 | `alkanzar_src_file_length` | Strict `< 500` line limit for owned source files. |
 
@@ -605,6 +614,7 @@ captures can be exported from the profiler UI for Perfetto analysis.
 | Picking selects a mesh child | `PickingSystem.*`, `World::characterOwnerEntity()` | `SelectionModel`, scene/skinned hierarchy |
 | Gameplay marquee selection issue | `ApplicationPartySelection.cpp`, `PartySelectionSystem.*` | `PartySelectionModel.hpp`, `FramePartySelectionMarquee`, `SceneOverlayMarquee.cpp` |
 | Group click-to-move/formation issue | `ApplicationPartySelection.cpp`, `PartyOrderSystem.*` | `NavigationAgentProjection.cpp`, request/result and formation tests |
+| Controlled member missing collision | `NavigationAssetLifecycle.cpp`, `syncCharacterAgentControl()` | controller/party state, physics and nav-agent descriptors |
 | Single-agent path issue | `Navigation.hpp`, request/result files | hit-test, Polyanya/corridor/funnel files |
 | Navmesh bake issue | `NavigationBakeSources.cpp`, `NavigationGenerator.cpp` | Delaunay/cell/coverage files and editor UI |
 | Scene syntax/load issue | `SceneAsset.cpp`, `assets/scenes/DefaultScene.scene` | field parser files, `SceneRegistry.cpp`, scene-asset tests |

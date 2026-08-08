@@ -147,3 +147,10 @@ asynchrone par agent. Une nouvelle requête remplace et annule l'ancienne pour
 le même agent. Les ordres peuvent être saisis pendant la pause ; le mouvement
 reste toutefois exclusivement exécuté par les mises à jour à pas fixe après
 la reprise.
+
+Lorsqu'un membre devient actif et contrôlé par le joueur,
+`NavigationSystem::syncCharacterAgentControl` lui ajoute, s'ils sont absents,
+un rigidbody dynamique sans gravité et un box collider de dimensions complètes
+`0.44 × 2.0 × 0.44`, centré à mi-hauteur. Le nouvel agent utilise ce collider
+comme source de dégagement pour ses requêtes de chemin. Une nouvelle
+synchronisation conserve les composants et réglages déjà présents.
