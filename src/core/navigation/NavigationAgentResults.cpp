@@ -173,6 +173,7 @@ std::vector<render::FrameCounterRecord> NavigationSystem::profilingCounters() co
         makeNavigationCounter("Local Avoidance Adjustments", static_cast<std::int64_t>(localAvoidanceAdjustments_)),
         makeNavigationCounter("Boundary Recoveries", static_cast<std::int64_t>(boundaryRecoveries_)),
         makeNavigationCounter("Collision Replans", static_cast<std::int64_t>(collisionReplans_)),
+        makeNavigationCounter("Abandoned Recovery Replans", static_cast<std::int64_t>(abandonedRecoveryReplans_)),
     };
 }
 

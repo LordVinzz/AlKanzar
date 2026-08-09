@@ -257,16 +257,25 @@ std::optional<std::vector<glm::vec3>> solveCorridorClearancePath(
                         for (int refinement = 0;
                              refinement < 3;
                              ++refinement) {
-                            const glm::vec2 right(forward.y, -forward.x);
+                            const glm::vec2 footprintForward =
+                                clearanceOrientationForward(
+                                    profile,
+                                    forward
+                                );
+                            const glm::vec2 right(
+                                footprintForward.y,
+                                -footprintForward.x
+                            );
                             const glm::vec2 center =
                                 rotateLocalXZToPlanar(
                                     profile.centerXZ,
-                                    forward
+                                    footprintForward
                                 );
                             const glm::vec2 footprintCorner = center +
                                 right * profile.boxHalfExtentsXZ.x *
                                     lateralSign +
-                                forward * profile.boxHalfExtentsXZ.y *
+                                footprintForward *
+                                    profile.boxHalfExtentsXZ.y *
                                     longitudinalSign;
                             origin = vertexXZ - footprintCorner;
                             forward = normalizeOrFallback(

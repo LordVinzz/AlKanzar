@@ -103,6 +103,7 @@ RenderSceneView buildRenderSceneView(
     bool useParallel
 ) {
     RenderSceneView scene{};
+    scene.directionalLight = frame.directionalLight;
     scene.lights = frame.lights;
     scene.lightVolumes = frame.lightVolumes;
     scene.colliderDebug.reserve(frame.colliderDebug.size());

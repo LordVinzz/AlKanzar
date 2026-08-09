@@ -33,6 +33,8 @@ uniform float uClearcoatRoughness;
 uniform float uDetailNormalScale;
 uniform float uHeightScale;
 uniform vec3 uLightDir;
+uniform vec3 uLightColor;
+uniform float uLightIntensity;
 
 uniform int uBaseColorUvSet;
 uniform int uMetallicRoughnessUvSet;
@@ -121,7 +123,7 @@ void main() {
     float clearcoatSpecPower = mix(144.0, 12.0, clearcoatRoughness);
     vec3 clearcoatSpecular = vec3(0.04 * clearcoat * pow(ndoth, clearcoatSpecPower));
 
-    vec3 lightColor = vec3(0.85);
+    vec3 lightColor = uLightColor * uLightIntensity;
     vec3 color = (diffuse + specular + clearcoatSpecular) * lightColor * ndotl;
     color *= mix(1.0, ao, 0.35);
     color += baseColor * ao * 0.08;

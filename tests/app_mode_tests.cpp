@@ -314,6 +314,7 @@ void testDeterministicTestSceneHasAStableMinimalLayout() {
 
     assert(first.models.size() == 3u);
     assert(first.models.size() == second.models.size());
+    assert(first.directionalLight.has_value());
     assert(first.pointLights.size() == 1u);
     assert(first.spotLights.empty());
     assert(first.lightVolumes.size() == 1u);

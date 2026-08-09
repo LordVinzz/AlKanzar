@@ -28,6 +28,10 @@ glm::vec2 normalizeOrFallback(
     const glm::vec2& fallback = glm::vec2(0.0f, 1.0f)
 );
 glm::vec2 rotateLocalXZToPlanar(const glm::vec2& local, const glm::vec2& forward);
+glm::vec2 clearanceOrientationForward(
+    const AgentClearanceProfile& profile,
+    const glm::vec2& requestedForward
+);
 float supportDistance(
     const AgentClearanceProfile& profile,
     const glm::vec2& sampleDirection,
@@ -73,9 +77,15 @@ bool visitClearanceBoundaryOffsets(
         return true;
     }
 
-    const glm::vec2 forward = normalizeOrFallback(travelDirection);
+    const glm::vec2 forward = clearanceOrientationForward(
+        profile,
+        travelDirection
+    );
     const glm::vec2 right(forward.y, -forward.x);
-    const glm::vec2 center = rotateLocalXZToPlanar(profile.centerXZ, travelDirection);
+    const glm::vec2 center = rotateLocalXZToPlanar(
+        profile.centerXZ,
+        forward
+    );
     if (profile.shape == AgentClearanceShape::Sphere) {
         for (int sampleIndex = 0; sampleIndex < sphereSampleDirections; ++sampleIndex) {
             const float angle = kTau * static_cast<float>(sampleIndex) /

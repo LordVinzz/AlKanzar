@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -115,13 +116,25 @@ struct NavAgentComponent {
     std::optional<glm::vec3> destination{};
     bool moving{false};
     glm::vec3 desiredVelocity{0.0f};
+    // Position and rotation form one rollback pose for the physics step.
     std::optional<glm::vec3> physicsStepStart{};
+    glm::vec3 physicsStepStartRotationDeg{0.0f};
     bool traversingLink{false};
+    // Failed recovery paths are retried from fixed-step time, never wall time.
+    bool recoveryReplanActive{false};
+    float recoveryReplanRetrySeconds{0.0f};
+    std::uint8_t recoveryReplanAttempts{0u};
 };
 
 struct LocomotionComponent {
     int idleClip{-1};
     int walkClip{-1};
+};
+
+struct DirectionalLightComponent {
+    glm::vec3 direction{-0.3f, -1.0f, -0.4f};
+    glm::vec3 color{1.0f};
+    float intensity{1.0f};
 };
 
 struct PointLightComponent {
@@ -164,6 +177,7 @@ struct BoxColliderComponent {
     glm::vec3 halfExtents{0.5f};
     bool isTrigger{false};
     bool showDebug{false};
+    bool rotatesWithEntity{true};
 };
 
 struct SphereColliderComponent {

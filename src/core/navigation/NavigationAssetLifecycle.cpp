@@ -59,6 +59,7 @@ void ensureDefaultPlayerPhysics(World& world, EntityId entity) {
             glm::vec3(0.0f, kDefaultPlayerColliderDimensions.y * 0.5f, 0.0f),
             kDefaultPlayerColliderDimensions * 0.5f,
             false,
+            false,
             false
         });
     }

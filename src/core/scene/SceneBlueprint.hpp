@@ -29,6 +29,13 @@ struct ModelInstanceBlueprint {
     std::optional<CharacterBlueprint> character{};
 };
 
+struct DirectionalLightBlueprint {
+    std::string name;
+    glm::vec3 direction{-0.3f, -1.0f, -0.4f};
+    glm::vec3 color{1.0f};
+    float intensity{1.0f};
+};
+
 struct PointLightBlueprint {
     std::string name;
     TransformComponent transform{};
@@ -72,6 +79,7 @@ struct SceneBlueprint {
     float wallThickness{0.5f};
     std::string navMeshAssetPath{};
     std::vector<ModelInstanceBlueprint> models{};
+    std::optional<DirectionalLightBlueprint> directionalLight{};
     std::vector<LightVolumeBlueprint> lightVolumes{};
     std::vector<PointLightBlueprint> pointLights{};
     std::vector<SpotLightBlueprint> spotLights{};

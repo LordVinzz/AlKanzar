@@ -89,6 +89,7 @@ add_library(alkanzar_core STATIC
     src/core/app/RuntimePolicy.cpp
     src/core/editor/ComponentRegistry.cpp
     src/core/editor/ComponentDescriptors.cpp
+    src/core/editor/DirectionalLightComponentDescriptor.cpp
     src/core/editor/CharacterComponentDescriptor.cpp
     src/core/editor/CharacterControlInspector.cpp
     src/core/editor/ComponentInspector.cpp

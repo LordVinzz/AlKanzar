@@ -228,6 +228,15 @@ house.transform({
 house.fit_to_footprint(7.5)
 scene.add(house)
 
+sun = Create({
+    type = "DirectionalLight",
+    name = "Sun",
+    direction = { x = -0.35, y = -1.0, z = -0.25 },
+    color = { x = 1.0, y = 0.93, z = 0.82 },
+    intensity = 3.0,
+})
+scene.add(sun)
+
 global_light_volume = Create({
     type = "LightVolume",
     name = "Global Light Volume",

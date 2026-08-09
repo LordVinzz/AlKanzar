@@ -10,13 +10,6 @@
 #include "core/profiling/ProfilerService.hpp"
 #include "RenderSceneView.hpp"
 
-namespace {
-
-constexpr float kNearPlane = 0.0f;
-constexpr float kFarPlane = 100.0f;
-
-}  // namespace
-
 namespace render {
 
 
@@ -163,8 +156,8 @@ bool DeferredRenderPath::beginFrame(const RenderPathContext& context) {
         context.camera.view,
         context.camera.projection,
         dirLightWorld,
-        kNearPlane,
-        kFarPlane
+        context.camera.nearPlane,
+        context.camera.farPlane
     );
     if (context.profiler) {
         {

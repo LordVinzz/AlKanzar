@@ -87,6 +87,8 @@ private:
     GLint projLocation_{-1};
     GLint normalMatrixLocation_{-1};
     GLint lightDirLocation_{-1};
+    GLint lightColorLocation_{-1};
+    GLint lightIntensityLocation_{-1};
     SceneGeometryShaderContext geometryContext_{};
 };
 

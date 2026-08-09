@@ -60,8 +60,6 @@ render::Bounds3 transformBounds(const render::Bounds3& bounds, const glm::mat4& 
 
 OrientedBox makeOrientedBox(const glm::mat4& modelMatrix, const BoxColliderComponent& collider) {
     OrientedBox box{};
-    box.center = glm::vec3(modelMatrix * glm::vec4(collider.center, 1.0f));
-
     const glm::vec3 scaledAxisX = axisFromColumn(modelMatrix, 0);
     const glm::vec3 scaledAxisY = axisFromColumn(modelMatrix, 1);
     const glm::vec3 scaledAxisZ = axisFromColumn(modelMatrix, 2);
@@ -70,9 +68,20 @@ OrientedBox makeOrientedBox(const glm::mat4& modelMatrix, const BoxColliderCompo
     const float scaleY = axisLength(scaledAxisY);
     const float scaleZ = axisLength(scaledAxisZ);
 
-    box.axes[0] = scaledAxisX / scaleX;
-    box.axes[1] = scaledAxisY / scaleY;
-    box.axes[2] = scaledAxisZ / scaleZ;
+    if (collider.rotatesWithEntity) {
+        box.center = glm::vec3(
+            modelMatrix * glm::vec4(collider.center, 1.0f)
+        );
+        box.axes[0] = scaledAxisX / scaleX;
+        box.axes[1] = scaledAxisY / scaleY;
+        box.axes[2] = scaledAxisZ / scaleZ;
+    } else {
+        box.center = glm::vec3(modelMatrix[3]) +
+            collider.center * glm::vec3(scaleX, scaleY, scaleZ);
+        box.axes[0] = glm::vec3(1.0f, 0.0f, 0.0f);
+        box.axes[1] = glm::vec3(0.0f, 1.0f, 0.0f);
+        box.axes[2] = glm::vec3(0.0f, 0.0f, 1.0f);
+    }
     box.halfExtents = glm::max(glm::vec3(
         collider.halfExtents.x * scaleX,
         collider.halfExtents.y * scaleY,

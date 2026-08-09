@@ -38,7 +38,8 @@ AgentClearanceProfile resolveAgentClearanceProfile(const World& world, EntityId 
                     glm::vec2(
                         std::abs(box->halfExtents.x * transform->scale.x),
                         std::abs(box->halfExtents.z * transform->scale.z)
-                    )
+                    ),
+                    box->rotatesWithEntity
                 };
             }
             return AgentClearanceProfile{};
@@ -59,7 +60,8 @@ AgentClearanceProfile resolveAgentClearanceProfile(const World& world, EntityId 
                     glm::vec2(
                         std::abs(box->halfExtents.x * transform->scale.x),
                         std::abs(box->halfExtents.z * transform->scale.z)
-                    )
+                    ),
+                    box->rotatesWithEntity
                 };
             }
             return AgentClearanceProfile{};
@@ -81,6 +83,24 @@ float conservativeClearanceRadius(const AgentClearanceProfile& profile) {
         return glm::length(profile.centerXZ) + glm::length(profile.boxHalfExtentsXZ);
     }
     return 0.0f;
+}
+
+AgentClearanceProfile orientationIndependentClearance(
+    const AgentClearanceProfile& profile
+) {
+    if (!profile.rotatesWithEntity) {
+        return profile;
+    }
+    const float radius = conservativeClearanceRadius(profile);
+    if (radius <= kPolygonEpsilon) {
+        return {};
+    }
+    return AgentClearanceProfile{
+        AgentClearanceShape::Sphere,
+        glm::vec2(0.0f),
+        radius,
+        glm::vec2(0.0f)
+    };
 }
 
 AgentClearanceProfile headingIndependentNodeClearance(
@@ -127,7 +147,10 @@ std::optional<SharedPortalResult> shrinkPortal(
         return std::nullopt;
     }
     const glm::vec2 direction = delta / length;
-    const glm::vec2 forward = normalizeOrFallback(travelDirection);
+    const glm::vec2 forward = clearanceOrientationForward(
+        profile,
+        travelDirection
+    );
     const glm::vec2 right(forward.y, -forward.x);
     const glm::vec2 center =
         rotateLocalXZToPlanar(profile.centerXZ, forward);

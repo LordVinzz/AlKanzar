@@ -18,6 +18,8 @@ bool SimpleForwardPath::init(const std::string& shaderRoot, MaterialBinder& mate
     projLocation_ = shader_.uniformLocation("uProj");
     normalMatrixLocation_ = shader_.uniformLocation("uNormalMatrix");
     lightDirLocation_ = shader_.uniformLocation("uLightDir");
+    lightColorLocation_ = shader_.uniformLocation("uLightColor");
+    lightIntensityLocation_ = shader_.uniformLocation("uLightIntensity");
 
     geometryContext_.modelLocation = modelLocation_;
     geometryContext_.normalMatrixLocation = normalMatrixLocation_;
@@ -72,6 +74,8 @@ void SimpleForwardPath::drawGeometry(const RenderPathContext& context) {
         glUniformMatrix4fv(projLocation_, 1, GL_FALSE, glm::value_ptr(context.camera.projection));
         const glm::vec3 dirLightView = glm::normalize(glm::mat3(context.camera.view) * glm::normalize(context.directionalLightDirection));
         glUniform3fv(lightDirLocation_, 1, glm::value_ptr(dirLightView));
+        glUniform3fv(lightColorLocation_, 1, glm::value_ptr(context.directionalLightColor));
+        glUniform1f(lightIntensityLocation_, context.directionalLightIntensity);
         drawStandardSceneLayers(context, geometryContext_);
         context.overlayRenderer.renderGroundIndicators(context.scene, context.camera);
         return;
@@ -82,6 +86,8 @@ void SimpleForwardPath::drawGeometry(const RenderPathContext& context) {
     glUniformMatrix4fv(projLocation_, 1, GL_FALSE, glm::value_ptr(context.camera.projection));
     const glm::vec3 dirLightView = glm::normalize(glm::mat3(context.camera.view) * glm::normalize(context.directionalLightDirection));
     glUniform3fv(lightDirLocation_, 1, glm::value_ptr(dirLightView));
+    glUniform3fv(lightColorLocation_, 1, glm::value_ptr(context.directionalLightColor));
+    glUniform1f(lightIntensityLocation_, context.directionalLightIntensity);
     drawStandardSceneLayers(context, geometryContext_);
     context.overlayRenderer.renderGroundIndicators(context.scene, context.camera);
 }

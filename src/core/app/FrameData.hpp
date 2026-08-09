@@ -31,6 +31,13 @@ struct FrameRenderable {
     int jointMatrixCount{0};
 };
 
+struct FrameDirectionalLight {
+    EntityId entity{};
+    glm::vec3 direction{0.0f, -1.0f, 0.0f};
+    glm::vec3 color{1.0f};
+    float intensity{0.0f};
+};
+
 struct FrameLight {
     EntityId entity{};
     render::LightType type{render::LightType::Point};
@@ -148,6 +155,7 @@ struct FrameNavigationDebug {
 
 struct FrameSceneData {
     std::vector<FrameRenderable> renderables{};
+    std::optional<FrameDirectionalLight> directionalLight{};
     std::vector<FrameLight> lights{};
     std::vector<FrameLightVolume> lightVolumes{};
     std::vector<FrameColliderDebug> colliderDebug{};
@@ -168,6 +176,7 @@ struct FrameSceneData {
 
     void clear() {
         renderables.clear();
+        directionalLight.reset();
         lights.clear();
         lightVolumes.clear();
         colliderDebug.clear();

@@ -30,6 +30,7 @@
 #include "core/app/RuntimePolicy.hpp"
 #include "core/app/SimulationClock.hpp"
 #include "core/editor/CommandHistory.hpp"
+#include "core/editor/ComponentRegistry.hpp"
 #include "core/editor/EditorSession.hpp"
 #include "core/editor/EditorSessionImGuiSettings.hpp"
 #include "core/ecs/ComponentStore.hpp"
@@ -53,6 +54,7 @@
 #include "render/resources/StaticGltfModel.hpp"
 #include "render/pipeline/SceneOverlayRenderer.hpp"
 #include "render/pipeline/RenderLightPipeline.hpp"
+#include "render/pipeline/ShadowSystem.hpp"
 #include "render/engine/RenderSceneView.hpp"
 
 namespace {
@@ -155,6 +157,8 @@ render::CameraMatrices makeOrthoCamera(
     camera.projection = glm::ortho(left, right, bottom, top, nearPlane, farPlane);
     camera.invProjection = glm::inverse(camera.projection);
     camera.view = glm::mat4(1.0f);
+    camera.nearPlane = nearPlane;
+    camera.farPlane = farPlane;
     return camera;
 }
 
@@ -925,6 +929,45 @@ void testNavigationBakeBuildsMultiLevelPolygonsAndBlocksOnlyOverlappingLayers() 
     assert(!groundInsideBlocker);
     assert(upperInsideBlocker);
     assert(!foundSlopeLayer);
+}
+
+void testNavigationGenerationPreservesShortValidEdgesForPolyanya() {
+    core::World world;
+    core::TransformSystem transformSystem;
+    core::TaskScheduler scheduler = makeScheduler();
+
+    render::Mesh mesh{};
+    mesh.positions = {
+        glm::vec3(0.0f, 0.0f, 0.0f),
+        glm::vec3(0.0f, 0.0f, 0.0003f),
+        glm::vec3(10.0f, 0.0f, 0.0f),
+    };
+    mesh.indices = {0u, 1u, 2u};
+
+    const core::EntityId walkable = world.createEntity();
+    world.transforms.emplace(walkable, core::TransformComponent{});
+    world.navSources.emplace(walkable, core::NavSourceComponent{
+        "Short valid edge",
+        core::NavSourceTag::Walkable,
+        core::NavSourceTag::Walkable,
+    });
+    world.navSourceGeometry.emplace(
+        walkable,
+        core::NavSourceGeometryComponent{
+            std::make_shared<render::Mesh>(std::move(mesh))
+        }
+    );
+    world.markTransformsDirty(walkable);
+    transformSystem.update(world, scheduler, false);
+
+    core::NavigationRuntime runtime{};
+    core::NavigationSystem navigation;
+    std::string error{};
+    assert(navigation.generateFromTags(world, runtime, &error));
+    assert(error.empty());
+    assert(runtime.asset.polygons.size() == 1u);
+    assert(runtime.polyanyaMesh != nullptr);
+    assert(runtime.exactPathfindingWarning.empty());
 }
 
 void testNavigationMinimumTriangleAreaIsNotAppliedAtRuntime() {
@@ -3316,6 +3359,8 @@ void testFreeCameraUsesPerspectiveAndUnityStyleControls() {
     const render::CameraMatrices orthographic =
         core::computeCameraMatrices(camera, 1600, 900);
     assert(std::abs(orthographic.projection[2][3]) < 1.0e-6f);
+    assert(nearlyEqual(orthographic.nearPlane, 0.1));
+    assert(nearlyEqual(orthographic.farPlane, 100.0));
 
     core::setFreeCameraEnabled(camera, true);
     assert(camera.freeCameraEnabled);
@@ -3323,6 +3368,8 @@ void testFreeCameraUsesPerspectiveAndUnityStyleControls() {
     const render::CameraMatrices perspective =
         core::computeCameraMatrices(camera, 1600, 900);
     assert(nearlyEqual(perspective.projection[2][3], -1.0, 1.0e-6));
+    assert(nearlyEqual(perspective.nearPlane, 0.1));
+    assert(nearlyEqual(perspective.farPlane, 1000.0));
 
     camera.freePosition = glm::vec3(0.0f);
     camera.freeYawDeg = 0.0f;
@@ -3391,7 +3438,7 @@ void testNavigationAgentMovementRotatesAndRequestsWalkThenIdle() {
     assert(finalAnimation.requestedClip == world.locomotion.get(entity).idleClip);
 }
 
-void testNavigationBoxAgentAlignsBeforeTranslation() {
+void testNavigationBoxAgentSmoothsHeadingAndLimitsTranslation() {
     core::NavigationRuntime runtime{};
     runtime.asset.polygons = {
         core::NavPolygon{1, 0.0f, {
@@ -3413,7 +3460,7 @@ void testNavigationBoxAgentAlignsBeforeTranslation() {
     });
     core::NavAgentComponent agent{};
     agent.moveSpeed = 1.0f;
-    agent.turnSpeedDeg = 1.0f;
+    agent.turnSpeedDeg = 540.0f;
     agent.clearanceSource = core::NavAgentClearanceSource::BoxCollider;
     world.navAgents.emplace(entity, agent);
     world.boxColliders.emplace(entity, core::BoxColliderComponent{
@@ -3432,15 +3479,28 @@ void testNavigationBoxAgentAlignsBeforeTranslation() {
     navigation.updateAgents(
         world,
         runtime,
-        core::TimeContext{0.0f, 0.1f}
+        core::TimeContext{0.0f, 1.0f / 60.0f}
     );
 
-    const core::TransformComponent& transform = world.transforms.get(entity);
-    // A regular agent would rotate by only 0.1 degree here. A box must first
-    // adopt the heading used by the swept-footprint validation, then move.
-    assert(nearlyEqual(transform.rotationDeg.y, 90.0, 0.01));
+    core::TransformComponent& transform = world.transforms.get(entity);
+    assert(transform.rotationDeg.y > 8.9f);
+    assert(transform.rotationDeg.y < 9.1f);
     assert(transform.position.x > 1.0f);
+    assert(transform.position.x < 1.01f);
     assert(nearlyEqual(transform.position.z, 1.0, 0.001));
+
+    const float eastwardYaw = transform.rotationDeg.y;
+    core::NavAgentComponent& movingAgent = world.navAgents.get(entity);
+    movingAgent.pathCorners = {glm::vec3(0.0f, 0.0f, 1.0f)};
+    movingAgent.destination = movingAgent.pathCorners.front();
+    movingAgent.moving = true;
+    navigation.updateAgents(
+        world,
+        runtime,
+        core::TimeContext{0.0f, 1.0f / 60.0f}
+    );
+    assert(transform.rotationDeg.y < eastwardYaw);
+    assert(eastwardYaw - transform.rotationDeg.y <= 9.1f);
 }
 
 void testNavigationAgentClearanceRemainsOptIn() {
@@ -4652,6 +4712,38 @@ void testTransformMathBuildsRotatedBoxesWithoutInflatingLocalExtents() {
     assert(nearlyEqual(glm::length(glm::vec3(box.modelMatrix[2])), 0.25, 0.0001));
 }
 
+void testTransformMathKeepsNonRotatingBoxesWorldAligned() {
+    const core::TransformComponent transform{
+        glm::vec3(2.0f, 1.0f, -3.0f),
+        glm::vec3(0.0f, 45.0f, 0.0f),
+        glm::vec3(2.0f, 1.0f, 3.0f)
+    };
+    const core::BoxColliderComponent collider{
+        glm::vec3(0.25f, 0.5f, -0.1f),
+        glm::vec3(0.2f, 0.75f, 0.8f),
+        false,
+        false,
+        false
+    };
+
+    const core::OrientedBox box = core::makeOrientedBox(
+        transform,
+        collider
+    );
+
+    assert(glm::distance(
+        box.center,
+        glm::vec3(2.5f, 1.5f, -3.3f)
+    ) < 0.0001f);
+    assert(glm::distance(box.axes[0], glm::vec3(1.0f, 0.0f, 0.0f)) < 0.0001f);
+    assert(glm::distance(box.axes[1], glm::vec3(0.0f, 1.0f, 0.0f)) < 0.0001f);
+    assert(glm::distance(box.axes[2], glm::vec3(0.0f, 0.0f, 1.0f)) < 0.0001f);
+    assert(glm::distance(
+        box.halfExtents,
+        glm::vec3(0.4f, 0.75f, 2.4f)
+    ) < 0.0001f);
+}
+
 void testLightVolumeAssignment() {
     core::World world;
     core::TaskScheduler scheduler = makeScheduler();
@@ -4717,6 +4809,112 @@ void testLightVolumeAssignmentIsStableAcrossLightTypes() {
     assert(frame.lightVolumes[0].staticLightIndices.size() == 2u);
     assert(frame.lightVolumes[0].staticLightIndices[0] == 0);
     assert(frame.lightVolumes[0].staticLightIndices[1] == 1);
+}
+
+void testDirectionalLightExtractionAndLifecycle() {
+    core::World world;
+    core::TaskScheduler scheduler = makeScheduler();
+    core::SelectionModel selection;
+    core::RenderExtractionSystem extraction;
+    const core::EntityId sun = world.createEntity();
+
+    world.directionalLights.emplace(sun, core::DirectionalLightComponent{
+        glm::vec3(0.0f, -2.0f, -2.0f),
+        glm::vec3(1.0f, 0.9f, 0.8f),
+        2.5f
+    });
+
+    core::FrameSceneData frame;
+    extraction.extract(world, selection, frame, scheduler, true);
+    assert(frame.directionalLight.has_value());
+    assert(frame.directionalLight->entity == sun);
+    assert(nearlyEqualVec3(
+        frame.directionalLight->direction,
+        glm::normalize(glm::vec3(0.0f, -1.0f, -1.0f))
+    ));
+    assert(nearlyEqualVec3(frame.directionalLight->color, glm::vec3(1.0f, 0.9f, 0.8f)));
+    assert(nearlyEqual(frame.directionalLight->intensity, 2.5));
+
+    const render::RenderSceneView scene = render::buildRenderSceneView(frame, {}, scheduler, true);
+    assert(scene.directionalLight.has_value());
+    assert(scene.directionalLight->entity == sun);
+
+    world.destroyEntity(sun);
+    assert(!world.directionalLights.contains(sun));
+    extraction.extract(world, selection, frame, scheduler, false);
+    assert(!frame.directionalLight.has_value());
+}
+
+void testDirectionalLightDescriptorOwnsTheSingletonComponent() {
+    core::World world;
+    const core::EntityId first = world.createEntity();
+    const core::EntityId second = world.createEntity();
+    const core::ComponentRegistry registry{};
+    const core::ComponentDescriptor* descriptor = registry.find(
+        core::ComponentKind::DirectionalLight
+    );
+
+    assert(descriptor != nullptr);
+    assert(descriptor->name == "Directional Light");
+    assert(descriptor->category == "Lighting");
+    assert(!descriptor->hasComponent(world, first));
+
+    descriptor->addComponent(world, first);
+    assert(descriptor->hasComponent(world, first));
+    assert(nearlyEqual(glm::length(world.directionalLights.get(first).direction), 1.0));
+
+    descriptor->addComponent(world, second);
+    assert(!descriptor->hasComponent(world, second));
+
+    descriptor->removeComponent(world, first);
+    descriptor->addComponent(world, second);
+    assert(descriptor->hasComponent(world, second));
+}
+
+void testDirectionalShadowCascadesStayFiniteWithSafeClipPlanes() {
+    const render::CameraMatrices camera = makeOrthoCamera(
+        -8.0f,
+        8.0f,
+        -5.0f,
+        5.0f,
+        0.1f,
+        100.0f
+    );
+    render::ShadowSystem shadows;
+    shadows.updateDirectional(
+        camera.view,
+        camera.projection,
+        glm::normalize(glm::vec3(-0.35f, -1.0f, -0.25f)),
+        camera.nearPlane,
+        camera.farPlane
+    );
+
+    float previousSplit = camera.nearPlane;
+    for (int cascade = 0; cascade < shadows.directionalCascadeCount(); ++cascade) {
+        const float split = shadows.directionalSplits()[cascade];
+        assert(std::isfinite(split));
+        assert(split > previousSplit);
+        assert(split <= camera.farPlane);
+        previousSplit = split;
+
+        const glm::mat4& matrix = shadows.directionalMatrices()[cascade];
+        for (int column = 0; column < 4; ++column) {
+            for (int row = 0; row < 4; ++row) {
+                assert(std::isfinite(matrix[column][row]));
+            }
+        }
+    }
+
+    shadows.updateDirectional(
+        camera.view,
+        camera.projection,
+        glm::vec3(0.0f, -1.0f, 0.0f),
+        0.0f,
+        camera.farPlane
+    );
+    for (int cascade = 0; cascade < shadows.directionalCascadeCount(); ++cascade) {
+        assert(std::isfinite(shadows.directionalSplits()[cascade]));
+    }
 }
 
 void testGltfLoaderReadsAnimatedCharacterData() {
@@ -6862,6 +7060,7 @@ int main() {
     testSelectionModelTracksComponentFocus();
     testNavigationAssetRoundTrip();
     testNavigationBakeBuildsMultiLevelPolygonsAndBlocksOnlyOverlappingLayers();
+    testNavigationGenerationPreservesShortValidEdgesForPolyanya();
     testNavigationMinimumTriangleAreaIsNotAppliedAtRuntime();
     testNavigationGenerationUsesUnionOfObjectColliderShapes();
     testNavigationDefaultHitboxPreservesConcaveShapeUnion();
@@ -6887,7 +7086,7 @@ int main() {
     testNavigationHitTestFindsProjectedNavPolygon();
     testFreeCameraUsesPerspectiveAndUnityStyleControls();
     testNavigationAgentMovementRotatesAndRequestsWalkThenIdle();
-    testNavigationBoxAgentAlignsBeforeTranslation();
+    testNavigationBoxAgentSmoothsHeadingAndLimitsTranslation();
     testNavigationAgentClearanceRemainsOptIn();
     testNavigationProjectsElevatedEndpointsOntoNearestWalkableLayer();
     testNavigationAgentSphereClearancePullsDestinationAwayFromWalls();
@@ -6914,8 +7113,12 @@ int main() {
     testTransformHierarchyAndBounds();
     testTransformSystemProcessesMultipleRoots();
     testTransformMathBuildsRotatedBoxesWithoutInflatingLocalExtents();
+    testTransformMathKeepsNonRotatingBoxesWorldAligned();
     testLightVolumeAssignment();
     testLightVolumeAssignmentIsStableAcrossLightTypes();
+    testDirectionalLightExtractionAndLifecycle();
+    testDirectionalLightDescriptorOwnsTheSingletonComponent();
+    testDirectionalShadowCascadesStayFiniteWithSafeClipPlanes();
     testMaterialComponentSharingExtraction();
     testRenderExtractionDefaultsMissingVisibilityToHidden();
     testRenderExtractionTracksFocusedComponentSelection();

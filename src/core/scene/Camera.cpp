@@ -58,7 +58,9 @@ render::CameraMatrices computeCameraMatrices(const CameraState& camera, int widt
     const float aspect = static_cast<float>(width) / static_cast<float>(height > 0 ? height : 1);
 
     render::CameraMatrices matrices{};
+    matrices.nearPlane = kNearPlane;
     if (camera.freeCameraEnabled) {
+        matrices.farPlane = kFreeCameraFarPlane;
         matrices.projection = glm::perspective(
             glm::radians(kFreeCameraFieldOfViewDeg),
             aspect,
@@ -77,6 +79,7 @@ render::CameraMatrices computeCameraMatrices(const CameraState& camera, int widt
         return matrices;
     }
 
+    matrices.farPlane = kFarPlane;
     const float halfSize = kBaseOrthoSize / camera.zoom;
     matrices.projection = glm::ortho(
         -halfSize * aspect,

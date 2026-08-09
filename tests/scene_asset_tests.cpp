@@ -90,6 +90,14 @@ hero.character({
     vitals = { current_hp = 53, maximum_hp = 53, mana = 0 },
 })
 scene.add(hero)
+sun = Create({
+    type = "DirectionalLight",
+    name = "Test Sun",
+    direction = { x = 0.0, y = -2.0, z = 0.0 },
+    color = { x = 1.0, y = 0.9, z = 0.8 },
+    intensity = 2.5,
+})
+scene.add(sun)
 scene.build()
 )lua");
 
@@ -112,6 +120,41 @@ scene.build()
     assert(scene.models[0].character->skills.ranks[
         static_cast<std::size_t>(core::CharacterSkill::Perception)
     ] == core::SkillRank::Initiate);
+    assert(scene.directionalLight.has_value());
+    assert(scene.directionalLight->name == "Test Sun");
+    assert(scene.directionalLight->direction == glm::vec3(0.0f, -1.0f, 0.0f));
+    assert(scene.directionalLight->color == glm::vec3(1.0f, 0.9f, 0.8f));
+    assert(scene.directionalLight->intensity == 2.5f);
+}
+
+void testSceneAllowsOnlyOneValidDirectionalLight() {
+    core::SceneBlueprint scene{};
+    std::string error{};
+    assert(!core::parseSceneAsset(
+        makeSceneAsset(R"lua(
+scene = Create({ type = "Scene" })
+first = Create({ type = "DirectionalLight", name = "First", direction = { x = 0, y = -1, z = 0 } })
+second = Create({ type = "DirectionalLight", name = "Second", direction = { x = 1, y = -1, z = 0 } })
+scene.add(first)
+scene.add(second)
+scene.build()
+)lua"),
+        scene,
+        &error
+    ));
+    assert(error.find("only one DirectionalLight") != std::string::npos);
+
+    assert(!core::parseSceneAsset(
+        makeSceneAsset(R"lua(
+scene = Create({ type = "Scene" })
+sun = Create({ type = "DirectionalLight", name = "Sun", direction = { x = 0, y = 0, z = 0 } })
+scene.add(sun)
+scene.build()
+)lua"),
+        scene,
+        &error
+    ));
+    assert(error.find("directional-light") != std::string::npos);
 }
 
 void testSceneCharacterControlFieldsAreStrictAndPartySlotsAreUnique() {
@@ -241,6 +284,10 @@ void testDefaultSceneAssetLoadsFromStagedAssets() {
     ));
     assert(error.empty());
     assert(scene.models.size() == 6u);
+    assert(scene.directionalLight.has_value());
+    assert(scene.directionalLight->name == "Sun");
+    assert(scene.directionalLight->color == glm::vec3(1.0f, 0.93f, 0.82f));
+    assert(scene.directionalLight->intensity == 3.0f);
     assert(scene.lightVolumes.size() == 1u);
     assert(scene.pointLights.size() == 1u);
     assert(scene.spotLights.size() == 1u);
@@ -264,6 +311,7 @@ void testDefaultSceneAssetLoadsFromStagedAssets() {
 
 int main() {
     testSceneDslBuildsTypedBlueprint();
+    testSceneAllowsOnlyOneValidDirectionalLight();
     testSceneCharacterControlFieldsAreStrictAndPartySlotsAreUnique();
     testSceneHeaderTypeAndVersionAreValidated();
     testSceneMustBuildAndAddEveryObject();

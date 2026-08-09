@@ -260,6 +260,7 @@ void Application::run() {
                 services_.navigationSystem.reconcileAgentsAfterPhysics(
                     services_.world,
                     services_.navigation,
+                    services_.time,
                     services_.scheduler
                 );
             }

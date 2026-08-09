@@ -12,7 +12,8 @@ AlKanzar is a C++20 isometric CRPG/engine prototype inspired by the experience
 of classic real-time-with-pause CRPGs. It uses SDL2, OpenGL, GLM, spdlog,
 Dear ImGui and CMake. It currently provides:
 
-- a direct/deferred renderer, shadows, glTF assets and editor overlays;
+- a direct/deferred renderer, an SCN-authored directional sun, shadows, glTF
+  assets and editor overlays;
 - an ECS with scene creation, transforms, lighting, animation and physics;
 - navmesh generation, Polyanya pathfinding and asynchronous path requests;
 - a fixed-step simulation loop with pause and speed control;
@@ -20,10 +21,11 @@ Dear ImGui and CMake. It currently provides:
 - pure character rules, derived statistics and an ImGui character inspector;
 - explicit player controllers, active party membership, six-member selection
   limits and minimal formation-based group movement;
-- default gravity-free dynamic bodies and nav-bound box colliders for active
-  player-controlled party members;
+- default gravity-free dynamic bodies and world-aligned nav-bound box
+  colliders for active player-controlled party members;
 - physics-driven nav-agent velocity, deterministic local avoidance and
-  post-collision navmesh recovery;
+  smoothed heading, post-collision navmesh recovery and bounded wall-stall
+  replanning;
 - green, blue and red ground indicators for controlled party members,
   uncontrolled friendly NPCs and hostile NPCs respectively;
 - architecture, unit, integration and source-size checks through CTest.
@@ -282,23 +284,40 @@ the character root. Preserve this behavior when changing scene hierarchies,
 selection or skinned-model ownership.
 
 The default SCN scene defines a three-member controllable party plus one
-uncontrolled friendly NPC and one hostile NPC. `SceneFactory.cpp` turns
-blueprints into ECS entities and render resources. Friendly affiliation alone
-never grants control. Uncontrolled NPCs remain non-autonomous until a future
-explicit AI requirement implements that behavior.
+uncontrolled friendly NPC, one hostile NPC and one directional sun.
+`SceneFactory.cpp` turns blueprints into ECS entities and render resources.
+Friendly affiliation alone never grants control. Uncontrolled NPCs remain
+non-autonomous until a future explicit AI requirement implements that behavior.
 
 `NavigationSystem::syncCharacterAgentControl()` provisions missing physics for
 an active player-controlled member: a non-kinematic rigidbody without gravity
 and a `0.44 × 2.0 × 0.44` full-size box collider centered at `y = 1.0`. A newly
-created nav agent uses that box as its clearance source. Treat these as
-missing-component defaults: never overwrite an existing collider, rigidbody or
-nav-agent clearance selection during synchronization.
+created nav agent uses that box as its clearance source. The default player
+box has `rotatesWithEntity == false`: visual heading changes must not rotate
+its physical, navigation-clearance or debug footprint. Generic boxes retain
+the `true` default. Treat these as missing-component defaults: never overwrite
+an existing collider, rigidbody or nav-agent clearance selection during
+synchronization.
 
 Dynamic rigidbody agents use `NavAgentComponent::desiredVelocity` as the
 contract between navigation and physics. Navigation owns path progress and
 heading; physics owns position integration and contact response; the recovery
-phase may only restore the pre-physics position when clearance would leave the
-navmesh. Agents without a usable dynamic body retain direct transform motion.
+phase restores the complete pre-physics pose when clearance would leave the
+navmesh. A wall/corner recovery replans asynchronously with an
+orientation-independent clearance and bounded retry backoff. A world-aligned
+box keeps its exact footprint during that replan; a rotating footprint becomes
+conservative. Heading follows the shortest angular path with fixed-step
+interpolation and a `turnSpeedDeg` cap; translation is reduced while the agent
+is not aligned. Rotating clearance must use the applied heading, not the
+unsmoothed target velocity. Agents without a usable dynamic body retain direct
+transform motion.
+
+An intermediate tangent corner is not complete merely because the agent is
+inside `arrivalRadius`. Before a physics-driven agent drops that corner, the
+full clearance sweep from its current position to the following corner must be
+valid (or be an explicit navigation link). `canAdvancePathCorner()` is the
+shared predicate for motion and post-physics path trimming; keep those callers
+consistent so a wall turn cannot cut the corner and start a replan loop.
 
 ## 7. Rules workflow
 
@@ -373,11 +392,19 @@ must stay below 500 lines. Start at `Navigation.hpp` and route by concern:
 - async requests/results: `NavigationAgentRequests.cpp`,
   `NavigationAgentResults.cpp`;
 - per-agent destination projection: `NavigationAgentProjection.cpp`;
-- movement intent and heading: `NavigationAgentMotion.cpp`;
+- movement intent, heading interpolation and alignment slowdown:
+  `NavigationAgentMotion.cpp`, `NavigationAgentSupport.cpp`;
 - local physical avoidance: `NavigationAgentAvoidance.cpp`;
-- post-physics navmesh containment and replanning:
+- post-physics pose rollback, conservative wall/corner replanning and retries:
   `NavigationAgentRecovery.cpp`;
 - render/debug snapshot: `NavigationFrameSync.cpp`.
+
+The Polyanya conforming-mesh pass may snap portal coordinates at junctions,
+but it must preserve both authored endpoints of every edge longer than the
+topology epsilon. Collapsing a short valid edge turns a generated triangle
+into a degenerate cell and silently disables exact pathfinding for the whole
+runtime mesh. Cover portal-welding changes with both a short-edge regression
+and the default-scene generation witness.
 
 Path workers operate on immutable `NavigationSolveSnapshot` data. They must not
 read or mutate `World` concurrently. Results are revisioned and applied back on
@@ -403,6 +430,18 @@ Character tables may declare `controller = "Player"` together with a unique
 affiliations uncontrolled; legacy SCN V1 characters with affiliation `Player`
 and no controller retain slot-zero player control. Slots are validated for
 range and uniqueness across the scene.
+
+A scene may contain one `DirectionalLight` with a required non-zero
+`direction` and optional `color` and non-negative `intensity`. It is a global
+sun, not a member of local light volumes. Keep it in the ECS and extract it as
+`FrameDirectionalLight`; both render paths consume that snapshot. Its ImGui
+registration lives in `DirectionalLightComponentDescriptor.cpp`; edits must
+remain normalized, undoable and publish the light-change notification.
+
+Directional shadow cascades consume `CameraMatrices::nearPlane` and
+`farPlane`. Keep the near plane strictly positive and retain the defensive
+finite-value clamps in `ShadowSystem::updateDirectional`; a zero near plane
+poisons the logarithmic cascade split and can black out the authored sun.
 
 Start scene-format changes in `SceneAsset.hpp/.cpp`. Field/type validation is
 split across `SceneAssetLuaFields.cpp`, `SceneAssetCharacter.cpp`,
@@ -555,7 +594,7 @@ CTest currently registers:
 | `alkanzar_app_mode_tests` | Mode capabilities/transitions, selection isolation, CLI launch mode and deterministic test scene. |
 | `alkanzar_content_file_header_tests` | Fixed 10-byte content-header encoding, decoding and validation. |
 | `alkanzar_scene_asset_tests` | Restricted SCN parsing, controller/party validation and staged default-scene loading. |
-| `alkanzar_party_order_tests` | Controlled-member physics defaults, physical movement authority, local avoidance, navmesh recovery, formation layout and group requests. |
+| `alkanzar_party_order_tests` | Controlled-member physics defaults, physical movement authority, local avoidance, smoothed heading, stable default-scene wall turns, formation layout and group requests. |
 | `alkanzar_architecture_layers` | Forbidden dependency scan. |
 | `alkanzar_src_file_length` | Strict `< 500` line limit for owned source files. |
 
@@ -627,7 +666,7 @@ captures can be exported from the profiler UI for Perfetto analysis.
 | Gameplay marquee selection issue | `ApplicationPartySelection.cpp`, `PartySelectionSystem.*` | `PartySelectionModel.hpp`, `FramePartySelectionMarquee`, `SceneOverlayMarquee.cpp` |
 | Group click-to-move/formation issue | `ApplicationPartySelection.cpp`, `PartyOrderSystem.*` | `NavigationAgentProjection.cpp`, request/result and formation tests |
 | Controlled member missing collision | `NavigationAssetLifecycle.cpp`, `syncCharacterAgentControl()` | controller/party state, physics and nav-agent descriptors |
-| Agent jitters or leaves navmesh after collision | `NavigationAgentMotion.cpp`, `NavigationAgentRecovery.cpp` | local avoidance, physics contacts, clearance profile and party-order tests |
+| Agent stalls, snaps, jitters or leaves navmesh near a wall | `NavigationAgentMotion.cpp`, `NavigationAgentSupport.cpp`, `NavigationAgentRecovery.cpp` | tangent-corner advancement, collider orientation policy, pose rollback, replan counters and navigation tests |
 | Single-agent path issue | `Navigation.hpp`, request/result files | hit-test, Polyanya/corridor/funnel files |
 | Navmesh bake issue | `NavigationBakeSources.cpp`, `NavigationGenerator.cpp` | Delaunay/cell/coverage files and editor UI |
 | Scene syntax/load issue | `SceneAsset.cpp`, `assets/scenes/DefaultScene.scene` | field parser files, `SceneRegistry.cpp`, scene-asset tests |

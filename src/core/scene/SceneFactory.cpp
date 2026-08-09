@@ -424,6 +424,18 @@ bool SceneFactory::buildScene(
         }
     }
 
+    if (blueprint.directionalLight.has_value()) {
+        const DirectionalLightBlueprint& lightBlueprint = *blueprint.directionalLight;
+        const EntityId entity = world.createEntity();
+        world.names.emplace(entity, NameComponent{lightBlueprint.name});
+        world.directionalLights.emplace(entity, DirectionalLightComponent{
+            lightBlueprint.direction,
+            lightBlueprint.color,
+            lightBlueprint.intensity
+        });
+        world.markLightsDirty(entity);
+    }
+
     for (const PointLightBlueprint& lightBlueprint : blueprint.pointLights) {
         const EntityId entity = world.createEntity();
         world.names.emplace(entity, NameComponent{lightBlueprint.name});

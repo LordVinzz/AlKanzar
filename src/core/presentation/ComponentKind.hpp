@@ -17,6 +17,7 @@ enum class ComponentKind {
     Locomotion,
     NavSource,
     Character,
+    DirectionalLight,
 };
 
 }  // namespace core

@@ -99,6 +99,16 @@ glm::vec2 rotateLocalXZToPlanar(const glm::vec2& local, const glm::vec2& forward
     return right * local.x + safeForward * local.y;
 }
 
+glm::vec2 clearanceOrientationForward(
+    const AgentClearanceProfile& profile,
+    const glm::vec2& requestedForward
+) {
+    if (!profile.rotatesWithEntity) {
+        return glm::vec2(0.0f, 1.0f);
+    }
+    return normalizeOrFallback(requestedForward);
+}
+
 float supportDistance(
     const AgentClearanceProfile& profile,
     const glm::vec2& sampleDirection,
@@ -109,14 +119,23 @@ float supportDistance(
     }
 
     const glm::vec2 direction = normalizeOrFallback(sampleDirection);
+    const glm::vec2 forward = clearanceOrientationForward(
+        profile,
+        travelDirection
+    );
     if (profile.shape == AgentClearanceShape::Sphere) {
-        const glm::vec2 center = rotateLocalXZToPlanar(profile.centerXZ, travelDirection);
+        const glm::vec2 center = rotateLocalXZToPlanar(
+            profile.centerXZ,
+            forward
+        );
         return std::abs(glm::dot(direction, center)) + profile.sphereRadius;
     }
 
-    const glm::vec2 forward = normalizeOrFallback(travelDirection);
     const glm::vec2 right(forward.y, -forward.x);
-    const glm::vec2 center = rotateLocalXZToPlanar(profile.centerXZ, travelDirection);
+    const glm::vec2 center = rotateLocalXZToPlanar(
+        profile.centerXZ,
+        forward
+    );
     return std::abs(glm::dot(direction, center)) +
         std::abs(glm::dot(direction, right)) * profile.boxHalfExtentsXZ.x +
         std::abs(glm::dot(direction, forward)) * profile.boxHalfExtentsXZ.y;

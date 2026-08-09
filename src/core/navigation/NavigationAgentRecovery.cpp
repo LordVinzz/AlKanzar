@@ -1,5 +1,7 @@
 #include "core/navigation/Navigation.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <optional>
 #include <utility>
 
@@ -13,6 +15,11 @@
 namespace core {
 namespace {
 
+constexpr float kDegreesToRadians = 0.017453292519943295f;
+constexpr float kInitialRecoveryRetrySeconds = 0.25f;
+constexpr float kMaximumRecoveryRetrySeconds = 2.0f;
+constexpr std::uint8_t kMaximumRecoveryReplanAttempts = 4u;
+
 void stopPhysicsMotor(
     World& world,
     EntityId entity,
@@ -24,11 +31,42 @@ void stopPhysicsMotor(
     }
 }
 
+glm::vec2 headingDirection(float yawDegrees) {
+    const float yawRadians = yawDegrees * kDegreesToRadians;
+    return glm::vec2(std::sin(yawRadians), std::cos(yawRadians));
+}
+
+float recoveryRetryDelay(std::uint8_t attempt) {
+    float delay = kInitialRecoveryRetrySeconds;
+    for (std::uint8_t index = 1u; index < attempt; ++index) {
+        delay = std::min(delay * 2.0f, kMaximumRecoveryRetrySeconds);
+    }
+    return delay;
+}
+
+void beginRecoveryReplan(
+    World& world,
+    EntityId entity,
+    NavAgentComponent& agent
+) {
+    agent.pathCorners.clear();
+    agent.moving = false;
+    agent.traversingLink = false;
+    stopPhysicsMotor(world, entity, agent);
+    if (agent.recoveryReplanActive) {
+        return;
+    }
+    agent.recoveryReplanActive = true;
+    agent.recoveryReplanRetrySeconds = 0.0f;
+    agent.recoveryReplanAttempts = 0u;
+}
+
 }  // namespace
 
 void NavigationSystem::reconcileAgentsAfterPhysics(
     World& world,
     const NavigationRuntime& runtime,
+    const TimeContext& time,
     TaskScheduler& scheduler
 ) const {
     const std::shared_ptr<const NavigationSolveSnapshot> snapshot =
@@ -44,10 +82,18 @@ void NavigationSystem::reconcileAgentsAfterPhysics(
 
     for (EntityId entity : world.navAgents.entities()) {
         NavAgentComponent& agent = world.navAgents.get(entity);
+        if (agent.recoveryReplanActive) {
+            agent.recoveryReplanRetrySeconds = std::max(
+                0.0f,
+                agent.recoveryReplanRetrySeconds - time.deltaSeconds
+            );
+        }
         if (!agent.physicsStepStart.has_value()) {
             continue;
         }
         const glm::vec3 stepStart = *agent.physicsStepStart;
+        const glm::vec3 stepStartRotation =
+            agent.physicsStepStartRotationDeg;
         agent.physicsStepStart.reset();
 
         TransformComponent* transform = world.transforms.tryGet(entity);
@@ -67,19 +113,64 @@ void NavigationSystem::reconcileAgentsAfterPhysics(
                 agent
             );
         const glm::vec2 travelDirection =
-            navigation_detail::travelDirectionForSegment(
-                stepStart,
-                stepStart + agent.desiredVelocity
-            );
+            headingDirection(transform->rotationDeg.y);
         if (!navigation_detail::pointInsideAuthoredWalkableSurfaceWithClearance(
                 solveView,
                 transform->position,
                 clearance,
                 travelDirection)) {
             transform->position = stepStart;
-            stopPhysicsMotor(world, entity, agent);
+            transform->rotationDeg = stepStartRotation;
             world.markTransformsDirty(entity);
             ++boundaryRecoveries_;
+            if (agent.destination.has_value()) {
+                beginRecoveryReplan(world, entity, agent);
+            } else {
+                stopPhysicsMotor(world, entity, agent);
+            }
+        }
+
+        const auto attemptRecoveryReplan = [&]() {
+            if (!agent.recoveryReplanActive) {
+                return;
+            }
+            if (!agent.destination.has_value()) {
+                agent.recoveryReplanActive = false;
+                agent.recoveryReplanRetrySeconds = 0.0f;
+                agent.recoveryReplanAttempts = 0u;
+                return;
+            }
+            if (pendingPathRequests_.contains(entity) ||
+                agent.recoveryReplanRetrySeconds > 0.0f) {
+                return;
+            }
+            if (agent.recoveryReplanAttempts >=
+                kMaximumRecoveryReplanAttempts) {
+                agent.destination.reset();
+                agent.recoveryReplanActive = false;
+                agent.recoveryReplanRetrySeconds = 0.0f;
+                agent.recoveryReplanAttempts = 0u;
+                ++abandonedRecoveryReplans_;
+                return;
+            }
+
+            ++agent.recoveryReplanAttempts;
+            agent.recoveryReplanRetrySeconds = recoveryRetryDelay(
+                agent.recoveryReplanAttempts
+            );
+            if (requestAgentDestinationInternal(
+                    world,
+                    runtime,
+                    scheduler,
+                    entity,
+                    *agent.destination,
+                    true)) {
+                ++collisionReplans_;
+            }
+        };
+        if (agent.recoveryReplanActive) {
+            attemptRecoveryReplan();
+            continue;
         }
 
         if (!agent.moving || agent.pathCorners.empty()) {
@@ -111,24 +202,13 @@ void NavigationSystem::reconcileAgentsAfterPhysics(
         }
 
         const std::optional<glm::vec3> destination = agent.destination;
-        agent.pathCorners.clear();
-        agent.moving = false;
-        agent.traversingLink = false;
-        stopPhysicsMotor(world, entity, agent);
-        if (!destination.has_value() ||
-            pendingPathRequests_.contains(entity)) {
+        beginRecoveryReplan(world, entity, agent);
+        if (!destination.has_value()) {
+            agent.recoveryReplanActive = false;
             continue;
         }
-        if (requestAgentDestination(
-                world,
-                runtime,
-                scheduler,
-                entity,
-                *destination)) {
-            ++collisionReplans_;
-        } else {
-            agent.destination.reset();
-        }
+        agent.destination = destination;
+        attemptRecoveryReplan();
     }
 }
 

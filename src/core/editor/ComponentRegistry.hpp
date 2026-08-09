@@ -40,6 +40,7 @@ public:
     ) const;
 
 private:
+    void registerDirectionalLightDescriptor();
     void registerCharacterDescriptor();
     std::vector<ComponentDescriptor> descriptors_;
 };

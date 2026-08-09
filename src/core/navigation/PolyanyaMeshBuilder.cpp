@@ -93,6 +93,7 @@ std::shared_ptr<const PolyanyaMesh> buildPolyanyaMesh(
         double parameter{0.0};
         polyanya::Point point{0.0, 0.0};
         bool canonicalPortal{false};
+        bool sourceEndpoint{false};
     };
     std::vector<std::vector<polyanya::Point>> splitCells(cells.size());
     for (std::size_t cellIndex = 0u; cellIndex < cells.size(); ++cellIndex) {
@@ -114,8 +115,8 @@ std::shared_ptr<const PolyanyaMesh> buildPolyanyaMesh(
             }
 
             std::vector<EdgeSplitPoint> splitPoints{
-                EdgeSplitPoint{0.0, a, false},
-                EdgeSplitPoint{1.0, b, false},
+                EdgeSplitPoint{0.0, a, false, true},
+                EdgeSplitPoint{1.0, b, false, true},
             };
             for (const polyanya::Point& portalPoint :
                  portalPointsByComponent[components[cellIndex]]) {
@@ -149,6 +150,7 @@ std::shared_ptr<const PolyanyaMesh> buildPolyanyaMesh(
                         segmentParameter(portalPoint, a, b), 0.0, 1.0),
                     portalPoint,
                     true,
+                    false,
                 });
             }
             std::sort(
@@ -167,9 +169,32 @@ std::shared_ptr<const PolyanyaMesh> buildPolyanyaMesh(
                         candidate.parameter -
                         mergedSplitPoints.back().parameter
                     ) * edgeLength <= kJunctionSnapEpsilon) {
+                    EdgeSplitPoint& merged = mergedSplitPoints.back();
+                    // Portal welding may replace an endpoint coordinate, but
+                    // it must never collapse both ends of a valid short edge.
+                    if (candidate.sourceEndpoint &&
+                        merged.sourceEndpoint) {
+                        mergedSplitPoints.push_back(candidate);
+                        continue;
+                    }
+                    if (candidate.sourceEndpoint) {
+                        if (!merged.canonicalPortal) {
+                            merged = candidate;
+                        }
+                        merged.sourceEndpoint = true;
+                        continue;
+                    }
+                    if (merged.sourceEndpoint) {
+                        if (candidate.canonicalPortal &&
+                            !merged.canonicalPortal) {
+                            merged = candidate;
+                            merged.sourceEndpoint = true;
+                        }
+                        continue;
+                    }
                     if (candidate.canonicalPortal &&
-                        !mergedSplitPoints.back().canonicalPortal) {
-                        mergedSplitPoints.back() = candidate;
+                        !merged.canonicalPortal) {
+                        merged = candidate;
                     }
                     continue;
                 }
@@ -191,7 +216,11 @@ std::shared_ptr<const PolyanyaMesh> buildPolyanyaMesh(
         if (split.size() < 3u || signedArea(split) <= kTopologyEpsilon) {
             std::ostringstream message;
             message << "Polyanya cell " << cellIndex
-                    << " is not a non-degenerate CCW polygon";
+                    << " is not a non-degenerate CCW polygon"
+                    << " (split vertices=" << split.size()
+                    << ", split area=" << signedArea(split)
+                    << ", source vertices=" << cell.verticesXZ.size()
+                    << ")";
             return fail(message.str());
         }
         if (!isConvexCounterClockwise(split)) {
@@ -371,20 +400,20 @@ std::shared_ptr<const PolyanyaMesh> buildPolyanyaMesh(
                     message << ")";
                     return fail(message.str());
                 }
-                graphContainsPortal(
+                static_cast<void>(graphContainsPortal(
                     graph,
                     lhs.cell,
                     rhs.cell,
                     midpoint,
                     &matchedPortals
-                );
-                graphContainsPortal(
+                ));
+                static_cast<void>(graphContainsPortal(
                     graph,
                     rhs.cell,
                     lhs.cell,
                     midpoint,
                     &matchedPortals
-                );
+                ));
                 result->mesh.mesh_polygons[lhs.cell]
                     .polygons[lhs.neighbourSlot] =
                         static_cast<int>(rhs.cell);

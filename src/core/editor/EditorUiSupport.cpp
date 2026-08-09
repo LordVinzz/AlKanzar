@@ -105,6 +105,8 @@ std::string editorHierarchyLabel(const EngineServices& services, EntityId entity
         label += " [";
         label += affiliationLabel(character->affiliation);
         label += "]";
+    } else if (services.world.directionalLights.contains(entity)) {
+        label += " [Directional Light]";
     } else if (services.world.pointLights.contains(entity)) {
         label += " [Point Light]";
     } else if (services.world.spotLights.contains(entity)) {

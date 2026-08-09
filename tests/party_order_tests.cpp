@@ -3,8 +3,12 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -90,6 +94,47 @@ core::NavigationRuntime makeOpenNavigationRuntime(core::NavigationSystem& naviga
     return runtime;
 }
 
+core::NavigationRuntime makeNarrowCorridorRuntime(
+    core::NavigationSystem& navigation
+) {
+    core::NavigationRuntime runtime{};
+    runtime.asset.polygons = {
+        core::NavPolygon{
+            1,
+            0.0f,
+            {
+                glm::vec2(-1.0f, -0.275f),
+                glm::vec2(6.0f, -0.275f),
+                glm::vec2(6.0f, 0.275f),
+                glm::vec2(-1.0f, 0.275f),
+            }
+        }
+    };
+    assert(navigation.rebuildRuntime(runtime));
+    return runtime;
+}
+
+core::NavigationRuntime makeDefaultSceneNavigationRuntime(
+    core::NavigationSystem& navigation
+) {
+    const std::filesystem::path assetPath =
+        std::filesystem::path(__FILE__).parent_path().parent_path() /
+        "assets/navmeshes/DefaultScene.navmesh";
+    std::ifstream input(assetPath, std::ios::binary);
+    assert(input.is_open());
+    const std::string serialized{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()
+    };
+    core::NavigationRuntime runtime{};
+    std::string error{};
+    assert(core::parseNavMeshAsset(serialized, runtime.asset, &error));
+    assert(error.empty());
+    assert(navigation.rebuildRuntime(runtime, &error));
+    assert(error.empty());
+    return runtime;
+}
+
 core::EntityId addPhysicsAgent(
     core::World& world,
     const glm::vec3& position
@@ -105,6 +150,7 @@ core::EntityId addPhysicsAgent(
     world.boxColliders.emplace(entity, core::BoxColliderComponent{
         glm::vec3(0.0f, 1.0f, 0.0f),
         glm::vec3(0.22f, 1.0f, 0.22f),
+        false,
         false,
         false
     });
@@ -142,6 +188,7 @@ void testControllableAgentGetsDefaultPhysicsAndColliderClearance() {
     assert(agent.clearanceSource == core::NavAgentClearanceSource::BoxCollider);
     assert(glm::distance(collider.halfExtents * 2.0f, glm::vec3(0.44f, 2.0f, 0.44f)) < 1.0e-6f);
     assert(glm::distance(collider.center, glm::vec3(0.0f, 1.0f, 0.0f)) < 1.0e-6f);
+    assert(!collider.rotatesWithEntity);
     assert(!rigidbody.isKinematic);
     assert(!rigidbody.useGravity);
 
@@ -195,13 +242,13 @@ void testPhysicsDrivenAgentUsesVelocityIntentAndReachesDestination() {
     assert(world.navAgents.get(entity).desiredVelocity.x > 0.0f);
 
     physics.update(world, time, scheduler, false);
-    navigation.reconcileAgentsAfterPhysics(world, runtime, scheduler);
+    navigation.reconcileAgentsAfterPhysics(world, runtime, time, scheduler);
     assert(world.transforms.get(entity).position.x > 0.0f);
 
     for (int step = 0; step < 20; ++step) {
         navigation.updateAgents(world, runtime, time);
         physics.update(world, time, scheduler, false);
-        navigation.reconcileAgentsAfterPhysics(world, runtime, scheduler);
+        navigation.reconcileAgentsAfterPhysics(world, runtime, time, scheduler);
     }
     const core::NavAgentComponent& agent = world.navAgents.get(entity);
     assert(!agent.moving);
@@ -253,14 +300,14 @@ void testLocalAvoidanceSteersHeadOnAgentsToOppositeSides() {
     ) >= 2);
 
     physics.update(world, time, scheduler, false);
-    navigation.reconcileAgentsAfterPhysics(world, runtime, scheduler);
+    navigation.reconcileAgentsAfterPhysics(world, runtime, time, scheduler);
     assert(world.transforms.get(left).position.z *
         world.transforms.get(right).position.z < 0.0f);
 
     for (int step = 0; step < 50; ++step) {
         navigation.updateAgents(world, runtime, time);
         physics.update(world, time, scheduler, false);
-        navigation.reconcileAgentsAfterPhysics(world, runtime, scheduler);
+        navigation.reconcileAgentsAfterPhysics(world, runtime, time, scheduler);
     }
     assert(!world.navAgents.get(left).moving);
     assert(!world.navAgents.get(right).moving);
@@ -273,18 +320,26 @@ void testPhysicsRecoveryKeepsAgentOnNavmeshAndReplansInvalidPath() {
     core::NavigationSystem navigation{};
     core::NavigationRuntime runtime = makeOpenNavigationRuntime(navigation);
     core::World world{};
+    const core::TimeContext time{0.0f, 0.1f};
     const core::EntityId entity = addPhysicsAgent(
         world,
         glm::vec3(9.6f, 0.0f, 0.0f)
     );
     core::NavAgentComponent& agent = world.navAgents.get(entity);
+    world.transforms.get(entity).rotationDeg.y = 37.0f;
     agent.physicsStepStart = world.transforms.get(entity).position;
+    agent.physicsStepStartRotationDeg =
+        world.transforms.get(entity).rotationDeg;
     agent.desiredVelocity = glm::vec3(2.0f, 0.0f, 0.0f);
     world.rigidbodies.get(entity).velocity = agent.desiredVelocity;
     world.transforms.get(entity).position.x = 9.9f;
+    world.transforms.get(entity).rotationDeg.y = 123.0f;
 
-    navigation.reconcileAgentsAfterPhysics(world, runtime, scheduler);
+    navigation.reconcileAgentsAfterPhysics(world, runtime, time, scheduler);
     assert(std::abs(world.transforms.get(entity).position.x - 9.6f) < 1.0e-6f);
+    assert(std::abs(
+        world.transforms.get(entity).rotationDeg.y - 37.0f
+    ) < 1.0e-6f);
     assert(glm::length(world.rigidbodies.get(entity).velocity) < 1.0e-6f);
     assert(navigationCounter(navigation, "Boundary Recoveries") == 1);
 
@@ -293,7 +348,7 @@ void testPhysicsRecoveryKeepsAgentOnNavmeshAndReplansInvalidPath() {
     agent.pathCorners = {glm::vec3(20.0f, 0.0f, 0.0f)};
     agent.destination = glm::vec3(5.0f, 0.0f, 0.0f);
     agent.moving = true;
-    navigation.reconcileAgentsAfterPhysics(world, runtime, scheduler);
+    navigation.reconcileAgentsAfterPhysics(world, runtime, time, scheduler);
     assert(!agent.moving);
     assert(agent.pathCorners.empty());
     assert(navigationCounter(navigation, "Collision Replans") == 1);
@@ -355,7 +410,7 @@ void testPhysicsDrivenAgentPreservesExplicitLinkTraversal() {
         traversedLink = traversedLink ||
             world.navAgents.get(entity).traversingLink;
         physics.update(world, time, scheduler, false);
-        navigation.reconcileAgentsAfterPhysics(world, runtime, scheduler);
+        navigation.reconcileAgentsAfterPhysics(world, runtime, time, scheduler);
     }
 
     const core::NavAgentComponent& agent = world.navAgents.get(entity);
@@ -367,6 +422,101 @@ void testPhysicsDrivenAgentPreservesExplicitLinkTraversal() {
         destination
     ) <= agent.arrivalRadius);
     assert(navigationCounter(navigation, "Boundary Recoveries") == 0);
+}
+
+void testWorldAlignedPlayerColliderDoesNotReplanWhileTurningNearWalls() {
+    core::TaskScheduler scheduler(core::TaskSchedulerConfig{2u});
+    core::NavigationSystem navigation{};
+    core::NavigationRuntime runtime = makeNarrowCorridorRuntime(navigation);
+    core::PhysicsSystem physics{};
+    core::World world{};
+    const glm::vec3 destination(5.0f, 0.0f, 0.0f);
+    const core::EntityId entity = addPhysicsAgent(
+        world,
+        glm::vec3(0.0f)
+    );
+    assert(!world.boxColliders.get(entity).rotatesWithEntity);
+    assert(navigation.setAgentDestination(
+        world,
+        runtime,
+        entity,
+        destination
+    ));
+
+    const core::TimeContext time{0.0f, 1.0f / 60.0f};
+    for (int step = 0; step < 600; ++step) {
+        navigation.updateAgents(world, runtime, time);
+        physics.update(world, time, scheduler, false);
+        navigation.reconcileAgentsAfterPhysics(
+            world,
+            runtime,
+            time,
+            scheduler
+        );
+        if (!world.navAgents.get(entity).destination.has_value()) {
+            break;
+        }
+    }
+
+    const core::NavAgentComponent& agent = world.navAgents.get(entity);
+    assert(!agent.moving);
+    assert(!agent.destination.has_value());
+    assert(glm::distance(
+        world.transforms.get(entity).position,
+        destination
+    ) <= agent.arrivalRadius);
+    assert(std::abs(world.transforms.get(entity).rotationDeg.y) > 45.0f);
+    assert(navigationCounter(navigation, "Boundary Recoveries") == 0);
+    assert(navigationCounter(navigation, "Collision Replans") == 0);
+}
+
+void testPhysicsDrivenAgentClearsDefaultSceneWallDetour() {
+    core::TaskScheduler scheduler(core::TaskSchedulerConfig{2u});
+    core::NavigationSystem navigation{};
+    core::NavigationRuntime runtime =
+        makeDefaultSceneNavigationRuntime(navigation);
+    core::PhysicsSystem physics{};
+    core::World world{};
+    const glm::vec3 start(-4.0f, 0.0f, 2.0f);
+    const glm::vec3 destination(-2.0f, 0.0f, 2.0f);
+    const core::EntityId entity = addPhysicsAgent(world, start);
+    assert(navigation.setAgentDestination(
+        world,
+        runtime,
+        entity,
+        destination
+    ));
+
+    const core::TimeContext time{0.0f, 1.0f / 60.0f};
+    for (int step = 0; step < 1200; ++step) {
+        navigation.applyCompletedPathRequests(world, runtime);
+        navigation.updateAgents(world, runtime, time);
+        physics.update(world, time, scheduler, false);
+        navigation.reconcileAgentsAfterPhysics(world, runtime, time, scheduler);
+        if (navigationCounter(
+                navigation,
+                "Pending Path Requests"
+            ) > 0) {
+            waitForPathRequests(navigation, world, runtime);
+        }
+        if (!world.navAgents.get(entity).destination.has_value()) {
+            break;
+        }
+    }
+
+    const core::NavAgentComponent& agent = world.navAgents.get(entity);
+    assert(!agent.moving);
+    assert(!agent.destination.has_value());
+    assert(glm::distance(
+        world.transforms.get(entity).position,
+        destination
+    ) <= agent.arrivalRadius);
+    assert(navigationCounter(navigation, "Boundary Recoveries") == 0);
+    assert(navigationCounter(navigation, "Collision Replans") == 0);
+    assert(navigationCounter(
+        navigation,
+        "Abandoned Recovery Replans"
+    ) == 0);
 }
 
 void testFormationSlotsStayCenteredDistinctAndBounded() {
@@ -502,6 +652,8 @@ int main() {
     testLocalAvoidanceSteersHeadOnAgentsToOppositeSides();
     testPhysicsRecoveryKeepsAgentOnNavmeshAndReplansInvalidPath();
     testPhysicsDrivenAgentPreservesExplicitLinkTraversal();
+    testWorldAlignedPlayerColliderDoesNotReplanWhileTurningNearWalls();
+    testPhysicsDrivenAgentClearsDefaultSceneWallDetour();
     testFormationSlotsStayCenteredDistinctAndBounded();
     testAgentDestinationProjectionStaysOnTheNavmesh();
     testGroupMoveRequestsWithoutSimulationStepAndReplacesStaleOrders();

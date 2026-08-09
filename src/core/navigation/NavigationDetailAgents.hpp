@@ -2,6 +2,11 @@
 
 namespace core::navigation_detail {
 
-bool shortestYawStep(float currentYaw, float desiredYaw, float maxStep, float& outYaw);
+[[nodiscard]] float interpolateYawShortestPath(
+    float currentYaw,
+    float desiredYaw,
+    float maxStep,
+    float interpolationAlpha
+);
 
 }  // namespace core::navigation_detail

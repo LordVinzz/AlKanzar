@@ -93,6 +93,26 @@ void RenderExtractionSystem::extract(
     bool useParallel
 ) const {
     outFrame.clear();
+    if (!world.directionalLights.entities().empty()) {
+        const auto lightEntityIt = std::min_element(
+            world.directionalLights.entities().begin(),
+            world.directionalLights.entities().end(),
+            [](EntityId lhs, EntityId rhs) {
+                return lhs.index < rhs.index;
+            }
+        );
+        const EntityId entity = *lightEntityIt;
+        const DirectionalLightComponent& light = world.directionalLights.get(entity);
+        const float directionLength = glm::length(light.direction);
+        outFrame.directionalLight = FrameDirectionalLight{
+            entity,
+            directionLength > 1.0e-6f
+                ? light.direction / directionLength
+                : glm::vec3(0.0f, -1.0f, 0.0f),
+            glm::max(light.color, glm::vec3(0.0f)),
+            std::max(light.intensity, 0.0f)
+        };
+    }
     std::vector<int> lightIndexByEntity(world.lightRuntime_.size(), -1);
     const auto renderableVisible = [&](EntityId entity) {
         const VisibilityComponent* visibility = world.visibilities.tryGet(entity);
@@ -365,7 +385,8 @@ void RenderExtractionSystem::extract(
     const EntityId selected = selectedTarget.entity;
     outFrame.selection.entity = selected;
     outFrame.selection.component = selectedTarget.component;
-    outFrame.selection.isLight = world.pointLights.contains(selected) || world.spotLights.contains(selected);
+    outFrame.selection.isLight = world.directionalLights.contains(selected) ||
+        world.pointLights.contains(selected) || world.spotLights.contains(selected);
     if (selected.index < world.transformCache_.size()) {
         outFrame.selection.worldBounds = world.transformCache_[selected.index].worldBounds;
         outFrame.selection.hasWorldBounds = world.transformCache_[selected.index].hasWorldBounds;

@@ -37,6 +37,13 @@ bool segmentMatchesRuntimeLink(
     const glm::vec3& to,
     float epsilon
 );
+bool canAdvancePathCorner(
+    const NavigationSolveView& runtime,
+    const glm::vec3& currentPosition,
+    const std::vector<glm::vec3>& corners,
+    float arrivalRadius,
+    const AgentClearanceProfile& profile
+);
 std::optional<SolvedPath> solvePathCorners(
     const NavigationSolveView& runtime,
     const glm::vec3& start,

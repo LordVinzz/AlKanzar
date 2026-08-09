@@ -187,6 +187,7 @@ public:
     void reconcileAgentsAfterPhysics(
         World& world,
         const NavigationRuntime& runtime,
+        const TimeContext& time,
         TaskScheduler& scheduler
     ) const;
     void syncFrame(const World& world, const NavigationRuntime& runtime, FrameSceneData& frame) const;
@@ -250,6 +251,14 @@ private:
 
     void discardPendingPathRequest(EntityId entity) const;
     void invalidatePendingPathRequests() const;
+    bool requestAgentDestinationInternal(
+        World& world,
+        const NavigationRuntime& runtime,
+        TaskScheduler& scheduler,
+        EntityId agentEntity,
+        const glm::vec3& destination,
+        bool orientationIndependent
+    ) const;
 
     ProfilerService* profiler_{nullptr};
     mutable std::unordered_map<EntityId, PendingPathRequest> pendingPathRequests_{};
@@ -260,6 +269,7 @@ private:
     mutable std::uint64_t localAvoidanceAdjustments_{0u};
     mutable std::uint64_t boundaryRecoveries_{0u};
     mutable std::uint64_t collisionReplans_{0u};
+    mutable std::uint64_t abandonedRecoveryReplans_{0u};
 };
 
 }  // namespace core

@@ -229,9 +229,13 @@ void ShadowSystem::updateDirectional(
     const glm::mat4 invView = glm::inverse(view);
     const std::array<glm::vec3, 8> corners = getFrustumCornersWorldSpace(proj, view);
 
-    const float clipRange = farPlane - nearPlane;
-    const float minZ = nearPlane;
-    const float maxZ = farPlane;
+    const float minZ = std::isfinite(nearPlane)
+        ? std::max(nearPlane, 1.0e-3f)
+        : 0.1f;
+    const float maxZ = std::isfinite(farPlane)
+        ? std::max(farPlane, minZ + 1.0e-3f)
+        : 100.0f;
+    const float clipRange = maxZ - minZ;
     const float range = maxZ - minZ;
     const float ratio = maxZ / minZ;
 
@@ -242,7 +246,7 @@ void ShadowSystem::updateDirectional(
         const float logSplit = minZ * std::pow(ratio, p);
         const float uniformSplit = minZ + range * p;
         const float split = dirSplitLambda_ * (logSplit - uniformSplit) + uniformSplit;
-        const float splitDist = (split - nearPlane) / clipRange;
+        const float splitDist = (split - minZ) / clipRange;
 
         std::array<glm::vec3, 8> cascadeCorners{};
         for (int c = 0; c < 4; ++c) {

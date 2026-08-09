@@ -90,6 +90,7 @@ SceneHierarchyData buildSceneHierarchy(const EngineServices& services) {
     collectEntities(world.navSources);
     collectEntities(world.animatedModels);
     collectEntities(world.skinnedRenderables);
+    collectEntities(world.directionalLights);
     collectEntities(world.pointLights);
     collectEntities(world.spotLights);
     collectEntities(world.characters);

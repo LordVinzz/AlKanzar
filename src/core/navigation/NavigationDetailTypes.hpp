@@ -201,6 +201,7 @@ struct AgentClearanceProfile {
     glm::vec2 centerXZ{0.0f};
     float sphereRadius{0.0f};
     glm::vec2 boxHalfExtentsXZ{0.0f};
+    bool rotatesWithEntity{true};
 
     [[nodiscard]] bool empty() const { return shape == AgentClearanceShape::None; }
 };

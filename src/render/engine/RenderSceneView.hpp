@@ -129,6 +129,7 @@ struct RenderNavigationView {
 
 struct RenderSceneView {
     std::vector<RenderSceneObjectView> objects{};
+    std::optional<core::FrameDirectionalLight> directionalLight{};
     std::vector<core::FrameLight> lights{};
     std::vector<core::FrameLightVolume> lightVolumes{};
     std::vector<RenderColliderDebugView> colliderDebug{};

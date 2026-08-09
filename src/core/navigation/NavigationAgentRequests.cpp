@@ -1,4 +1,5 @@
 #include "core/navigation/Navigation.hpp"
+#include "core/navigation/NavigationDetailClearance.hpp"
 #include "core/navigation/NavigationDetailGeometry.hpp"
 #include "core/navigation/NavigationDetailPath.hpp"
 
@@ -56,6 +57,29 @@ bool NavigationSystem::requestAgentDestination(
     EntityId agentEntity,
     const glm::vec3& destination
 ) const {
+    if (NavAgentComponent* agent = world.navAgents.tryGet(agentEntity)) {
+        agent->recoveryReplanActive = false;
+        agent->recoveryReplanRetrySeconds = 0.0f;
+        agent->recoveryReplanAttempts = 0u;
+    }
+    return requestAgentDestinationInternal(
+        world,
+        runtime,
+        scheduler,
+        agentEntity,
+        destination,
+        false
+    );
+}
+
+bool NavigationSystem::requestAgentDestinationInternal(
+    World& world,
+    const NavigationRuntime& runtime,
+    TaskScheduler& scheduler,
+    EntityId agentEntity,
+    const glm::vec3& destination,
+    bool orientationIndependent
+) const {
     NavAgentComponent* agent = world.navAgents.tryGet(agentEntity);
     TransformComponent* transform = world.transforms.tryGet(agentEntity);
     const std::shared_ptr<const NavigationSolveSnapshot> snapshot = runtime.solveSnapshot;
@@ -65,7 +89,11 @@ bool NavigationSystem::requestAgentDestination(
 
     const glm::vec3 startPosition = transform->position;
     const float arrivalRadius = agent->arrivalRadius;
-    const AgentClearanceProfile clearanceProfile = resolveAgentClearanceProfile(world, agentEntity, *agent);
+    AgentClearanceProfile clearanceProfile =
+        resolveAgentClearanceProfile(world, agentEntity, *agent);
+    if (orientationIndependent) {
+        clearanceProfile = orientationIndependentClearance(clearanceProfile);
+    }
     const std::uint64_t requestId = nextPathRequestId_++;
     const std::uint64_t solveRevision = runtime.solveRevision;
     std::shared_ptr<PendingPathProgress> progress = std::make_shared<PendingPathProgress>();

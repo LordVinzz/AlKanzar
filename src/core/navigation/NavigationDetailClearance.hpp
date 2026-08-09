@@ -14,6 +14,9 @@ glm::vec2 travelDirectionForSegment(
     const glm::vec2& fallback = glm::vec2(0.0f, 1.0f)
 );
 float conservativeClearanceRadius(const AgentClearanceProfile& profile);
+AgentClearanceProfile orientationIndependentClearance(
+    const AgentClearanceProfile& profile
+);
 AgentClearanceProfile headingIndependentNodeClearance(const AgentClearanceProfile& profile);
 std::optional<SharedPortalResult> shrinkPortal(
     const glm::vec2& a,

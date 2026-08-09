@@ -10,6 +10,16 @@
 #include "core/app/EngineServices.hpp"
 
 namespace core {
+namespace {
+
+bool isLightComponent(ComponentKind kind) {
+    return kind == ComponentKind::DirectionalLight ||
+        kind == ComponentKind::PointLight ||
+        kind == ComponentKind::SpotLight ||
+        kind == ComponentKind::LightVolume;
+}
+
+}  // namespace
 
 const ComponentDescriptor* ComponentRegistry::find(ComponentKind kind) const {
     const auto it = std::find_if(descriptors_.begin(), descriptors_.end(), [&](const ComponentDescriptor& descriptor) {
@@ -29,6 +39,10 @@ void ComponentRegistry::drawAddComponentButton(EngineServices& services, EntityI
             if (descriptor.hasComponent(services.world, entity)) {
                 continue;
             }
+            if (descriptor.kind == ComponentKind::DirectionalLight &&
+                !services.world.directionalLights.entities().empty()) {
+                continue;
+            }
 
             if (descriptor.category != currentCategory) {
                 if (!currentCategory.empty()) {
@@ -40,9 +54,7 @@ void ComponentRegistry::drawAddComponentButton(EngineServices& services, EntityI
 
             if (ImGui::Selectable(descriptor.name.c_str())) {
                 descriptor.addComponent(services.world, entity);
-                if (descriptor.kind == ComponentKind::PointLight ||
-                    descriptor.kind == ComponentKind::SpotLight ||
-                    descriptor.kind == ComponentKind::LightVolume) {
+                if (isLightComponent(descriptor.kind)) {
                     notifyLightChanged(services, entity);
                 }
                 if (descriptor.kind == ComponentKind::Transform) {
@@ -84,9 +96,7 @@ void ComponentRegistry::drawComponentTabs(
 
         if (!open) {
             descriptor.removeComponent(services.world, entity);
-            if (descriptor.kind == ComponentKind::PointLight ||
-                descriptor.kind == ComponentKind::SpotLight ||
-                descriptor.kind == ComponentKind::LightVolume) {
+            if (isLightComponent(descriptor.kind)) {
                 notifyLightChanged(services, entity);
             }
             if (descriptor.kind == ComponentKind::Transform) {

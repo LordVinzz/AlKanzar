@@ -23,10 +23,13 @@ bool boxSweepInsideWalkableSurface(
         return false;
     }
 
-    const glm::vec2 forward = travelDirectionForSegment(
-        from,
-        to,
-        preferredTravelDirection
+    const glm::vec2 forward = clearanceOrientationForward(
+        profile,
+        travelDirectionForSegment(
+            from,
+            to,
+            preferredTravelDirection
+        )
     );
     const glm::vec2 right(forward.y, -forward.x);
     const glm::vec2 centerOffset =
@@ -35,14 +38,16 @@ bool boxSweepInsideWalkableSurface(
     const glm::vec2 endCenter(to.x, to.z);
     const glm::vec2 lateral = right * profile.boxHalfExtentsXZ.x;
     const glm::vec2 longitudinal = forward * profile.boxHalfExtentsXZ.y;
-    const glm::vec2 back = startCenter + centerOffset - longitudinal;
-    const glm::vec2 front = endCenter + centerOffset + longitudinal;
-    const std::vector<glm::vec2> swept{
-        back + lateral,
-        front + lateral,
-        front - lateral,
-        back - lateral,
-    };
+    const std::vector<glm::vec2> swept = buildConvexHull({
+        startCenter + centerOffset + lateral + longitudinal,
+        startCenter + centerOffset + lateral - longitudinal,
+        startCenter + centerOffset - lateral + longitudinal,
+        startCenter + centerOffset - lateral - longitudinal,
+        endCenter + centerOffset + lateral + longitudinal,
+        endCenter + centerOffset + lateral - longitudinal,
+        endCenter + centerOffset - lateral + longitudinal,
+        endCenter + centerOffset - lateral - longitudinal,
+    });
     for (std::size_t edgeIndex = 0u;
          edgeIndex < swept.size();
          ++edgeIndex) {

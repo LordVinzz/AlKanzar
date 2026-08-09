@@ -4,8 +4,48 @@
 #include <string_view>
 #include <utility>
 
+#include <glm/geometric.hpp>
+
 namespace core::scene_asset_detail {
 namespace {
+
+bool parseDirectionalLight(
+    lua_State* state,
+    int parametersIndex,
+    SceneBlueprint& blueprint,
+    std::string* error,
+    std::string_view path
+) {
+    if (!validateStringFields(
+            state,
+            parametersIndex,
+            {"type", "name", "direction", "color", "intensity"},
+            error,
+            path)) {
+        return false;
+    }
+    if (blueprint.directionalLight.has_value()) {
+        return fail(error, path, "a scene may contain only one DirectionalLight");
+    }
+
+    DirectionalLightBlueprint light{};
+    if (!readStringField(state, parametersIndex, "name", light.name, true, error, path) ||
+        !readVec3Field(state, parametersIndex, "direction", light.direction, true, error, path) ||
+        !readVec3Field(state, parametersIndex, "color", light.color, false, error, path) ||
+        !readFloatField(state, parametersIndex, "intensity", light.intensity, false, error, path)) {
+        return false;
+    }
+
+    const float directionLength = glm::length(light.direction);
+    if (light.name.empty() || directionLength <= 1.0e-6f ||
+        light.color.x < 0.0f || light.color.y < 0.0f || light.color.z < 0.0f ||
+        light.intensity < 0.0f) {
+        return fail(error, path, "directional-light name, direction, color or intensity is invalid");
+    }
+    light.direction /= directionLength;
+    blueprint.directionalLight = std::move(light);
+    return true;
+}
 
 bool parseLightVolume(
     lua_State* state,
@@ -135,6 +175,9 @@ bool parseLightObject(
     std::string* error,
     std::string_view path
 ) {
+    if (type == "DirectionalLight") {
+        return parseDirectionalLight(state, parametersIndex, blueprint, error, path);
+    }
     if (type == "LightVolume") {
         return parseLightVolume(state, objectIndex, parametersIndex, blueprint, error, path);
     }

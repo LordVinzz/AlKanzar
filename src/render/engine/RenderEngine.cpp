@@ -115,8 +115,7 @@ namespace render {
 RenderEngine::RenderEngine(int width, int height, std::string title)
     : width_(width),
       height_(height),
-      title_(std::move(title)),
-      directionalLightDirection_(glm::normalize(glm::vec3(-0.3f, -1.0f, -0.4f))) {}
+      title_(std::move(title)) {}
 
 RenderEngine::~RenderEngine() {
     shutdownImGui();
@@ -437,6 +436,9 @@ void RenderEngine::renderFrame(
     }
     cleanupOcclusionStates();
 
+    const core::FrameDirectionalLight* directionalLight = sceneView_.directionalLight.has_value()
+        ? &*sceneView_.directionalLight
+        : nullptr;
     const RenderPathContext context{
         width_,
         height_,
@@ -452,9 +454,9 @@ void RenderEngine::renderFrame(
         shadowSystem_,
         jointMatrixTexture_,
         profiler_,
-        directionalLightDirection_,
-        directionalLightColor_,
-        directionalLightIntensity_,
+        directionalLight != nullptr ? directionalLight->direction : glm::vec3(0.0f, -1.0f, 0.0f),
+        directionalLight != nullptr ? directionalLight->color : glm::vec3(0.0f),
+        directionalLight != nullptr ? directionalLight->intensity : 0.0f,
     };
     if (profiler_) {
         {

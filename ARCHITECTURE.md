@@ -93,6 +93,14 @@ player.character({
     -- race, kit, abilities, skills and vitals omitted here
 })
 scene.add(player)
+sun = Create({
+    type = "DirectionalLight",
+    name = "Sun",
+    direction = { x = -0.35, y = -1, z = -0.25 },
+    color = { x = 1, y = 0.93, z = 0.82 },
+    intensity = 3,
+})
+scene.add(sun)
 scene.build()
 ```
 
@@ -100,6 +108,20 @@ scene.build()
 créés doivent être passés une seule fois à `scene.add`. Le chargeur transforme
 ensuite les tables validées en `SceneBlueprint`; le Lua ne manipule jamais le
 monde ECS ou le renderer.
+
+Une scène peut déclarer au plus un `DirectionalLight`. Sa direction non nulle,
+sa couleur et son intensité positives ou nulles sont validées au chargement,
+puis la direction est normalisée dans le blueprint. `SceneFactory` crée le
+composant ECS technique ; `RenderExtractionSystem` le copie dans l'unique
+`FrameDirectionalLight` du snapshot et les rendus direct et différé consomment
+ce snapshot. La lumière directionnelle ne rejoint pas les listes de lumières
+locales ou leurs volumes. Son descripteur éditeur applique les mêmes invariants
+et publie une modification de lumière pour chaque édition annulable.
+
+`CameraMatrices` transporte aussi les plans near/far ayant servi à construire
+la projection. Les cascades d'ombre directionnelles utilisent ces valeurs et
+bornent défensivement le near plane au-dessus de zéro : un near nul rendrait le
+découpage logarithmique non fini et annulerait l'éclairage solaire différé.
 
 Le runtime Lua est volontairement restreint : chargement de chunks texte
 uniquement, aucune bibliothèque standard IO/OS/package/debug, plafond mémoire
@@ -151,9 +173,12 @@ la reprise.
 Lorsqu'un membre devient actif et contrôlé par le joueur,
 `NavigationSystem::syncCharacterAgentControl` lui ajoute, s'ils sont absents,
 un rigidbody dynamique sans gravité et un box collider de dimensions complètes
-`0.44 × 2.0 × 0.44`, centré à mi-hauteur. Le nouvel agent utilise ce collider
-comme source de dégagement pour ses requêtes de chemin. Une nouvelle
-synchronisation conserve les composants et réglages déjà présents.
+`0.44 × 2.0 × 0.44`, centré à mi-hauteur et aligné aux axes du monde. Le
+nouvel agent utilise ce collider comme source de dégagement pour ses requêtes
+de chemin. Une nouvelle synchronisation conserve les composants et réglages
+déjà présents. Les autres box colliders continuent par défaut de suivre la
+rotation de leur entité ; `BoxColliderComponent::rotatesWithEntity` rend ce
+choix explicite et éditable.
 
 Pour un agent doté d'un rigidbody dynamique, la navigation ne translate plus
 directement son transform. `NavigationAgentMotion` calcule une
@@ -163,9 +188,32 @@ intègre le mouvement et résout les contacts en supprimant la vitesse normale
 tout en conservant le glissement tangentiel. Les agents dépourvus de corps
 physique gardent leur déplacement direct historique.
 
+Le cap visible ne saute pas directement vers chaque nouveau segment ou chaque
+correction d'évitement. Il interpole le chemin angulaire le plus court à pas
+fixe, sous la limite de `turnSpeedDeg`. La vitesse de translation est pondérée
+par l'alignement courant : un agent tourne presque sur place lors d'un virage
+fort, puis retrouve progressivement sa vitesse. La récupération valide le box
+collider avec la politique d'orientation du composant. Le collider joueur par
+défaut ne reçoit donc pas le yaw visuel : sa boîte physique, son empreinte de
+dégagement navmesh et sa matrice de debug restent toutes alignées au monde.
+Un collider rotatif conserve le comportement orienté et emploie le cap
+réellement appliqué, jamais la direction cible encore à atteindre.
+
+Le rayon d'arrivée ne suffit pas à consommer un point tangent intermédiaire.
+Pour un agent mû par la physique, le sweep de son empreinte complète depuis la
+position courante jusqu'au point suivant doit également rester dans la surface
+marchable. `NavigationAgentMotion` et le trimming post-physique partagent ce
+même prédicat ; l'agent rejoint donc réellement le coin avant de tourner au
+lieu de couper brièvement l'obstacle puis de déclencher un recalcul.
+
 Après la physique, `NavigationAgentRecovery` vérifie le résultat contre le
 snapshot de navmesh. Une correction qui sortirait le collider de la surface
-est annulée vers la position précédant le pas. Les traversées de liens restent
-autorisées hors des surfaces planes. Si une collision déplace l'agent vers une
-position encore valide mais qui ne rejoint plus son chemin, l'agent s'arrête
-et demande un nouveau calcul asynchrone vers sa destination.
+est annulée vers la pose complète précédant le pas : position et orientation
+sont restaurées ensemble. Les traversées de liens restent autorisées hors des
+surfaces planes. Si une collision au coin d'un obstacle rend le chemin
+inexécutable, l'agent s'arrête et demande un nouveau calcul asynchrone vers sa
+destination. Le recalcul conserve exactement une empreinte déjà alignée au
+monde ; une empreinte rotative est convertie en dégagement conservateur
+indépendant de l'orientation. Les échecs transitoires sont réessayés avec
+temporisation croissante et un nombre maximal de tentatives afin d'éviter une
+boucle de requêtes permanente.

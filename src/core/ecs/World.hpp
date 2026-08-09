@@ -42,6 +42,7 @@ public:
         boxColliders.remove(entity);
         sphereColliders.remove(entity);
         rigidbodies.remove(entity);
+        directionalLights.remove(entity);
         pointLights.remove(entity);
         spotLights.remove(entity);
         characters.remove(entity);
@@ -84,6 +85,7 @@ public:
         boxColliders.clear();
         sphereColliders.clear();
         rigidbodies.clear();
+        directionalLights.clear();
         pointLights.clear();
         spotLights.clear();
         characters.clear();
@@ -249,6 +251,7 @@ public:
     ComponentStore<BoxColliderComponent> boxColliders{};
     ComponentStore<SphereColliderComponent> sphereColliders{};
     ComponentStore<RigidbodyComponent> rigidbodies{};
+    ComponentStore<DirectionalLightComponent> directionalLights{};
     ComponentStore<PointLightComponent> pointLights{};
     ComponentStore<SpotLightComponent> spotLights{};
     ComponentStore<CharacterComponent> characters{};

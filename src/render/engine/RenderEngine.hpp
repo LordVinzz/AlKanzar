@@ -126,10 +126,6 @@ private:
     std::unordered_map<core::EntityId, OcclusionQueryState> occlusionQueryStates_{};
     std::vector<GLuint> freeOcclusionQueries_{};
     std::uint64_t renderFrameNumber_{0};
-
-    glm::vec3 directionalLightDirection_{0.0f, -1.0f, 0.0f};
-    glm::vec3 directionalLightColor_{0.0f};
-    float directionalLightIntensity_{0.0f};
 };
 
 }  // namespace render

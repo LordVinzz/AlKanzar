@@ -14,6 +14,9 @@
 namespace core {
 namespace {
 
+constexpr float kDegreesToRadians = 0.017453292519943295f;
+constexpr float kHeadingInterpolationRate = 12.0f;
+
 bool usesPhysicsMotor(const World& world, EntityId entity) {
     const RigidbodyComponent* rigidbody = world.rigidbodies.tryGet(entity);
     return rigidbody != nullptr && !rigidbody->isKinematic &&
@@ -54,9 +57,29 @@ void requestWalkAnimation(
     animation->speed = 1.0f;
 }
 
+float headingAlignmentScale(
+    const glm::vec3& velocity,
+    const TransformComponent& transform
+) {
+    const glm::vec2 planarVelocity(velocity.x, velocity.z);
+    const float planarSpeed = glm::length(planarVelocity);
+    if (planarSpeed <= navigation_detail::kPlaneEpsilon) {
+        return 1.0f;
+    }
+    const float yawRadians = transform.rotationDeg.y * kDegreesToRadians;
+    const glm::vec2 heading(
+        std::sin(yawRadians),
+        std::cos(yawRadians)
+    );
+    const float alignment = std::clamp(
+        glm::dot(heading, planarVelocity / planarSpeed),
+        0.0f,
+        1.0f
+    );
+    return alignment * alignment;
+}
+
 bool updateAgentHeading(
-    const World& world,
-    EntityId entity,
     const NavAgentComponent& agent,
     const glm::vec3& velocity,
     float deltaSeconds,
@@ -72,19 +95,46 @@ bool updateAgentHeading(
         std::atan2(planarDirection.x, planarDirection.y)
     );
     const float previousYaw = transform.rotationDeg.y;
-    const navigation_detail::AgentClearanceProfile clearance =
-        navigation_detail::resolveAgentClearanceProfile(world, entity, agent);
-    if (clearance.shape == navigation_detail::AgentClearanceShape::Box) {
-        transform.rotationDeg.y = desiredYaw;
-    } else {
-        navigation_detail::shortestYawStep(
+    const float safeDeltaSeconds = std::max(deltaSeconds, 0.0f);
+    const float interpolationAlpha = 1.0f - std::exp(
+        -kHeadingInterpolationRate * safeDeltaSeconds
+    );
+    transform.rotationDeg.y =
+        navigation_detail::interpolateYawShortestPath(
             transform.rotationDeg.y,
             desiredYaw,
-            agent.turnSpeedDeg * deltaSeconds,
-            transform.rotationDeg.y
+            agent.turnSpeedDeg * safeDeltaSeconds,
+            interpolationAlpha
         );
-    }
     return std::abs(transform.rotationDeg.y - previousYaw) > 1.0e-5f;
+}
+
+bool canAdvanceReachedCorner(
+    const World& world,
+    EntityId entity,
+    const NavAgentComponent& agent,
+    const TransformComponent& transform,
+    const navigation_detail::NavigationSolveView& solveView,
+    bool physicsDriven
+) {
+    if (!physicsDriven) {
+        return !agent.pathCorners.empty() &&
+            glm::distance(
+                transform.position,
+                agent.pathCorners.front()
+            ) <= agent.arrivalRadius;
+    }
+    return navigation_detail::canAdvancePathCorner(
+        solveView,
+        transform.position,
+        agent.pathCorners,
+        agent.arrivalRadius,
+        navigation_detail::resolveAgentClearanceProfile(
+            world,
+            entity,
+            agent
+        )
+    );
 }
 
 }  // namespace
@@ -109,6 +159,7 @@ void NavigationSystem::updateAgents(
         const bool physicsDriven = usesPhysicsMotor(world, entity);
         if (physicsDriven) {
             agent.physicsStepStart = transform->position;
+            agent.physicsStepStartRotationDeg = transform->rotationDeg;
         }
 
         AnimatedModelComponent* animation = world.animatedModels.tryGet(entity);
@@ -120,9 +171,13 @@ void NavigationSystem::updateAgents(
             continue;
         }
 
-        while (!agent.pathCorners.empty() &&
-               glm::distance(transform->position, agent.pathCorners.front()) <=
-                   agent.arrivalRadius) {
+        while (canAdvanceReachedCorner(
+                world,
+                entity,
+                agent,
+                *transform,
+                solveView,
+                physicsDriven)) {
             if (!physicsDriven) {
                 transform->position = agent.pathCorners.front();
                 world.markTransformsDirty(entity);
@@ -162,15 +217,14 @@ void NavigationSystem::updateAgents(
             agent.desiredVelocity = direction * speed;
         } else {
             if (updateAgentHeading(
-                    world,
-                    entity,
                     agent,
                     direction,
                     time.deltaSeconds,
                     *transform)) {
                 world.markTransformsDirty(entity);
             }
-            const float step = agent.moveSpeed * time.deltaSeconds;
+            const float step = agent.moveSpeed * time.deltaSeconds *
+                headingAlignmentScale(direction, *transform);
             if (step >= distance) {
                 transform->position = target;
                 agent.pathCorners.erase(agent.pathCorners.begin());
@@ -195,14 +249,18 @@ void NavigationSystem::updateAgents(
             continue;
         }
         TransformComponent* transform = world.transforms.tryGet(entity);
-        if (transform != nullptr && updateAgentHeading(
-                world,
-                entity,
-                agent,
+        if (transform != nullptr) {
+            if (updateAgentHeading(
+                    agent,
+                    agent.desiredVelocity,
+                    time.deltaSeconds,
+                    *transform)) {
+                world.markTransformsDirty(entity);
+            }
+            agent.desiredVelocity *= headingAlignmentScale(
                 agent.desiredVelocity,
-                time.deltaSeconds,
-                *transform)) {
-            world.markTransformsDirty(entity);
+                *transform
+            );
         }
     }
 }

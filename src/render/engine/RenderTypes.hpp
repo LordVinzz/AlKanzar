@@ -52,6 +52,8 @@ struct CameraMatrices {
     glm::mat4 projection{1.0f};
     glm::mat4 invProjection{1.0f};
     glm::mat4 view{1.0f};
+    float nearPlane{0.1f};
+    float farPlane{100.0f};
 };
 
 struct RenderFrameOptions {

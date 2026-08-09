@@ -95,6 +95,9 @@ void applyPathResult(NavAgentComponent& agent, const glm::vec3& destination, std
     agent.desiredVelocity = glm::vec3(0.0f);
     agent.physicsStepStart.reset();
     agent.traversingLink = false;
+    agent.recoveryReplanActive = false;
+    agent.recoveryReplanRetrySeconds = 0.0f;
+    agent.recoveryReplanAttempts = 0u;
 }
 
 void snapAgentToResolvedStart(

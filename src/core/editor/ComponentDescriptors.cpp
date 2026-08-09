@@ -162,6 +162,8 @@ ComponentRegistry::ComponentRegistry() {
         },
     });
 
+    registerDirectionalLightDescriptor();
+
     descriptors_.push_back(ComponentDescriptor{
         ComponentKind::LightVolume,
         "Light Volume",
@@ -276,6 +278,7 @@ ComponentRegistry::ComponentRegistry() {
             changed |= ImGui::DragFloat3("Center", glm::value_ptr(collider->center), 0.01f);
             changed |= ImGui::DragFloat3("Half Extents", glm::value_ptr(collider->halfExtents), 0.01f, 0.001f, 1000.0f);
             changed |= ImGui::Checkbox("Is Trigger", &collider->isTrigger);
+            changed |= ImGui::Checkbox("Rotate With Entity", &collider->rotatesWithEntity);
             changed |= ImGui::Checkbox("Show Collider", &collider->showDebug);
             return changed;
         },
@@ -389,6 +392,11 @@ ComponentRegistry::ComponentRegistry() {
                 agent->desiredVelocity.z
             );
             ImGui::Text("Traversing Link: %s", agent->traversingLink ? "yes" : "no");
+            ImGui::Text(
+                "Recovery Replan: %s (attempt %u)",
+                agent->recoveryReplanActive ? "yes" : "no",
+                static_cast<unsigned int>(agent->recoveryReplanAttempts)
+            );
             return changed;
         },
     });
