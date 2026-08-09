@@ -104,8 +104,10 @@ add_library(alkanzar_core STATIC
     src/core/editor/EditorUiTextureBrowser.cpp
     src/core/physics/PhysicsSystem.cpp
     src/core/navigation/Navigation.cpp
+    src/core/navigation/NavigationAgentAvoidance.cpp
     src/core/navigation/NavigationAgentMotion.cpp
     src/core/navigation/NavigationAgentProjection.cpp
+    src/core/navigation/NavigationAgentRecovery.cpp
     src/core/navigation/NavigationAgentRequests.cpp
     src/core/navigation/NavigationAgentResults.cpp
     src/core/navigation/NavigationAgentSupport.cpp

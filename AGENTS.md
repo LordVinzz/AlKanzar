@@ -22,6 +22,8 @@ Dear ImGui and CMake. It currently provides:
   limits and minimal formation-based group movement;
 - default gravity-free dynamic bodies and nav-bound box colliders for active
   player-controlled party members;
+- physics-driven nav-agent velocity, deterministic local avoidance and
+  post-collision navmesh recovery;
 - green, blue and red ground indicators for controlled party members,
   uncontrolled friendly NPCs and hostile NPCs respectively;
 - architecture, unit, integration and source-size checks through CTest.
@@ -212,8 +214,9 @@ The main frame is orchestrated in `Application::run()`:
 3. `SimulationClock` clamps unsafe frame deltas and fills a fixed-step
    accumulator.
 4. ImGui begins a new presentation frame and free-camera input is sampled.
-5. For every available fixed step, state, navigation, animation, physics,
-   transforms, lighting and frame extraction are updated.
+5. For every available fixed step, state, navigation intent, animation,
+   physics, navigation reconciliation, transforms, lighting and frame
+   extraction are updated.
 6. State UI is drawn once per rendered frame, not once per simulation tick.
 7. navigation debug data is synchronized into `FrameSceneData`.
 8. the renderer consumes the immutable frame snapshot, draws ImGui and
@@ -291,6 +294,12 @@ created nav agent uses that box as its clearance source. Treat these as
 missing-component defaults: never overwrite an existing collider, rigidbody or
 nav-agent clearance selection during synchronization.
 
+Dynamic rigidbody agents use `NavAgentComponent::desiredVelocity` as the
+contract between navigation and physics. Navigation owns path progress and
+heading; physics owns position integration and contact response; the recovery
+phase may only restore the pre-physics position when clearance would leave the
+navmesh. Agents without a usable dynamic body retain direct transform motion.
+
 ## 7. Rules workflow
 
 For a new or changed game rule:
@@ -364,7 +373,10 @@ must stay below 500 lines. Start at `Navigation.hpp` and route by concern:
 - async requests/results: `NavigationAgentRequests.cpp`,
   `NavigationAgentResults.cpp`;
 - per-agent destination projection: `NavigationAgentProjection.cpp`;
-- movement: `NavigationAgentMotion.cpp`;
+- movement intent and heading: `NavigationAgentMotion.cpp`;
+- local physical avoidance: `NavigationAgentAvoidance.cpp`;
+- post-physics navmesh containment and replanning:
+  `NavigationAgentRecovery.cpp`;
 - render/debug snapshot: `NavigationFrameSync.cpp`.
 
 Path workers operate on immutable `NavigationSolveSnapshot` data. They must not
@@ -543,7 +555,7 @@ CTest currently registers:
 | `alkanzar_app_mode_tests` | Mode capabilities/transitions, selection isolation, CLI launch mode and deterministic test scene. |
 | `alkanzar_content_file_header_tests` | Fixed 10-byte content-header encoding, decoding and validation. |
 | `alkanzar_scene_asset_tests` | Restricted SCN parsing, controller/party validation and staged default-scene loading. |
-| `alkanzar_party_order_tests` | Controlled-member physics defaults, six-member limit, formation layout, navmesh projection, group requests and stale-order replacement. |
+| `alkanzar_party_order_tests` | Controlled-member physics defaults, physical movement authority, local avoidance, navmesh recovery, formation layout and group requests. |
 | `alkanzar_architecture_layers` | Forbidden dependency scan. |
 | `alkanzar_src_file_length` | Strict `< 500` line limit for owned source files. |
 
@@ -615,6 +627,7 @@ captures can be exported from the profiler UI for Perfetto analysis.
 | Gameplay marquee selection issue | `ApplicationPartySelection.cpp`, `PartySelectionSystem.*` | `PartySelectionModel.hpp`, `FramePartySelectionMarquee`, `SceneOverlayMarquee.cpp` |
 | Group click-to-move/formation issue | `ApplicationPartySelection.cpp`, `PartyOrderSystem.*` | `NavigationAgentProjection.cpp`, request/result and formation tests |
 | Controlled member missing collision | `NavigationAssetLifecycle.cpp`, `syncCharacterAgentControl()` | controller/party state, physics and nav-agent descriptors |
+| Agent jitters or leaves navmesh after collision | `NavigationAgentMotion.cpp`, `NavigationAgentRecovery.cpp` | local avoidance, physics contacts, clearance profile and party-order tests |
 | Single-agent path issue | `Navigation.hpp`, request/result files | hit-test, Polyanya/corridor/funnel files |
 | Navmesh bake issue | `NavigationBakeSources.cpp`, `NavigationGenerator.cpp` | Delaunay/cell/coverage files and editor UI |
 | Scene syntax/load issue | `SceneAsset.cpp`, `assets/scenes/DefaultScene.scene` | field parser files, `SceneRegistry.cpp`, scene-asset tests |

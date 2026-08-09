@@ -114,6 +114,9 @@ struct NavAgentComponent {
     std::vector<glm::vec3> pathCorners{};
     std::optional<glm::vec3> destination{};
     bool moving{false};
+    glm::vec3 desiredVelocity{0.0f};
+    std::optional<glm::vec3> physicsStepStart{};
+    bool traversingLink{false};
 };
 
 struct LocomotionComponent {

@@ -251,6 +251,19 @@ void Application::run() {
                 services_.physicsSystem.update(services_.world, services_.time, services_.scheduler, true);
             }
 
+            if (capabilities.runs(AppRuntimeSystem::Navigation) &&
+                capabilities.runs(AppRuntimeSystem::Physics)) {
+                ALKANZAR_PROFILE_SCOPE(
+                    services_.profiler,
+                    "Navigation Physics Reconcile"
+                );
+                services_.navigationSystem.reconcileAgentsAfterPhysics(
+                    services_.world,
+                    services_.navigation,
+                    services_.scheduler
+                );
+            }
+
             if (capabilities.runs(AppRuntimeSystem::Transforms)) {
                 ALKANZAR_PROFILE_SCOPE(services_.profiler, "Transform Update");
                 if (diagnostics.shouldLogFrameStage(frameIndex)) {

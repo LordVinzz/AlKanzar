@@ -154,3 +154,18 @@ un rigidbody dynamique sans gravité et un box collider de dimensions complètes
 `0.44 × 2.0 × 0.44`, centré à mi-hauteur. Le nouvel agent utilise ce collider
 comme source de dégagement pour ses requêtes de chemin. Une nouvelle
 synchronisation conserve les composants et réglages déjà présents.
+
+Pour un agent doté d'un rigidbody dynamique, la navigation ne translate plus
+directement son transform. `NavigationAgentMotion` calcule une
+`desiredVelocity`, corrigée par un évitement local déterministe à partir d'un
+instantané des corps voisins. `PhysicsSystem` consomme ensuite cette intention,
+intègre le mouvement et résout les contacts en supprimant la vitesse normale
+tout en conservant le glissement tangentiel. Les agents dépourvus de corps
+physique gardent leur déplacement direct historique.
+
+Après la physique, `NavigationAgentRecovery` vérifie le résultat contre le
+snapshot de navmesh. Une correction qui sortirait le collider de la surface
+est annulée vers la position précédant le pas. Les traversées de liens restent
+autorisées hors des surfaces planes. Si une collision déplace l'agent vers une
+position encore valide mais qui ne rejoint plus son chemin, l'agent s'arrête
+et demande un nouveau calcul asynchrone vers sa destination.

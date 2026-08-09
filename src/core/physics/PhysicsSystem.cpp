@@ -317,6 +317,14 @@ void PhysicsSystem::update(
             const float angularDamping = std::clamp(1.0f - body.rigidbody.angularDamping * timeContext.deltaSeconds, 0.0f, 1.0f);
             body.rigidbody.velocity *= linearDamping;
             body.rigidbody.angularVelocity *= angularDamping;
+            if (const NavAgentComponent* agent = world.navAgents.tryGet(entity);
+                agent != nullptr) {
+                body.rigidbody.velocity.x = agent->desiredVelocity.x;
+                body.rigidbody.velocity.z = agent->desiredVelocity.z;
+                if (!body.rigidbody.useGravity) {
+                    body.rigidbody.velocity.y = agent->desiredVelocity.y;
+                }
+            }
             body.transform.position += body.rigidbody.velocity * timeContext.deltaSeconds;
         }
 

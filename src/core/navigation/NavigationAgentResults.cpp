@@ -170,6 +170,9 @@ std::vector<render::FrameCounterRecord> NavigationSystem::profilingCounters() co
         makeNavigationCounter("Last Async Pathfind Us", static_cast<std::int64_t>(lastAsyncPathfindUs_)),
         makeNavigationCounter("Failed Path Requests", static_cast<std::int64_t>(failedPathRequests_)),
         makeNavigationCounter("Stale Path Results", static_cast<std::int64_t>(stalePathResults_)),
+        makeNavigationCounter("Local Avoidance Adjustments", static_cast<std::int64_t>(localAvoidanceAdjustments_)),
+        makeNavigationCounter("Boundary Recoveries", static_cast<std::int64_t>(boundaryRecoveries_)),
+        makeNavigationCounter("Collision Replans", static_cast<std::int64_t>(collisionReplans_)),
     };
 }
 

@@ -92,6 +92,9 @@ void applyPathResult(NavAgentComponent& agent, const glm::vec3& destination, std
     agent.pathCorners = std::move(corners);
     agent.destination = destination;
     agent.moving = !agent.pathCorners.empty();
+    agent.desiredVelocity = glm::vec3(0.0f);
+    agent.physicsStepStart.reset();
+    agent.traversingLink = false;
 }
 
 void snapAgentToResolvedStart(
@@ -107,6 +110,9 @@ void snapAgentToResolvedStart(
         return;
     }
     transform.position = resolvedStart;
+    if (RigidbodyComponent* rigidbody = world.rigidbodies.tryGet(entity)) {
+        rigidbody->velocity = glm::vec3(0.0f);
+    }
     world.markTransformsDirty(entity);
 }
 

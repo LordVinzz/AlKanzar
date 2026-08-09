@@ -350,6 +350,9 @@ ComponentRegistry::ComponentRegistry() {
             world.navAgents.emplace(entity, NavAgentComponent{});
         },
         [](World& world, EntityId entity) {
+            if (RigidbodyComponent* rigidbody = world.rigidbodies.tryGet(entity)) {
+                rigidbody->velocity = glm::vec3(0.0f);
+            }
             world.navAgents.remove(entity);
         },
         [](EngineServices& services, EntityId entity) -> bool {
@@ -379,6 +382,13 @@ ComponentRegistry::ComponentRegistry() {
                 ImGui::TextUnformatted("Destination: none");
             }
             ImGui::Text("Path Corners: %d", static_cast<int>(agent->pathCorners.size()));
+            ImGui::Text(
+                "Desired Velocity: %.2f %.2f %.2f",
+                agent->desiredVelocity.x,
+                agent->desiredVelocity.y,
+                agent->desiredVelocity.z
+            );
+            ImGui::Text("Traversing Link: %s", agent->traversingLink ? "yes" : "no");
             return changed;
         },
     });

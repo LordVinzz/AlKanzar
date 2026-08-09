@@ -184,6 +184,11 @@ public:
     [[nodiscard]] std::vector<render::FrameCounterRecord> profilingCounters() const;
 
     void updateAgents(World& world, const NavigationRuntime& runtime, const TimeContext& time) const;
+    void reconcileAgentsAfterPhysics(
+        World& world,
+        const NavigationRuntime& runtime,
+        TaskScheduler& scheduler
+    ) const;
     void syncFrame(const World& world, const NavigationRuntime& runtime, FrameSceneData& frame) const;
 
     std::vector<EntityId> collectRenderableSelectionTargets(const World& world, EntityId selected) const;
@@ -252,6 +257,9 @@ private:
     mutable std::uint64_t lastAsyncPathfindUs_{0u};
     mutable std::uint64_t failedPathRequests_{0u};
     mutable std::uint64_t stalePathResults_{0u};
+    mutable std::uint64_t localAvoidanceAdjustments_{0u};
+    mutable std::uint64_t boundaryRecoveries_{0u};
+    mutable std::uint64_t collisionReplans_{0u};
 };
 
 }  // namespace core

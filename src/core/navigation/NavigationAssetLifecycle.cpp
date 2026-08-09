@@ -120,6 +120,9 @@ void NavigationSystem::syncCharacterAgentControl(
     const AnimatedModelComponent* animated = world.animatedModels.tryGet(entity);
     if (!controlled || animated == nullptr) {
         discardPendingPathRequest(entity);
+        if (RigidbodyComponent* rigidbody = world.rigidbodies.tryGet(entity)) {
+            rigidbody->velocity = glm::vec3(0.0f);
+        }
         world.navAgents.remove(entity);
         world.locomotion.remove(entity);
         return;
