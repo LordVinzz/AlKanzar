@@ -31,11 +31,22 @@ __alkanzar_scene_error = nil
 local created = {}
 local active_scene = nil
 local sealed = false
+local scene_version = __alkanzar_scene_version
+__alkanzar_scene_version = nil
 
 local function ensure_mutable()
     if sealed then
         fail("scene.build() must be the final scene command")
     end
+end
+
+local function is_created(value)
+    for index = 1, #created do
+        if created[index] == value then
+            return true
+        end
+    end
+    return false
 end
 
 function Create(parameters)
@@ -65,16 +76,28 @@ function Create(parameters)
         return object
     end
 
+    function object.parent(value)
+        ensure_mutable()
+        if scene_version < 2 then
+            fail("object.parent requires SCN V2")
+        end
+        if value == object or not is_created(value) then
+            fail("object.parent expects another object returned by Create")
+        end
+        object.parent_data = value
+        return object
+    end
+
     if parameters.type == "Scene" then
         if active_scene ~= nil then
-            fail("a SCN V1 asset must create exactly one Scene")
+            fail("a SCN asset must create exactly one Scene")
         end
         active_scene = object
         object.objects = {}
 
         function object.add(child)
             ensure_mutable()
-            if child == nil or child == object then
+            if child == object or not is_created(child) then
                 fail("scene.add expects an object returned by Create")
             end
             if child.added then
@@ -183,7 +206,11 @@ bool runLuaChunk(
     return true;
 }
 
-bool validateSceneHeader(std::string_view bytes, std::string* error) {
+bool validateSceneHeader(
+    std::string_view bytes,
+    std::uint32_t& outVersion,
+    std::string* error
+) {
     ContentFileHeader header{};
     if (!decodeContentFileHeader(bytes, header, error)) {
         return false;
@@ -194,7 +221,7 @@ bool validateSceneHeader(std::string_view bytes, std::string* error) {
         }
         return false;
     }
-    if (header.version != kSceneAssetVersion) {
+    if (header.version != kLegacySceneAssetVersion && header.version != kSceneAssetVersion) {
         if (error != nullptr) {
             *error = "Unsupported scene version " + std::to_string(header.version) + ".";
         }
@@ -206,10 +233,11 @@ bool validateSceneHeader(std::string_view bytes, std::string* error) {
     if (!encodeTextContentFileHeader(header.version, header.type, expected, &headerError) ||
         bytes.substr(0u, expected.size()) != std::string_view(expected.data(), expected.size())) {
         if (error != nullptr) {
-            *error = "SCN assets must use the visible 10-byte header V1SCN-----.";
+            *error = "SCN assets must use their canonical visible 10-byte header.";
         }
         return false;
     }
+    outVersion = header.version;
     return true;
 }
 
@@ -225,9 +253,10 @@ bool parseSceneAsset(
         error->clear();
     }
     if (bytes.size() > kMaximumSceneAssetBytes) {
-        return scene_asset_detail::fail(error, chunkName, "exceeds the 4 MiB SCN V1 limit");
+        return scene_asset_detail::fail(error, chunkName, "exceeds the 4 MiB SCN limit");
     }
-    if (!validateSceneHeader(bytes, error)) {
+    std::uint32_t version = 0u;
+    if (!validateSceneHeader(bytes, version, error)) {
         return false;
     }
     const std::string_view payload = bytes.substr(kContentFileHeaderSize);
@@ -249,11 +278,13 @@ bool parseSceneAsset(
 
     lua_pushcfunction(state.get(), raiseSceneDslError);
     lua_setglobal(state.get(), "__alkanzar_scene_error");
+    lua_pushinteger(state.get(), static_cast<lua_Integer>(version));
+    lua_setglobal(state.get(), "__alkanzar_scene_version");
     if (!runLuaChunk(
             state.get(),
             kSceneDslBootstrap,
-            "=AlKanzar SCN V1 DSL",
-            "Failed to initialize the SCN V1 DSL",
+            "=AlKanzar SCN DSL",
+            "Failed to initialize the SCN DSL",
             false,
             error)) {
         return false;
@@ -284,7 +315,8 @@ bool parseSceneAsset(
         state.get(),
         -1,
         blueprint,
-        error
+        error,
+        version
     );
     lua_pop(state.get(), 1);
     if (!valid) {
@@ -306,7 +338,7 @@ bool loadSceneAsset(
     std::error_code sizeError{};
     const std::uintmax_t fileSize = std::filesystem::file_size(path, sizeError);
     if (!sizeError && fileSize > kMaximumSceneAssetBytes) {
-        return scene_asset_detail::fail(error, path.string(), "exceeds the 4 MiB SCN V1 limit");
+        return scene_asset_detail::fail(error, path.string(), "exceeds the 4 MiB SCN limit");
     }
     std::ifstream input(path, std::ios::binary);
     if (!input.is_open()) {

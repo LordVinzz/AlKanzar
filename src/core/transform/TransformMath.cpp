@@ -1,9 +1,14 @@
 #include "TransformMath.hpp"
 
 #include <array>
+#include <cmath>
 
+#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/geometric.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtx/euler_angles.hpp>
+#include <glm/gtx/matrix_decompose.hpp>
 
 namespace core {
 
@@ -27,6 +32,44 @@ glm::mat4 composeTransform(const TransformComponent& transform) {
     model = glm::rotate(model, glm::radians(transform.rotationDeg.z), glm::vec3(0.0f, 0.0f, 1.0f));
     model = glm::scale(model, transform.scale);
     return model;
+}
+
+bool decomposeTransform(const glm::mat4& matrix, TransformComponent& outTransform) {
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            if (!std::isfinite(matrix[column][row])) {
+                return false;
+            }
+        }
+    }
+
+    glm::vec3 scale{};
+    glm::quat rotation{};
+    glm::vec3 translation{};
+    glm::vec3 skew{};
+    glm::vec4 perspective{};
+    if (!glm::decompose(matrix, scale, rotation, translation, skew, perspective) ||
+        glm::length(skew) > 1.0e-4f ||
+        glm::length(glm::vec3(perspective)) > 1.0e-4f ||
+        glm::abs(perspective.w - 1.0f) > 1.0e-4f ||
+        glm::any(glm::lessThanEqual(glm::abs(scale), glm::vec3(1.0e-5f)))) {
+        return false;
+    }
+
+    glm::mat4 rotationMatrix(1.0f);
+    for (int column = 0; column < 3; ++column) {
+        rotationMatrix[column] = glm::vec4(glm::vec3(matrix[column]) / scale[column], 0.0f);
+    }
+    float rotationX = 0.0f;
+    float rotationY = 0.0f;
+    float rotationZ = 0.0f;
+    glm::extractEulerAngleXYZ(rotationMatrix, rotationX, rotationY, rotationZ);
+    outTransform = TransformComponent{
+        translation,
+        glm::degrees(glm::vec3(rotationX, rotationY, rotationZ)),
+        scale
+    };
+    return true;
 }
 
 glm::mat3 normalMatrixFromModel(const glm::mat4& model) {

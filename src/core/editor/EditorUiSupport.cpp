@@ -124,11 +124,21 @@ std::string editorHierarchyLabel(const EngineServices& services, EntityId entity
 void notifyEditorTransformChanged(EngineServices& services, EntityId entity) {
     services.world.markTransformsDirty(entity);
     services.events.publish(TransformChangedEvent{entity});
+    if (services.world.pointLights.contains(entity) || services.world.spotLights.contains(entity)) {
+        services.world.markLightsDirty(entity);
+        services.events.publish(LightChangedEvent{entity});
+    }
+    if (const std::optional<SceneObjectId> object = services.sceneDocument.objectForEntity(entity)) {
+        (void)services.sceneDocument.captureRuntimeObject(*object, services.world);
+    }
 }
 
 void notifyEditorLightChanged(EngineServices& services, EntityId entity) {
     services.world.markLightsDirty(entity);
     services.events.publish(LightChangedEvent{entity});
+    if (const std::optional<SceneObjectId> object = services.sceneDocument.objectForEntity(entity)) {
+        (void)services.sceneDocument.captureRuntimeObject(*object, services.world);
+    }
 }
 
 void notifyEditorMaterialChanged(EngineServices& services, EntityId entity) {

@@ -77,6 +77,7 @@ enum class MaterialTextureSlot {
 
 struct Texture {
     std::string name;
+    std::string sourcePath;
     int width{0};
     int height{0};
     int mipLevels{1};

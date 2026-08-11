@@ -6,6 +6,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <iomanip>
@@ -342,6 +343,73 @@ void drawInspectorWindow(EngineServices& services) {
             ImGui::BeginChild("SelectionInspectorContent", ImVec2(0.0f, 0.0f), false);
 
             const std::size_t childCount = editorHierarchyChildCount(services, selected);
+            const std::optional<SceneObjectId> authoredId =
+                services.sceneDocument.objectForEntity(selected);
+            if (authoredId.has_value()) {
+                ImGui::TextColored(
+                    ImVec4(0.35f, 0.85f, 0.45f, 1.0f),
+                    "Authored SCN V2 object"
+                );
+                ImGui::Text("Stable id: %s", authoredId->c_str());
+                const std::optional<SceneObjectHandle> authoredHandle =
+                    services.sceneDocument.findObject(*authoredId);
+                if (authoredHandle.has_value() &&
+                    authoredHandle->type == SceneObjectType::Primitive) {
+                    const ScenePrimitiveBlueprint& primitive =
+                        services.sceneDocument.blueprint().primitives[authoredHandle->index];
+                    const char* shape = primitive.shape == ScenePrimitiveShape::Plane
+                        ? "Plane"
+                        : "Box";
+                    const char* material = primitive.material == SceneMaterialPreset::Soil
+                        ? "Soil"
+                        : primitive.material == SceneMaterialPreset::Rock ? "Rock" : "Wood";
+                    ImGui::Text("SCN type: Primitive/%s", shape);
+                    ImGui::Text("Material preset: %s", material);
+                    ImGui::TextDisabled("Transform scale defines authored dimensions.");
+                }
+                if (NameComponent* name = services.world.names.tryGet(selected)) {
+                    editEditorSnapshot<NameComponent>(
+                        "AuthoredName",
+                        "Rename Scene Object",
+                        "scene-object-name-" + *authoredId,
+                        *name,
+                        [&services, selected, objectId = *authoredId](const NameComponent& snapshot) {
+                            if (NameComponent* target = services.world.names.tryGet(selected)) {
+                                *target = snapshot;
+                                (void)services.sceneDocument.setObjectName(objectId, snapshot.value);
+                            }
+                        },
+                        [](NameComponent& edited) {
+                            char buffer[256]{};
+                            std::strncpy(buffer, edited.value.c_str(), sizeof(buffer) - 1u);
+                            if (!ImGui::InputText("Name", buffer, sizeof(buffer))) {
+                                return false;
+                            }
+                            edited.value = buffer;
+                            return !edited.value.empty();
+                        },
+                        services.commands
+                    );
+                }
+            } else {
+                const EntityId authoredOwner =
+                    services.world.authoredSceneOwnerEntity(selected);
+                const std::optional<SceneObjectId> ownerId = authoredOwner.valid()
+                    ? services.sceneDocument.objectForEntity(authoredOwner)
+                    : std::nullopt;
+                if (ownerId.has_value()) {
+                    ImGui::TextColored(
+                        ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
+                        "Imported render section (read-only)"
+                    );
+                    ImGui::Text("Authored SCN root: %s", ownerId->c_str());
+                } else {
+                    ImGui::TextColored(
+                        ImVec4(0.85f, 0.65f, 0.25f, 1.0f),
+                        "Runtime-generated entity (read-only)"
+                    );
+                }
+            }
             ImGui::Text("Entity: %s", editorEntityLabel(services, selected).c_str());
             ImGui::Text("Id: %u", selected.index);
             if (selectedTarget.component.has_value()) {

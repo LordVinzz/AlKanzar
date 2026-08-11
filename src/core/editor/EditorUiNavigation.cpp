@@ -113,7 +113,10 @@ void drawNavMeshWindow(EngineServices& services) {
     }
     ImGui::SameLine();
     if (ImGui::Button("Reload")) {
-        if (!services.navigationSystem.initializeScene(services.currentScene, services.world, services.navigation)) {
+        if (!services.navigationSystem.initializeScene(
+                services.sceneDocument.blueprint(),
+                services.world,
+                services.navigation)) {
             services.navigation.statusMessage = services.navigation.statusMessage.empty()
                 ? "Failed to reload navmesh asset."
                 : services.navigation.statusMessage;

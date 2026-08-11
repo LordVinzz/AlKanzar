@@ -6,8 +6,12 @@
 #include <iterator>
 #include <string_view>
 
+#include <imgui.h>
+#include <ImGuizmo.h>
+
 #include "RuntimePolicy.hpp"
 #include "SimulationClock.hpp"
+#include "core/editor/EditorUi.hpp"
 #include "core/editor/EditorSessionImGuiSettings.hpp"
 #include "core/scene/Camera.hpp"
 #include <spdlog/spdlog.h>
@@ -203,6 +207,7 @@ void Application::run() {
             logFrameStageBoundary("begin", "Begin ImGui Frame", frameIndex, "main");
         }
         services_.renderer.beginImGuiFrame();
+        ImGuizmo::BeginFrame();
         if (diagnostics.shouldLogFrameStage(frameIndex)) {
             logFrameStageBoundary("end", "Begin ImGui Frame", frameIndex, "main");
         }
@@ -353,6 +358,10 @@ void Application::run() {
             if (diagnostics.shouldLogFrameStage(frameIndex)) {
                 logFrameStageBoundary("end", "State UI", frameIndex, "main");
             }
+        }
+
+        if (capabilities.rendersEditorUi) {
+            refreshEditorPresentation(services_);
         }
 
         if (capabilities.syncsNavigationDebug) {

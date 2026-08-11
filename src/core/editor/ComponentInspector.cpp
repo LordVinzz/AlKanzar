@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -25,11 +26,17 @@ void notifyTransformChanged(EngineServices& services, EntityId entity) {
         services.world.markLightsDirty(entity);
         services.events.publish(LightChangedEvent{entity});
     }
+    if (const std::optional<SceneObjectId> object = services.sceneDocument.objectForEntity(entity)) {
+        (void)services.sceneDocument.captureRuntimeObject(*object, services.world);
+    }
 }
 
 void notifyLightChanged(EngineServices& services, EntityId entity) {
     services.world.markLightsDirty(entity);
     services.events.publish(LightChangedEvent{entity});
+    if (const std::optional<SceneObjectId> object = services.sceneDocument.objectForEntity(entity)) {
+        (void)services.sceneDocument.captureRuntimeObject(*object, services.world);
+    }
 }
 
 void notifyMaterialChanged(EngineServices& services, EntityId entity) {

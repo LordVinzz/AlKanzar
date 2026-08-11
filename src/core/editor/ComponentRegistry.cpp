@@ -29,6 +29,11 @@ const ComponentDescriptor* ComponentRegistry::find(ComponentKind kind) const {
 }
 
 void ComponentRegistry::drawAddComponentButton(EngineServices& services, EntityId entity) const {
+    if (!services.sceneDocument.isAuthoredEntity(entity)) {
+        ImGui::TextDisabled("Runtime-generated entities are read-only.");
+        return;
+    }
+    ImGui::TextDisabled("Added technical components are runtime-only unless represented by SCN V2.");
     if (ImGui::Button("Add Component...")) {
         ImGui::OpenPopup("AddComponentPopup");
     }
@@ -83,18 +88,25 @@ void ComponentRegistry::drawComponentTabs(
         ImGui::PushID(descriptor.name.c_str());
 
         bool open = true;
+        const bool authored = services.sceneDocument.isAuthoredEntity(entity);
         const ImGuiTabItemFlags tabFlags =
             focusedComponent.has_value() && *focusedComponent == descriptor.kind
                 ? ImGuiTabItemFlags_SetSelected
                 : 0;
-        if (ImGui::BeginTabItem(descriptor.name.c_str(), &open, tabFlags)) {
+        if (ImGui::BeginTabItem(descriptor.name.c_str(), authored ? &open : nullptr, tabFlags)) {
             ImGui::BeginChild(("##comp_" + descriptor.name).c_str(), ImVec2(0.0f, 0.0f), false);
+            if (!authored) {
+                ImGui::BeginDisabled();
+            }
             descriptor.drawInspector(services, entity);
+            if (!authored) {
+                ImGui::EndDisabled();
+            }
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
 
-        if (!open) {
+        if (authored && !open) {
             descriptor.removeComponent(services.world, entity);
             if (isLightComponent(descriptor.kind)) {
                 notifyLightChanged(services, entity);

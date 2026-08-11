@@ -56,10 +56,11 @@ std::optional<CharacterEditorSnapshot> captureCharacterSnapshot(
 }
 
 void applyCharacterSnapshot(
-    World& world,
+    EngineServices& services,
     EntityId entity,
     const CharacterEditorSnapshot& requested
 ) {
+    World& world = services.world;
     CharacterComponent* character = world.characters.tryGet(entity);
     AbilityScoresComponent* abilities = world.abilityScores.tryGet(entity);
     SkillRanksComponent* skills = world.skillRanks.tryGet(entity);
@@ -79,6 +80,9 @@ void applyCharacterSnapshot(
     *abilities = normalized.abilities;
     *skills = normalized.skills;
     *vitals = normalized.vitals;
+    if (const std::optional<SceneObjectId> object = services.sceneDocument.objectForEntity(entity)) {
+        (void)services.sceneDocument.captureRuntimeObject(*object, world);
+    }
 }
 
 template <typename DrawFn>
@@ -104,7 +108,7 @@ bool editCharacterValue(
         mergeKey,
         *current,
         [&services, entity](const CharacterEditorSnapshot& snapshot) {
-            applyCharacterSnapshot(services.world, entity, snapshot);
+            applyCharacterSnapshot(services, entity, snapshot);
         },
         [&changed, draw = std::forward<DrawFn>(drawFn)](CharacterEditorSnapshot& edited) mutable {
             changed = draw(edited);

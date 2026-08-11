@@ -1,6 +1,35 @@
 #include "RenderPaths.hpp"
 
+#include <string_view>
+
+#include <spdlog/spdlog.h>
+
+#include "render/engine/OpenGlDiagnostics.hpp"
+
 namespace render {
+namespace {
+
+bool finishTextureAllocation(
+    std::string_view path,
+    GLuint handle,
+    int width,
+    int height
+) {
+    if (!gl_diagnostics::reportErrors("allocate GL_TEXTURE_2D", path) ||
+        !gl_diagnostics::validateBoundTexture2D(path, width, height)) {
+        return false;
+    }
+    spdlog::info(
+        "OpenGL texture diagnostic: allocated path='{}' handle={} size={}x{}",
+        path,
+        handle,
+        width,
+        height
+    );
+    return true;
+}
+
+}  // namespace
 
 void DeferredRenderPath::destroyResources() {
     if (gbufferFbo_ != 0) glDeleteFramebuffers(1, &gbufferFbo_);
@@ -43,6 +72,25 @@ void DeferredRenderPath::ensureResources(int width, int height) {
     deferredWidth_ = width;
     deferredHeight_ = height;
 
+    constexpr std::string_view kGbufferAlbedoPath =
+        "deferred://gbuffer/albedo-metallic";
+    constexpr std::string_view kGbufferNormalPath =
+        "deferred://gbuffer/normal-roughness";
+    constexpr std::string_view kGbufferEmissivePath =
+        "deferred://gbuffer/emissive-ao";
+    constexpr std::string_view kGbufferClearcoatPath =
+        "deferred://gbuffer/clearcoat";
+    constexpr std::string_view kGbufferDepthColorPath =
+        "deferred://gbuffer/depth-color";
+    constexpr std::string_view kGbufferDepthPath =
+        "deferred://gbuffer/depth-stencil";
+    constexpr std::string_view kLightColorPath =
+        "deferred://light/accumulation";
+
+    gl_diagnostics::beginCheckedOperation(
+        "allocate GL_TEXTURE_2D",
+        kGbufferAlbedoPath
+    );
     glGenTextures(1, &gbufferAlbedo_);
     glBindTexture(GL_TEXTURE_2D, gbufferAlbedo_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
@@ -52,7 +100,19 @@ void DeferredRenderPath::ensureResources(int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (!finishTextureAllocation(
+            kGbufferAlbedoPath,
+            gbufferAlbedo_,
+            width,
+            height)) {
+        destroyResources();
+        return;
+    }
 
+    gl_diagnostics::beginCheckedOperation(
+        "allocate GL_TEXTURE_2D",
+        kGbufferNormalPath
+    );
     glGenTextures(1, &gbufferNormal_);
     glBindTexture(GL_TEXTURE_2D, gbufferNormal_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
@@ -62,7 +122,19 @@ void DeferredRenderPath::ensureResources(int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (!finishTextureAllocation(
+            kGbufferNormalPath,
+            gbufferNormal_,
+            width,
+            height)) {
+        destroyResources();
+        return;
+    }
 
+    gl_diagnostics::beginCheckedOperation(
+        "allocate GL_TEXTURE_2D",
+        kGbufferEmissivePath
+    );
     glGenTextures(1, &gbufferEmissiveAo_);
     glBindTexture(GL_TEXTURE_2D, gbufferEmissiveAo_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
@@ -72,7 +144,19 @@ void DeferredRenderPath::ensureResources(int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (!finishTextureAllocation(
+            kGbufferEmissivePath,
+            gbufferEmissiveAo_,
+            width,
+            height)) {
+        destroyResources();
+        return;
+    }
 
+    gl_diagnostics::beginCheckedOperation(
+        "allocate GL_TEXTURE_2D",
+        kGbufferClearcoatPath
+    );
     glGenTextures(1, &gbufferClearcoat_);
     glBindTexture(GL_TEXTURE_2D, gbufferClearcoat_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
@@ -82,7 +166,19 @@ void DeferredRenderPath::ensureResources(int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (!finishTextureAllocation(
+            kGbufferClearcoatPath,
+            gbufferClearcoat_,
+            width,
+            height)) {
+        destroyResources();
+        return;
+    }
 
+    gl_diagnostics::beginCheckedOperation(
+        "allocate GL_TEXTURE_2D",
+        kGbufferDepthColorPath
+    );
     glGenTextures(1, &gbufferDepthColor_);
     glBindTexture(GL_TEXTURE_2D, gbufferDepthColor_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, width, height, 0, GL_RED, GL_FLOAT, nullptr);
@@ -92,7 +188,19 @@ void DeferredRenderPath::ensureResources(int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (!finishTextureAllocation(
+            kGbufferDepthColorPath,
+            gbufferDepthColor_,
+            width,
+            height)) {
+        destroyResources();
+        return;
+    }
 
+    gl_diagnostics::beginCheckedOperation(
+        "allocate GL_TEXTURE_2D",
+        kGbufferDepthPath
+    );
     glGenTextures(1, &gbufferDepth_);
     glBindTexture(GL_TEXTURE_2D, gbufferDepth_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width, height, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
@@ -103,8 +211,19 @@ void DeferredRenderPath::ensureResources(int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
-    glTexParameteri(GL_TEXTURE_2D, GL_DEPTH_STENCIL_TEXTURE_MODE, GL_DEPTH_COMPONENT);
+    if (!finishTextureAllocation(
+            kGbufferDepthPath,
+            gbufferDepth_,
+            width,
+            height)) {
+        destroyResources();
+        return;
+    }
 
+    gl_diagnostics::beginCheckedOperation(
+        "configure framebuffer",
+        "deferred://gbuffer"
+    );
     glGenFramebuffers(1, &gbufferFbo_);
     glBindFramebuffer(GL_FRAMEBUFFER, gbufferFbo_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gbufferAlbedo_, 0);
@@ -121,7 +240,18 @@ void DeferredRenderPath::ensureResources(int width, int height) {
         GL_COLOR_ATTACHMENT4,
     };
     glDrawBuffers(5, gbufferAttachments);
+    if (!gl_diagnostics::reportErrors(
+            "configure framebuffer",
+            "deferred://gbuffer") ||
+        !gl_diagnostics::validateFramebuffer("deferred://gbuffer")) {
+        destroyResources();
+        return;
+    }
 
+    gl_diagnostics::beginCheckedOperation(
+        "allocate GL_TEXTURE_2D",
+        kLightColorPath
+    );
     glGenTextures(1, &lightColor_);
     glBindTexture(GL_TEXTURE_2D, lightColor_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
@@ -131,12 +261,44 @@ void DeferredRenderPath::ensureResources(int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (!finishTextureAllocation(
+            kLightColorPath,
+            lightColor_,
+            width,
+            height)) {
+        destroyResources();
+        return;
+    }
 
+    gl_diagnostics::beginCheckedOperation(
+        "configure framebuffer",
+        "deferred://light"
+    );
     glGenFramebuffers(1, &lightFbo_);
     glBindFramebuffer(GL_FRAMEBUFFER, lightFbo_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, lightColor_, 0);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, gbufferDepth_, 0);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    if (!gl_diagnostics::reportErrors(
+            "configure framebuffer",
+            "deferred://light") ||
+        !gl_diagnostics::validateFramebuffer("deferred://light")) {
+        destroyResources();
+        return;
+    }
+
+    spdlog::info(
+        "OpenGL texture diagnostic: unit=1 pass='deferred directional/volume' "
+        "path='{}' handle={}",
+        kGbufferNormalPath,
+        gbufferNormal_
+    );
+    spdlog::info(
+        "OpenGL texture diagnostic: unit=1 pass='deferred composite' "
+        "path='{}' handle={}",
+        kGbufferAlbedoPath,
+        gbufferAlbedo_
+    );
 
     if (fullscreenVao_ == 0) {
         glGenVertexArrays(1, &fullscreenVao_);

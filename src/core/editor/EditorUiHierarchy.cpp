@@ -23,6 +23,7 @@
 
 #include "core/app/EngineServices.hpp"
 #include "core/editor/EditorSessionImGuiSettings.hpp"
+#include "core/editor/EditorSceneActions.hpp"
 #include "core/editor/ComponentRegistry.hpp"
 #include "render/resources/StaticGltfModel.hpp"
 
@@ -277,6 +278,52 @@ void drawSceneHierarchyNode(EngineServices& services, const SceneHierarchyData& 
         selectHierarchyEntity(services, entity);
     }
 
+    const std::optional<SceneObjectId> authoredId =
+        services.sceneDocument.objectForEntity(entity);
+    if (authoredId.has_value() && ImGui::BeginDragDropSource()) {
+        ImGui::SetDragDropPayload(
+            "ALKANZAR_SCN_OBJECT",
+            authoredId->c_str(),
+            authoredId->size() + 1u
+        );
+        ImGui::Text("Move %s", editorEntityLabel(services, entity).c_str());
+        ImGui::EndDragDropSource();
+    }
+    if (authoredId.has_value() && services.sceneDocument.objectCanHaveParent(*authoredId) &&
+        ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ALKANZAR_SCN_OBJECT")) {
+            const std::string childId(static_cast<const char*>(payload->Data));
+            if (childId != *authoredId) {
+                (void)reparentEditorSceneObject(services, childId, *authoredId);
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    if (ImGui::BeginPopupContextItem("SceneObjectContext")) {
+        if (authoredId.has_value()) {
+            ImGui::TextDisabled("SCN id: %s", authoredId->c_str());
+            if (ImGui::MenuItem("Duplicate")) {
+                (void)duplicateEditorSceneObject(services, *authoredId);
+            }
+            if (ImGui::MenuItem("Delete...")) {
+                services.editorSession.pendingDeleteObjectId = *authoredId;
+            }
+        } else {
+            const EntityId authoredOwner = services.world.authoredSceneOwnerEntity(entity);
+            const std::optional<SceneObjectId> ownerId = authoredOwner.valid()
+                ? services.sceneDocument.objectForEntity(authoredOwner)
+                : std::nullopt;
+            if (ownerId.has_value()) {
+                ImGui::TextDisabled("Imported section of SCN root: %s", ownerId->c_str());
+            } else {
+                ImGui::TextDisabled("Runtime-generated node");
+            }
+            ImGui::TextDisabled("Technical detail; not saved as a separate SCN object.");
+        }
+        ImGui::EndPopup();
+    }
+
     if (open && (componentCount > 0 || !children.empty())) {
         for (const ComponentDescriptor& descriptor : services.componentRegistry.descriptors()) {
             if (!descriptor.hasComponent(services.world, entity)) {
@@ -331,6 +378,13 @@ void drawSceneHierarchyWindow(EngineServices& services) {
                        "CurrentScene",
                        ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth,
                        "Current Scene")) {
+            if (ImGui::BeginDragDropTarget()) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ALKANZAR_SCN_OBJECT")) {
+                    const std::string childId(static_cast<const char*>(payload->Data));
+                    (void)reparentEditorSceneObject(services, childId, std::nullopt);
+                }
+                ImGui::EndDragDropTarget();
+            }
             for (EntityId root : hierarchy.roots) {
                 drawSceneHierarchyNode(services, hierarchy, root);
             }

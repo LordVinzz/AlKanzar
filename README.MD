@@ -20,19 +20,36 @@ UI or gameplay input.
 
 The default scene is authored in readable Lua at
 `assets/scenes/DefaultScene.scene`. Its first line is the fixed 10-byte header
-`V1SCN-----`; the remaining lines use the restricted scene DSL:
+`V2SCN-----`; the remaining lines use the restricted scene DSL:
 
 ```lua
 scene = Create({ type = "Scene" })
-object = Create({ type = "Model", name = "Object", asset = "Object.glb" })
+ground = Create({
+    type = "Primitive", id = "ground", name = "Ground",
+    shape = "Plane", material = "Soil", layer = "Ground",
+})
+ground.transform({ scale = { x = 1000, y = 1, z = 1000 } })
+scene.add(ground)
+object = Create({ type = "Model", id = "object", name = "Object", asset = "Object.glb" })
 object.transform({ position = { x = 0, y = 0, z = 0 } })
 scene.add(object)
 scene.build()
 ```
 
+Every SCN V2 object has a stable unique `id`. Transformable objects may use
+`child.parent(parent)` to define an authored hierarchy. SCN V1 remains readable;
+opening it in the editor marks it for migration and the next save writes V2.
+The complete visible composition is authored here: ground, walls and test
+geometry are explicit `Primitive` objects rather than entities injected by the
+engine. Primitive transform scale defines its dimensions. Clicking an imported
+model section selects its authored SCN root.
+The Editor File menu provides New/Open/Reload/Save/Save As, and the hierarchy
+supports undoable creation, duplication, recursive deletion and reparenting.
+Select an authored object and use `G`, `R` or `S` for viewport gizmos.
+
 Scene scripts have no IO, OS, package-loading or debug libraries. CMake fetches
-the pinned official Lua 5.5.0 runtime automatically; no system Lua package is
-required.
+the pinned official Lua 5.5.0 runtime, Dear ImGui and ImGuizmo automatically;
+no system packages are required for them.
 
 If you need `compile_commands.json` at the repo root for tooling:
 
@@ -66,6 +83,7 @@ This project requires the following libraries:
 - **spdlog** (logging)
 - **glm** (math)
 - **Lua 5.5.0** (fetched and built automatically for restricted scene assets)
+- **Dear ImGui / ImGuizmo** (fetched automatically for editor UI and gizmos)
 
 Below are installation instructions for **macOS**, **Linux**, and **Windows (via vcpkg)**.
 

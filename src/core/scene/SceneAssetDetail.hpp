@@ -102,12 +102,26 @@ enum class FieldStatus {
     std::string_view path
 );
 
+[[nodiscard]] bool readSceneObjectIdentity(
+    lua_State* state,
+    int objectIndex,
+    int parametersIndex,
+    std::string_view type,
+    std::uint32_t version,
+    SceneBlueprint& blueprint,
+    SceneObjectId& outId,
+    std::optional<SceneObjectId>& outParentId,
+    std::string* error,
+    std::string_view path
+);
+
 [[nodiscard]] bool parseCharacterTable(
     lua_State* state,
     int tableIndex,
     CharacterBlueprint& outCharacter,
     std::string* error,
-    std::string_view path
+    std::string_view path,
+    std::uint32_t version
 );
 
 [[nodiscard]] bool parseLightObject(
@@ -117,14 +131,28 @@ enum class FieldStatus {
     std::string_view type,
     SceneBlueprint& blueprint,
     std::string* error,
-    std::string_view path
+    std::string_view path,
+    std::uint32_t version
 );
+
+[[nodiscard]] bool parsePrimitiveObject(
+    lua_State* state,
+    int objectIndex,
+    int parametersIndex,
+    SceneBlueprint& blueprint,
+    std::string* error,
+    std::string_view path,
+    std::uint32_t version
+);
+
+void appendLegacyScenePrimitives(SceneBlueprint& blueprint);
 
 [[nodiscard]] bool parseSceneTable(
     lua_State* state,
     int tableIndex,
     SceneBlueprint& outBlueprint,
-    std::string* error
+    std::string* error,
+    std::uint32_t version
 );
 
 }  // namespace core::scene_asset_detail

@@ -7039,6 +7039,28 @@ void testProfilingMemoryEstimators() {
     assert(meshBytes.indexBytes == static_cast<std::uint64_t>(3u * sizeof(unsigned int)));
 }
 
+void testGeneratedTexturesRetainDiagnosticSourcePath() {
+    const std::shared_ptr<render::Texture> source = render::makeSolidTexture(
+        "DiagnosticSource",
+        glm::vec4(1.0f),
+        false,
+        render::TextureSemantic::BaseColor,
+        render::TextureOrigin::Project
+    );
+    assert(source != nullptr);
+    assert(source->sourcePath == "builtin://DiagnosticSource");
+
+    source->sourcePath = "textures/diagnostic-source.png";
+    const std::shared_ptr<render::Texture> generated =
+        render::generateMetallicRoughnessTexture(
+            *source,
+            "DiagnosticOrm"
+        );
+    assert(generated != nullptr);
+    assert(generated->sourcePath.find(source->sourcePath) == 0u);
+    assert(generated->sourcePath.find("DiagnosticOrm") != std::string::npos);
+}
+
 }  // namespace
 
 int main() {
@@ -7171,5 +7193,6 @@ int main() {
     testPerfettoTraceExporterWritesTrackEventsAndCounters();
     testPerfettoTraceExporterFailsForInvalidOutputPath();
     testProfilingMemoryEstimators();
+    testGeneratedTexturesRetainDiagnosticSourcePath();
     return EXIT_SUCCESS;
 }

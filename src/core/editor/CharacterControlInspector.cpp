@@ -71,6 +71,9 @@ void applyControlSnapshot(
         world.partyMembers.remove(entity);
     }
     services.navigationSystem.syncCharacterAgentControl(world, entity);
+    if (const std::optional<SceneObjectId> object = services.sceneDocument.objectForEntity(entity)) {
+        (void)services.sceneDocument.captureRuntimeObject(*object, world);
+    }
 }
 
 template <typename DrawFn>

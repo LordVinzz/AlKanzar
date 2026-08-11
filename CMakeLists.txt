@@ -90,11 +90,18 @@ add_library(alkanzar_core STATIC
     src/core/editor/ComponentRegistry.cpp
     src/core/editor/ComponentDescriptors.cpp
     src/core/editor/DirectionalLightComponentDescriptor.cpp
+    src/core/editor/LightingComponentDescriptors.cpp
     src/core/editor/CharacterComponentDescriptor.cpp
     src/core/editor/CharacterControlInspector.cpp
     src/core/editor/ComponentInspector.cpp
     src/core/editor/CharacterInspector.cpp
     src/core/editor/EditorSessionImGuiSettings.cpp
+    src/core/editor/EditorPresentationRefresh.cpp
+    src/core/editor/EditorSceneActions.cpp
+    src/core/editor/EditorSceneMutations.cpp
+    src/core/editor/EditorSceneFileUi.cpp
+    src/core/editor/EditorGizmoMath.cpp
+    src/core/editor/EditorSceneGizmo.cpp
     src/core/editor/EditorUiAnimation.cpp
     src/core/editor/EditorUiHierarchy.cpp
     src/core/editor/EditorUiInspector.cpp
@@ -150,9 +157,16 @@ add_library(alkanzar_core STATIC
     src/core/scene/Camera.cpp
     src/core/scene/SceneAsset.cpp
     src/core/scene/SceneAssetCharacter.cpp
+    src/core/scene/SceneAssetCharacterSerialization.cpp
+    src/core/scene/SceneAssetHierarchy.cpp
     src/core/scene/SceneAssetLights.cpp
     src/core/scene/SceneAssetLuaFields.cpp
     src/core/scene/SceneAssetParser.cpp
+    src/core/scene/SceneAssetPrimitives.cpp
+    src/core/scene/SceneAssetSerialization.cpp
+    src/core/scene/SceneDocument.cpp
+    src/core/scene/SceneDocumentObjects.cpp
+    src/core/scene/SceneDocumentRuntime.cpp
     src/core/scene/SceneFactory.cpp
     src/core/scene/SceneMeshFactory.cpp
     src/core/scene/SceneModelFactory.cpp
@@ -191,6 +205,12 @@ target_link_libraries(alkanzar_core
         alkanzar_lua
 )
 
+target_compile_definitions(alkanzar_core
+    PRIVATE
+        ALKANZAR_SCENE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/scenes"
+        ALKANZAR_SCENE_STAGED_DIR="${CMAKE_BINARY_DIR}/scenes"
+)
+
 add_executable(AlKanzar
     src/main.cpp
 )
@@ -227,6 +247,10 @@ if(BUILD_TESTING)
 
     add_executable(alkanzar_party_order_tests
         tests/party_order_tests.cpp
+    )
+
+    add_executable(alkanzar_editor_scene_tests
+        tests/editor_scene_tests.cpp
     )
 
     target_include_directories(alkanzar_core_tests
@@ -269,6 +293,11 @@ if(BUILD_TESTING)
             alkanzar_core
     )
 
+    target_link_libraries(alkanzar_editor_scene_tests
+        PRIVATE
+            alkanzar_core
+    )
+
     add_test(NAME alkanzar_core_tests COMMAND alkanzar_core_tests)
     add_test(NAME alkanzar_character_rules_tests COMMAND alkanzar_character_rules_tests)
     add_test(NAME alkanzar_rules_layer_tests COMMAND alkanzar_rules_layer_tests)
@@ -276,6 +305,7 @@ if(BUILD_TESTING)
     add_test(NAME alkanzar_content_file_header_tests COMMAND alkanzar_content_file_header_tests)
     add_test(NAME alkanzar_scene_asset_tests COMMAND alkanzar_scene_asset_tests)
     add_test(NAME alkanzar_party_order_tests COMMAND alkanzar_party_order_tests)
+    add_test(NAME alkanzar_editor_scene_tests COMMAND alkanzar_editor_scene_tests)
 
     add_test(
         NAME alkanzar_architecture_layers

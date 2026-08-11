@@ -66,6 +66,7 @@ public:
         bool useParallelSceneView = true
     );
     [[nodiscard]] MeshHandle uploadMesh(const Mesh& mesh);
+    [[nodiscard]] bool resetSceneResources();
     std::shared_ptr<Texture> registerTexture(const std::shared_ptr<Texture>& texture);
     std::shared_ptr<Sampler> registerSampler(const std::shared_ptr<Sampler>& sampler);
     [[nodiscard]] const std::shared_ptr<Sampler>& defaultSampler() const { return resourceRegistry_.defaultSampler(); }

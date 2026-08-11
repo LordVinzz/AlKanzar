@@ -6,6 +6,7 @@
 #include <SDL_opengl.h>
 
 #include <memory>
+#include <unordered_set>
 #include <vector>
 
 #include "render/resources/Material.hpp"
@@ -46,6 +47,7 @@ private:
     TextureRef defaultClearcoatTexture_{};
     TextureRef defaultDetailNormalTexture_{};
     TextureRef defaultHeightTexture_{};
+    mutable std::unordered_set<std::uint32_t> reportedUnitOneTextures_{};
 };
 
 }  // namespace render

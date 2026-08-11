@@ -31,6 +31,21 @@ if(NOT imgui_POPULATED)
     )
 endif()
 
+FetchContent_Declare(
+    imguizmo
+    GIT_REPOSITORY https://github.com/CedricGuillemet/ImGuizmo.git
+    GIT_TAG df1c30142e7c3fb13c171aaeb328bb338fa7aaa6
+)
+FetchContent_GetProperties(imguizmo)
+if(NOT imguizmo_POPULATED)
+    FetchContent_Populate(imguizmo)
+    add_library(imguizmo STATIC
+        ${imguizmo_SOURCE_DIR}/ImGuizmo.cpp
+    )
+    target_include_directories(imguizmo PUBLIC ${imguizmo_SOURCE_DIR})
+    target_link_libraries(imguizmo PUBLIC imgui)
+endif()
+
 add_library(alkanzar_render STATIC
     engine/RenderEngine.cpp
     engine/RenderEngineOcclusion.cpp
@@ -165,6 +180,7 @@ target_link_libraries(alkanzar_render
         OpenGL::GL
         glm::glm
         imgui
+        imguizmo
     PRIVATE
         spdlog::spdlog
 )

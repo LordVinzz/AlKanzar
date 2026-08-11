@@ -24,6 +24,7 @@
 #include "core/app/EngineServices.hpp"
 #include "core/editor/EditorSessionImGuiSettings.hpp"
 #include "core/editor/ComponentRegistry.hpp"
+#include "core/scene/SceneAsset.hpp"
 #include "render/resources/StaticGltfModel.hpp"
 
 
@@ -38,12 +39,30 @@ void drawEditorMainWindow(EngineServices& services) {
     if (services.editorSession.mainWindowFocusRequested) {
         ImGui::SetNextWindowFocus();
     }
-    ImGui::SetNextWindowSize(ImVec2(360.0f, 260.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420.0f, 520.0f), ImGuiCond_FirstUseEver);
 
     bool open = services.editorSession.mainWindowVisible;
-    if (ImGui::Begin("Editor", &open)) {
-        ImGui::TextUnformatted("Window Toggles");
-        ImGui::Separator();
+    std::string title = "Editor - " + services.sceneDocument.displayName();
+    if (services.sceneDocument.dirty()) {
+        title += " *";
+    }
+    title += "###Editor";
+    if (ImGui::Begin(title.c_str(), &open, ImGuiWindowFlags_MenuBar)) {
+        drawEditorMenuBar(services);
+        ImGui::Text("SCN V%u", core::kSceneAssetVersion);
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", services.sceneDocument.hasPath()
+            ? services.sceneDocument.sourcePath().string().c_str()
+            : "Unsaved document");
+        if (!services.editorSession.sceneDocumentStatus.empty()) {
+            const ImVec4 color = services.editorSession.sceneDocumentStatusIsError
+                ? ImVec4(0.95f, 0.35f, 0.30f, 1.0f)
+                : ImVec4(0.35f, 0.85f, 0.45f, 1.0f);
+            ImGui::TextColored(color, "%s", services.editorSession.sceneDocumentStatus.c_str());
+        }
+
+        drawSceneSettingsEditor(services);
+        ImGui::SeparatorText("Window Toggles");
 
         bool sceneHierarchyVisible = services.editorSession.sceneHierarchyVisible;
         if (ImGui::Checkbox("Scene Hierarchy", &sceneHierarchyVisible)) {
@@ -53,7 +72,7 @@ void drawEditorMainWindow(EngineServices& services) {
             }
         }
         ImGui::SameLine();
-        ImGui::TextDisabled("Ctrl+S");
+        ImGui::TextDisabled("Ctrl+H");
 
         bool inspectorVisible = services.editorSession.inspectorWindowVisible;
         if (ImGui::Checkbox("Inspector", &inspectorVisible)) {

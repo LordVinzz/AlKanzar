@@ -28,6 +28,12 @@ Dear ImGui and CMake. It currently provides:
   replanning;
 - green, blue and red ground indicators for controlled party members,
   uncontrolled friendly NPCs and hostile NPCs respectively;
+- a persistent SCN V2 scene document with stable authored-object IDs,
+  hierarchy editing, deterministic atomic save/migration and dirty-state UX;
+- fully SCN-authored visible roots, including plane/box primitives for ground,
+  walls and test geometry, with imported sections resolving to their SCN root;
+- undoable entity creation, duplication, recursive deletion, reparenting,
+  persistent inspectors and ImGuizmo transform tools;
 - architecture, unit, integration and source-size checks through CTest.
 
 NPC AI is intentionally not implemented yet. Do not infer that friendly or
@@ -92,9 +98,9 @@ clones; do not include its incidental changes in a commit.
 | `simulation/` | Mutable runtime components and adapters between ECS state and pure rules. Start with `CharacterComponents.hpp` and `CharacterSimulation.hpp/.cpp`. |
 | `ecs/` | Entity identity, pools, component stores, world ownership and technical ECS components. `World.hpp` owns all stores and lifecycle cleanup. |
 | `presentation/` | Lightweight presentation contracts shared without importing full editor/render APIs. `ComponentKind.hpp` is the current example. |
-| `editor/` | ImGui windows, inspectors, component descriptors, selection, editor session state and undo/redo commands. |
+| `editor/` | ImGui windows, persistent scene actions, inspectors, component descriptors, selection, ImGuizmo tools, editor session state and undo/redo commands. |
 | `events/` | Synchronous signals and queued application events. `Events.hpp` defines the `AppEvent` variant. |
-| `scene/` | SCN Lua loading/validation, declarative `SceneBlueprint`, asset/entity construction and camera math. Start with `SceneAsset.hpp`, `SceneRegistry.cpp` and `SceneFactory.hpp`. |
+| `scene/` | SCN Lua loading/validation/serialization, persistent `SceneDocument`, declarative `SceneBlueprint`, asset/entity construction and camera math. Start with `SceneAsset.hpp`, `SceneDocument.hpp`, `SceneRegistry.cpp` and `SceneFactory.hpp`. |
 | `navigation/` | Navmesh data, authoring, serialization, baking, runtime queries, Polyanya, async requests, agent motion and editor integration. See the navigation map below before editing. |
 | `animation/` | Runtime animation pose, clip and blend updates. |
 | `physics/` | Physics-system updates and collider/rigidbody behavior. |
@@ -133,32 +139,35 @@ alkanzar_content (INTERFACE headers)
     └── alkanzar_rules (STATIC, pure domain rules)
             └── alkanzar_core (STATIC)
 
-imgui + SDL2 + OpenGL + GLM
+imgui + ImGuizmo + SDL2 + OpenGL + GLM
     └── alkanzar_render (STATIC)
             └── alkanzar_core
                     └── AlKanzar (executable)
 ```
 
-`alkanzar_core` also links spdlog and Threads. Dear ImGui is pinned in
-`src/render/CMakeLists.txt` and fetched by CMake. Keep `alkanzar_rules`
-independently linkable: a pure-rules test must not acquire SDL, ImGui or render
-dependencies transitively.
+`alkanzar_core` also links spdlog and Threads. Dear ImGui and ImGuizmo are
+pinned in `src/render/CMakeLists.txt` and fetched by CMake. Keep
+`alkanzar_rules` independently linkable: a pure-rules test must not acquire
+SDL, ImGui or render dependencies transitively.
 
 ### Current limits: do not assume these exist
 
 The prototype has engine foundations, not a completed CRPG. At the time this
 guide was written:
 
-- the default scene is loaded from the SCN V1 Lua format, but other zone,
-  campaign and save-game content formats are not implemented yet;
+- the default scene uses editable SCN V2 Lua and explicitly authors every
+  visible root, including ground, walls and test primitives; SCN V1 remains
+  readable and is marked dirty for migration, but other zone, campaign and
+  save-game content formats are not implemented yet;
 - Gameplay, Editor and TestTool modes are isolated through explicit capability
   policies; broader product-level test tooling remains a requirement;
 - character inspection and formulas exist, but combat, abilities, inventory,
   dialogue, quests, campaign state, save/load and NPC AI are not complete;
 - navigation/pathfinding and a minimal movement formation exist, but dynamic
   reformation, laggard recovery and general combat orders are not implemented;
-- the full asynchronous resource manager, content validators and authoring
-  tools remain pending;
+- the full asynchronous resource manager, product-wide content validators and
+  authoring for points of interest, spawns, doors, triggers, cameras, grouped
+  transforms and isolated play preview remain pending;
 - there is no permission to copy Baldur's Gate content, rules text, assets or
   protected names; all shipped content must be original.
 
@@ -279,12 +288,15 @@ Characters currently use a bundle of:
 - `SkillRanksComponent`;
 - `CharacterVitalsComponent`.
 
-`World::characterOwnerEntity()` resolves picked glTF child sections back to
-the character root. Preserve this behavior when changing scene hierarchies,
-selection or skinned-model ownership.
+`World::characterOwnerEntity()` resolves glTF child sections back to a
+character root for gameplay. `World::authoredSceneOwnerEntity()` is the editor
+equivalent for every SCN object: viewport picking must select the nearest
+authored root, whether or not it is a character. Preserve both behaviors when
+changing scene hierarchies, selection or skinned-model ownership.
 
-The default SCN scene defines a three-member controllable party plus one
-uncontrolled friendly NPC, one hostile NPC and one directional sun.
+The default SCN scene defines explicit ground/wall/test primitives, a house,
+a three-member controllable party, one uncontrolled friendly NPC, one hostile
+NPC and one directional sun.
 `SceneFactory.cpp` turns blueprints into ECS entities and render resources.
 Friendly affiliation alone never grants control. Uncontrolled NPCs remain
 non-autonomous until a future explicit AI requirement implements that behavior.
@@ -347,6 +359,12 @@ ImGui code belongs under `core/editor`. Major entry points are:
 - `EditorUiMainWindow.cpp`: main editor menu/window;
 - `EditorUiHierarchy.cpp`: scene hierarchy and selection;
 - `EditorUiInspector.cpp`: selected-entity inspector shell;
+- `EditorSceneFileUi.cpp`: New/Open/Reload/Save/Save As, dirty prompts,
+  scene settings and creation palette;
+- `EditorSceneActions.*` and `EditorSceneMutations.cpp`: runtime rebuilds and
+  undoable scene-level structural commands;
+- `EditorSceneGizmo.cpp` and `EditorGizmoMath.*`: ImGuizmo manipulation and
+  safe world/local transform conversion;
 - `ComponentRegistry.*` and `ComponentDescriptors.cpp`: component tabs and
   add/remove behavior;
 - `CharacterInspector.cpp`: editable/derived character statistics;
@@ -369,6 +387,21 @@ User-visible edits should normally be represented by `ICommand` or
 specific merge keys for continuous widgets so dragging can merge related edits
 without merging unrelated entities or fields. The apply/undo callback must
 also publish relevant dirty/change events.
+
+`SceneDocument` is the authority for authorable scene state. Use stable SCN
+object IDs to restore selection across a structural rebuild. Never infer that
+an imported glTF child is authorable: only entities with
+`AuthoredSceneObjectComponent` may be renamed, transformed structurally or
+saved. Inspector edits for supported SCN data must call
+`captureRuntimeObject`; technical runtime-only components must be labeled as
+such and must not silently appear in the serialized scene.
+
+Structural operations use a complete `EditorSceneSnapshot` and rebuild the
+world on apply/undo. Rebuilding also reinitializes navigation so outstanding
+path results cannot be applied to new entities, and resets scene-owned render
+resources before uploading the replacement scene. Continuous gizmo movement
+is the exception: update the live transform while dragging and commit exactly
+one snapshot command when ImGuizmo stops using the handle.
 
 Use stable ImGui IDs (`PushID`, `##hidden-id`, entity/component identity) for
 repeated controls. Always pair `Begin`/`End`, `BeginTable`/`EndTable`,
@@ -417,19 +450,36 @@ ownership, cancellation and result-application thread explicit. Profile
 expensive navigation changes and test unreachable, boundary and stale-result
 cases.
 
-### SCN V1 scene assets
+### SCN V1/V2 scene assets
 
-Scene assets begin with the visible 10-byte header `V1SCN-----`, followed by a
-newline and restricted Lua. `assets/scenes/DefaultScene.scene` is the canonical
-example. Author objects with `Create({...})`, configure them through captured
-methods such as `object.transform(...)`, add every object exactly once with
-`scene.add(object)`, and finish with `scene.build()`.
+The current format begins with the visible 10-byte header `V2SCN-----`, followed
+by a newline and restricted Lua. `assets/scenes/DefaultScene.scene` is the
+canonical example. SCN V1 (`V1SCN-----`) remains readable and receives
+deterministic object IDs, but a loaded V1 document stays dirty until explicitly
+saved as V2. Author objects with `Create({...})`, give every V2 object a stable
+unique `id`, configure them through captured methods such as
+`object.transform(...)`, add every object exactly once with `scene.add(object)`,
+and finish with `scene.build()`.
+
+Transformable V2 objects may call `child.parent(parent)`. The loader rejects
+missing or non-transformable parents, self-parenting and hierarchy cycles.
+Preserve `objectOrder` during edits and serialization: it makes output stable
+and keeps hierarchy/order restoration deterministic.
+
+Every visible scene root must be an object in the SCN file. Use `Primitive`
+with `shape = "Plane"` or `shape = "Box"`, an explicit `material` preset,
+`layer`, and a transform whose scale defines its dimensions. Do not recreate
+implicit ground, walls, test geometry or other decoration in `SceneFactory`.
+Models that need the house surface treatment declare
+`material_profile = "House"`; never infer authoring behavior from an object's
+display name. Legacy scene-wide ground/wall fields are migration inputs only.
 
 Character tables may declare `controller = "Player"` together with a unique
-`party_slot` from zero to five. Omitting `controller` keeps non-player
-affiliations uncontrolled; legacy SCN V1 characters with affiliation `Player`
-and no controller retain slot-zero player control. Slots are validated for
-range and uniqueness across the scene.
+`party_slot` from zero to five. SCN V2 may additionally persist
+`party_active = false` for a controlled character outside the active party.
+Omitting `controller` keeps non-player affiliations uncontrolled; legacy SCN
+V1 characters with affiliation `Player` and no controller retain slot-zero
+player control. Slots are validated for range and uniqueness across the scene.
 
 A scene may contain one `DirectionalLight` with a required non-zero
 `direction` and optional `color` and non-negative `intensity`. It is a global
@@ -445,9 +495,17 @@ poisons the logarithmic cascade split and can black out the authored sun.
 
 Start scene-format changes in `SceneAsset.hpp/.cpp`. Field/type validation is
 split across `SceneAssetLuaFields.cpp`, `SceneAssetCharacter.cpp`,
-`SceneAssetLights.cpp` and `SceneAssetParser.cpp`. `SceneRegistry.cpp` resolves
-the staged asset, while `SceneFactory.cpp` is only responsible for converting
-the resulting `SceneBlueprint` into ECS/render resources.
+`SceneAssetLights.cpp`, `SceneAssetPrimitives.cpp` and `SceneAssetParser.cpp`;
+canonical writing lives in
+`SceneAssetSerialization*.cpp`. `SceneDocument.*` owns paths, dirty state,
+authoring mutations and ID/entity bindings. `SceneRegistry.cpp` resolves source
+and staged locations, while `SceneFactory.cpp` is only responsible for
+converting the resulting `SceneBlueprint` into ECS/render resources.
+
+Scene saves are deterministic and locale-independent. Serialize and parse the
+candidate before replacing a file, use the adjacent temporary-file path chosen
+by the shared writer, and mirror a successful source save into the staged asset
+used by the running build. Never truncate the destination before validation.
 
 Do not call `luaL_openlibs`, expose file/network/process APIs, accept binary Lua
 chunks, or let scene scripts access `World` or the renderer. Keep memory and
@@ -485,10 +543,11 @@ Versioned content files reserve exactly 10 bytes for their header. Use the
 shared codec in `core/content/ContentFileHeader.hpp`; do not hand-roll another
 magic prefix. The byte layout is `V<decimal version><uppercase type>` followed
 by validated padding: zero bytes for binary formats, visible `-` bytes for
-text formats. NAV V1 is `V1NAV\0\0\0\0\0`; SCN V1 is `V1SCN-----`. Open files
-in binary mode, validate the type before parsing the payload, and keep the type
-registry in `ARCHITECTURE.md` current. Compatibility with a legacy payload
-belongs in its format-specific reader.
+text formats. NAV V1 keeps its binary zero padding; current SCN V2 is
+`V2SCN-----` and legacy SCN V1 is `V1SCN-----`. Open files in binary mode,
+validate the type before parsing the payload, and keep the type registry in
+`ARCHITECTURE.md` current. Compatibility with a legacy payload belongs in its
+format-specific reader.
 
 Run the executable with the build directory as its working directory so these
 relative assets resolve consistently:
@@ -579,6 +638,7 @@ Focused checks:
 ctest --test-dir build -R alkanzar_rules_layer_tests --output-on-failure
 ctest --test-dir build -R alkanzar_character_rules_tests --output-on-failure
 ctest --test-dir build -R alkanzar_party_order_tests --output-on-failure
+ctest --test-dir build -R alkanzar_editor_scene_tests --output-on-failure
 ctest --test-dir build -R alkanzar_architecture_layers --output-on-failure
 ctest --test-dir build -R alkanzar_src_file_length --output-on-failure
 cmake --build build --target AlKanzar --parallel
@@ -593,8 +653,9 @@ CTest currently registers:
 | `alkanzar_rules_layer_tests` | Pure rules linked without the engine/render target. |
 | `alkanzar_app_mode_tests` | Mode capabilities/transitions, selection isolation, CLI launch mode and deterministic test scene. |
 | `alkanzar_content_file_header_tests` | Fixed 10-byte content-header encoding, decoding and validation. |
-| `alkanzar_scene_asset_tests` | Restricted SCN parsing, controller/party validation and staged default-scene loading. |
+| `alkanzar_scene_asset_tests` | Restricted SCN V1/V2 parsing, explicit primitive and legacy-layout migration, hierarchy validation, canonical round trips, controller/party validation and staged default-scene loading. |
 | `alkanzar_party_order_tests` | Controlled-member physics defaults, physical movement authority, local avoidance, smoothed heading, stable default-scene wall turns, formation layout and group requests. |
+| `alkanzar_editor_scene_tests` | Scene-document dirty/migration state, primitive/structural authoring, atomic-save safety, authored-root resolution and gizmo transform math. |
 | `alkanzar_architecture_layers` | Forbidden dependency scan. |
 | `alkanzar_src_file_length` | Strict `< 500` line limit for owned source files. |
 
@@ -628,8 +689,12 @@ Current controls relevant to testing:
 | `0`–`8` | Select final/deferred debug views. |
 | `[` / `]` | Step shadow debug cascades. |
 | Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y | Undo/redo editor commands. |
-| Ctrl/Cmd+I/P/N/S | Toggle inspector, profiler, navmesh or hierarchy windows in Editor. |
-| `Esc` | Quit. |
+| Ctrl/Cmd+S or Ctrl/Cmd+Shift+S | Save or Save As the current SCN document in Editor. |
+| Ctrl/Cmd+O or Ctrl/Cmd+Shift+N | Open or create a scene, with an unsaved-changes guard. |
+| Ctrl/Cmd+D or Delete/Backspace | Duplicate or request recursive deletion of the selected authored object. |
+| Ctrl/Cmd+I/P/N/H | Toggle inspector, profiler, navmesh or hierarchy windows in Editor. |
+| `G`, `R` or `S` | Select the translate, rotate or scale viewport gizmo in Editor. |
+| `Esc` | Quit, with an unsaved-scene confirmation when needed. |
 
 Startup modes can be selected explicitly:
 

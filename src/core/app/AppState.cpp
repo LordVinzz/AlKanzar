@@ -35,7 +35,8 @@ void BootstrapState::onEnter(EngineServices& services) {
     }
     registerEditorSessionImGuiSettings(services.editorSession);
     std::string sceneError{};
-    services.currentScene = appModeCapabilities(services.startupMode).usesDeterministicScene
+    const bool deterministicScene = appModeCapabilities(services.startupMode).usesDeterministicScene;
+    SceneBlueprint loadedScene = deterministicScene
         ? services.sceneRegistry.deterministicTestScene(&sceneError)
         : services.sceneRegistry.defaultScene(&sceneError);
     if (!sceneError.empty()) {
@@ -43,8 +44,13 @@ void BootstrapState::onEnter(EngineServices& services) {
         services.requestedMode = AppMode::Shutdown;
         return;
     }
+    services.sceneDocument.begin(
+        std::move(loadedScene),
+        deterministicScene ? std::filesystem::path{} : services.sceneRegistry.defaultSourceScenePath(),
+        deterministicScene ? std::filesystem::path{} : services.sceneRegistry.defaultStagedScenePath()
+    );
     services.sceneLoaded = services.sceneFactory.buildScene(
-        services.currentScene,
+        services.sceneDocument.blueprint(),
         services.world,
         services.renderer
     );
@@ -56,7 +62,11 @@ void BootstrapState::onEnter(EngineServices& services) {
         services.requestedMode = AppMode::Shutdown;
         return;
     }
-    if (!services.navigationSystem.initializeScene(services.currentScene, services.world, services.navigation)) {
+    services.sceneDocument.bindWorld(services.world);
+    if (!services.navigationSystem.initializeScene(
+            services.sceneDocument.blueprint(),
+            services.world,
+            services.navigation)) {
         spdlog::error("Application: navigation init failed: {}", services.navigation.statusMessage);
     }
     services.editorSelection.clear();
@@ -101,6 +111,7 @@ void EditorState::update(EngineServices& services) {
 
 void EditorState::renderUi(EngineServices& services) {
     drawEditorMainWindow(services);
+    drawSceneDocumentDialogs(services);
 
     const auto profilerWindowStart = std::chrono::steady_clock::now();
     drawProfilerWindow(services);
@@ -113,6 +124,7 @@ void EditorState::renderUi(EngineServices& services) {
     drawSceneHierarchyWindow(services);
     drawNavMeshWindow(services);
     drawInspectorWindow(services);
+    drawEditorGizmo(services);
 }
 
 void TestToolState::onEnter(EngineServices& services) {

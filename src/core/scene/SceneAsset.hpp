@@ -9,7 +9,8 @@
 
 namespace core {
 
-inline constexpr std::uint32_t kSceneAssetVersion = 1u;
+inline constexpr std::uint32_t kLegacySceneAssetVersion = 1u;
+inline constexpr std::uint32_t kSceneAssetVersion = 2u;
 inline constexpr std::string_view kSceneContentType = "SCN";
 
 [[nodiscard]] bool parseSceneAsset(
@@ -22,6 +23,18 @@ inline constexpr std::string_view kSceneContentType = "SCN";
 [[nodiscard]] bool loadSceneAsset(
     const std::filesystem::path& path,
     SceneBlueprint& outBlueprint,
+    std::string* error = nullptr
+);
+
+[[nodiscard]] bool serializeSceneAsset(
+    const SceneBlueprint& blueprint,
+    std::string& outBytes,
+    std::string* error = nullptr
+);
+
+[[nodiscard]] bool saveSceneAsset(
+    const std::filesystem::path& path,
+    const SceneBlueprint& blueprint,
     std::string* error = nullptr
 );
 

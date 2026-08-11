@@ -131,12 +131,52 @@ bool parseSkills(
     int tableIndex,
     SkillRanksComponent& skills,
     std::string* error,
-    std::string_view path
+    std::string_view path,
+    std::uint32_t version
 ) {
+    const std::size_t count = lua_rawlen(state, tableIndex);
+    if (version >= 2u && count == 0u) {
+        constexpr std::array kRanks{
+            std::pair{"Initiate"sv, SkillRank::Initiate},
+            std::pair{"Expert"sv, SkillRank::Expert},
+            std::pair{"Master"sv, SkillRank::Master},
+            std::pair{"Legendary"sv, SkillRank::Legendary},
+        };
+        const int absoluteIndex = lua_absindex(state, tableIndex);
+        lua_pushnil(state);
+        while (lua_next(state, absoluteIndex) != 0) {
+            if (lua_type(state, -2) != LUA_TSTRING || lua_type(state, -1) != LUA_TSTRING) {
+                lua_pop(state, 2);
+                return fail(error, path, "SCN V2 skill ranks must map skill names to rank names");
+            }
+            std::size_t skillSize = 0u;
+            std::size_t rankSize = 0u;
+            const char* skillData = lua_tolstring(state, -2, &skillSize);
+            const char* rankData = lua_tolstring(state, -1, &rankSize);
+            CharacterSkill skill = CharacterSkill::Count;
+            SkillRank rank = SkillRank::Untrained;
+            const bool knownSkill = parseEnum(
+                std::string_view(skillData, skillSize),
+                kSkills,
+                skill
+            );
+            const bool knownRank = parseEnum(
+                std::string_view(rankData, rankSize),
+                kRanks,
+                rank
+            );
+            lua_pop(state, 1);
+            if (!knownSkill || !knownRank) {
+                lua_pop(state, 1);
+                return fail(error, path, "contains an unknown skill or rank");
+            }
+            skills.ranks[static_cast<std::size_t>(skill)] = rank;
+        }
+        return true;
+    }
     if (!validateArray(state, tableIndex, error, path)) {
         return false;
     }
-    const std::size_t count = lua_rawlen(state, tableIndex);
     for (std::size_t index = 1u; index <= count; ++index) {
         lua_rawgeti(state, tableIndex, static_cast<lua_Integer>(index));
         if (lua_type(state, -1) != LUA_TSTRING) {
@@ -190,13 +230,14 @@ bool parseCharacterTable(
     int tableIndex,
     CharacterBlueprint& outCharacter,
     std::string* error,
-    std::string_view path
+    std::string_view path,
+    std::uint32_t version
 ) {
     const int absoluteIndex = lua_absindex(state, tableIndex);
     if (!validateStringFields(
             state,
             absoluteIndex,
-            {"affiliation", "controller", "party_slot", "race", "kit", "experience", "indicator_radius", "abilities", "skills", "vitals"},
+            {"affiliation", "controller", "party_slot", "party_active", "race", "kit", "experience", "indicator_radius", "abilities", "skills", "vitals"},
             error,
             path)) {
         return false;
@@ -209,15 +250,20 @@ bool parseCharacterTable(
     lua_getfield(state, absoluteIndex, "party_slot");
     const bool partySlotIsExplicit = !lua_isnil(state, -1);
     lua_pop(state, 1);
+    lua_getfield(state, absoluteIndex, "party_active");
+    const bool partyActiveIsExplicit = !lua_isnil(state, -1);
+    lua_pop(state, 1);
 
     std::string affiliationToken{};
     std::string controllerToken{};
     std::string raceToken{};
     std::string kitToken{};
     std::int64_t partySlot = -1;
+    bool partyActive = true;
     if (!readStringField(state, absoluteIndex, "affiliation", affiliationToken, true, error, path) ||
         !readStringField(state, absoluteIndex, "controller", controllerToken, false, error, path) ||
         !readIntegerField(state, absoluteIndex, "party_slot", partySlot, false, error, path) ||
+        !readBoolField(state, absoluteIndex, "party_active", partyActive, false, error, path) ||
         !readStringField(state, absoluteIndex, "race", raceToken, true, error, path) ||
         !readStringField(state, absoluteIndex, "kit", kitToken, true, error, path) ||
         !readIntegerField(state, absoluteIndex, "experience", character.character.experience, false, error, path) ||
@@ -227,11 +273,14 @@ bool parseCharacterTable(
     if (!parseEnum(std::string_view(affiliationToken), kAffiliations, character.character.affiliation)) {
         return fail(error, std::string(path) + ".affiliation", "contains an unknown affiliation");
     }
+    if (partyActiveIsExplicit && version < 2u) {
+        return fail(error, std::string(path) + ".party_active", "requires SCN V2");
+    }
     if (controllerIsExplicit) {
         if (!parseEnum(std::string_view(controllerToken), kControllers, character.controller.kind)) {
             return fail(error, std::string(path) + ".controller", "contains an unknown controller");
         }
-    } else if (character.character.affiliation == CharacterAffiliation::Player) {
+    } else if (version == 1u && character.character.affiliation == CharacterAffiliation::Player) {
         // Preserve the control semantics of SCN V1 assets authored before the
         // controller and party fields became explicit.
         character.controller.kind = CharacterControllerKind::Player;
@@ -246,10 +295,14 @@ bool parseCharacterTable(
         }
         character.partyMember = PartyMemberComponent{
             static_cast<std::uint8_t>(partySlot),
-            true
+            partyActive
         };
-    } else if (partySlotIsExplicit) {
-        return fail(error, std::string(path) + ".party_slot", "requires a Player controller");
+    } else if (partySlotIsExplicit || partyActiveIsExplicit) {
+        return fail(
+            error,
+            std::string(path) + (partySlotIsExplicit ? ".party_slot" : ".party_active"),
+            "requires a Player controller"
+        );
     }
     if (!parseEnum(std::string_view(raceToken), kRaces, character.character.race)) {
         return fail(error, std::string(path) + ".race", "contains an unknown race");
@@ -282,7 +335,14 @@ bool parseCharacterTable(
         return false;
     }
     const std::string skillsPath = std::string(path) + ".skills";
-    const bool skillsValid = parseSkills(state, -1, character.skills, error, skillsPath);
+    const bool skillsValid = parseSkills(
+        state,
+        -1,
+        character.skills,
+        error,
+        skillsPath,
+        version
+    );
     lua_pop(state, 1);
     if (!skillsValid) {
         return false;

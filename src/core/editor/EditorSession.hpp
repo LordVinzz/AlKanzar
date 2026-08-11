@@ -1,8 +1,10 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <string>
 
+#include "core/ecs/Components.hpp"
 #include "render/resources/Material.hpp"
 
 namespace core {
@@ -10,6 +12,25 @@ namespace core {
 enum class InspectorTab {
     Selection = 0,
     TextureBrowser,
+};
+
+enum class SceneDocumentAction {
+    None = 0,
+    NewScene,
+    OpenScene,
+    ReloadScene,
+    Quit,
+};
+
+enum class EditorGizmoOperation {
+    Translate = 0,
+    Rotate,
+    Scale,
+};
+
+enum class EditorGizmoSpace {
+    Local = 0,
+    World,
 };
 
 struct EditorSession {
@@ -35,6 +56,21 @@ struct EditorSession {
     bool profilerExportStatusIsError{false};
     std::array<char, 128> textureBrowserSearch{};
     std::array<char, 128> animationSkeletonSearch{};
+    std::array<char, 256> scenePathInput{};
+    std::string sceneDocumentStatus{};
+    bool sceneDocumentStatusIsError{false};
+    SceneDocumentAction pendingSceneAction{SceneDocumentAction::None};
+    bool unsavedChangesDialogRequested{false};
+    bool openSceneDialogRequested{false};
+    bool saveAsSceneDialogRequested{false};
+    bool resumePendingActionAfterSaveAs{false};
+    EditorGizmoOperation gizmoOperation{EditorGizmoOperation::Translate};
+    EditorGizmoSpace gizmoSpace{EditorGizmoSpace::World};
+    bool gizmoSnapEnabled{false};
+    bool gizmoWasUsing{false};
+    TransformComponent gizmoStartTransform{};
+    std::string gizmoActiveObjectId{};
+    std::string pendingDeleteObjectId{};
 
     [[nodiscard]] bool anyToolWindowVisible() const {
         return sceneHierarchyVisible || inspectorWindowVisible || profilerWindowVisible || navMeshWindowVisible;

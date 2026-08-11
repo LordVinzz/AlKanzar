@@ -36,6 +36,20 @@ void addQuad(const std::array<Vertex, 4>& vertices, render::Mesh& mesh) {
 
 }  // namespace
 
+render::Mesh SceneMeshFactory::createPlane(const glm::vec4& color) {
+    render::Mesh mesh{};
+    addQuad(
+        {{
+            {glm::vec3(-0.5f, 0.0f, -0.5f), {0, 1, 0}, {0, 0}, {0, 0}, color},
+            {glm::vec3(-0.5f, 0.0f, 0.5f), {0, 1, 0}, {0, 1}, {0, 0}, color},
+            {glm::vec3(0.5f, 0.0f, 0.5f), {0, 1, 0}, {1, 1}, {0, 0}, color},
+            {glm::vec3(0.5f, 0.0f, -0.5f), {0, 1, 0}, {1, 0}, {0, 0}, color},
+        }},
+        mesh
+    );
+    return mesh;
+}
+
 render::Mesh SceneMeshFactory::createBox(
     const glm::vec3& minCorner,
     const glm::vec3& maxCorner,

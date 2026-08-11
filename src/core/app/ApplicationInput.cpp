@@ -4,7 +4,11 @@
 #include <array>
 #include <optional>
 
+#include <imgui.h>
+#include <ImGuizmo.h>
+
 #include "core/editor/EditorSessionImGuiSettings.hpp"
+#include "core/editor/EditorSceneActions.hpp"
 #include "core/scene/Camera.hpp"
 
 namespace core {
@@ -21,7 +25,11 @@ void Application::bindEventHandlers() {
     });
 
     services_.events.subscribe<QuitRequestedEvent>([this](const QuitRequestedEvent&) {
-        services_.requestedMode = AppMode::Shutdown;
+        if (services_.sceneDocument.dirty()) {
+            services_.editorSession.openMainWindow();
+            services_.requestedMode = AppMode::Editor;
+        }
+        beginEditorSceneDocumentAction(services_, SceneDocumentAction::Quit);
     });
     services_.events.subscribe<ToggleEditorEvent>([this](const ToggleEditorEvent&) {
         const AppMode target = modeSession_.editorToggleTarget();
@@ -119,7 +127,7 @@ void Application::bindEventHandlers() {
     });
     services_.events.subscribe<ViewportClickedEvent>([this](const ViewportClickedEvent& event) {
         ALKANZAR_PROFILE_SCOPE(services_.profiler, "Viewport Click");
-        if (services_.renderer.wantsMouse()) {
+        if (services_.renderer.wantsMouse() || ImGuizmo::IsOver() || ImGuizmo::IsUsing()) {
             return;
         }
         const AppModeCapabilities& capabilities = modeSession_.capabilities();
@@ -167,9 +175,9 @@ void Application::bindEventHandlers() {
                 false
             );
             if (picked.has_value()) {
-                const EntityId characterOwner = services_.world.characterOwnerEntity(*picked);
-                if (characterOwner.valid()) {
-                    picked = characterOwner;
+                const EntityId authoredOwner = services_.world.authoredSceneOwnerEntity(*picked);
+                if (authoredOwner.valid()) {
+                    picked = authoredOwner;
                 }
             }
             services_.editorSelection.set(picked);
@@ -194,6 +202,7 @@ void Application::translateSdlEvent(const SDL_Event& event) {
 
             const SDL_Keymod modifiers = SDL_GetModState();
             const bool primaryModifier = (modifiers & KMOD_CTRL) != 0 || (modifiers & KMOD_GUI) != 0;
+            const bool shiftModifier = (modifiers & KMOD_SHIFT) != 0;
             if (primaryModifier && event.key.repeat == 0) {
                 if (modeSession_.capabilities().acceptsEditorInput) {
                     switch (event.key.keysym.sym) {
@@ -214,14 +223,41 @@ void Application::translateSdlEvent(const SDL_Event& event) {
                                 services_.editorSession.profilerWindowVisible;
                             break;
                         case SDLK_n:
-                            setPersistedEditorSessionFlag(
-                                services_.editorSession.navMeshWindowVisible,
-                                !services_.editorSession.navMeshWindowVisible
-                            );
-                            services_.editorSession.navMeshWindowFocusRequested =
-                                services_.editorSession.navMeshWindowVisible;
+                            if (shiftModifier) {
+                                beginEditorSceneDocumentAction(services_, SceneDocumentAction::NewScene);
+                            } else {
+                                setPersistedEditorSessionFlag(
+                                    services_.editorSession.navMeshWindowVisible,
+                                    !services_.editorSession.navMeshWindowVisible
+                                );
+                                services_.editorSession.navMeshWindowFocusRequested =
+                                    services_.editorSession.navMeshWindowVisible;
+                            }
                             break;
                         case SDLK_s:
+                            services_.sceneDocument.captureRuntimeWorld(services_.world);
+                            if (shiftModifier || !services_.sceneDocument.hasPath()) {
+                                services_.editorSession.saveAsSceneDialogRequested = true;
+                            } else {
+                                std::string error{};
+                                const bool saved = services_.sceneDocument.save(&error);
+                                setEditorSceneStatus(
+                                    services_,
+                                    saved ? "Saved " + services_.sceneDocument.displayName() + "." : error,
+                                    !saved
+                                );
+                            }
+                            break;
+                        case SDLK_o:
+                            beginEditorSceneDocumentAction(services_, SceneDocumentAction::OpenScene);
+                            break;
+                        case SDLK_d:
+                            if (const std::optional<SceneObjectId> selected =
+                                    selectedAuthoredObject(services_)) {
+                                (void)duplicateEditorSceneObject(services_, *selected);
+                            }
+                            break;
+                        case SDLK_h:
                             setPersistedEditorSessionFlag(
                                 services_.editorSession.sceneHierarchyVisible,
                                 !services_.editorSession.sceneHierarchyVisible
@@ -233,10 +269,13 @@ void Application::translateSdlEvent(const SDL_Event& event) {
                             break;
                     }
 
-                    if (event.key.keysym.sym == SDLK_i ||
+                    if (event.key.keysym.sym == SDLK_h ||
+                        event.key.keysym.sym == SDLK_i ||
                         event.key.keysym.sym == SDLK_n ||
+                        event.key.keysym.sym == SDLK_o ||
                         event.key.keysym.sym == SDLK_p ||
-                        event.key.keysym.sym == SDLK_s) {
+                        event.key.keysym.sym == SDLK_s ||
+                        event.key.keysym.sym == SDLK_d) {
                         break;
                     }
                 }
@@ -251,6 +290,30 @@ void Application::translateSdlEvent(const SDL_Event& event) {
                 }
                 if (event.key.keysym.sym == SDLK_y) {
                     services_.events.publish(RedoRequestedEvent{});
+                    break;
+                }
+            }
+
+            if (!primaryModifier && event.key.repeat == 0 &&
+                modeSession_.capabilities().acceptsEditorInput &&
+                !services_.renderer.wantsKeyboard()) {
+                if (event.key.keysym.sym == SDLK_g) {
+                    services_.editorSession.gizmoOperation = EditorGizmoOperation::Translate;
+                    break;
+                }
+                if (event.key.keysym.sym == SDLK_r) {
+                    services_.editorSession.gizmoOperation = EditorGizmoOperation::Rotate;
+                    break;
+                }
+                if (event.key.keysym.sym == SDLK_s) {
+                    services_.editorSession.gizmoOperation = EditorGizmoOperation::Scale;
+                    break;
+                }
+                if (event.key.keysym.sym == SDLK_DELETE || event.key.keysym.sym == SDLK_BACKSPACE) {
+                    if (const std::optional<SceneObjectId> selected =
+                            selectedAuthoredObject(services_)) {
+                        services_.editorSession.pendingDeleteObjectId = *selected;
+                    }
                     break;
                 }
             }

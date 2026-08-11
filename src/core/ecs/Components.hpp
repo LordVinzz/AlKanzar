@@ -42,6 +42,10 @@ struct ParentComponent {
     EntityId parent{};
 };
 
+struct AuthoredSceneObjectComponent {
+    std::string id{};
+};
+
 struct VisibilityComponent {
     bool visible{true};
 };

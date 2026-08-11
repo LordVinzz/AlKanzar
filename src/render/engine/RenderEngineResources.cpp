@@ -21,6 +21,18 @@ MeshHandle RenderEngine::uploadMesh(const Mesh& mesh) {
     return MeshHandle{sceneMeshes_.size() - 1u};
 }
 
+bool RenderEngine::resetSceneResources() {
+    for (auto& [entity, state] : occlusionQueryStates_) {
+        (void)entity;
+        recycleOcclusionQuery(state.queryId);
+    }
+    occlusionQueryStates_.clear();
+    latestFrustumCullStats_ = {};
+    latestOcclusionCullStats_ = {};
+    sceneMeshes_.clear();
+    return resourceRegistry_.initializeDefaults();
+}
+
 void RenderEngine::uploadJointMatrices(const std::vector<glm::mat4>& jointMatrices) {
     const GLsizeiptr bufferSize = static_cast<GLsizeiptr>(jointMatrices.size() * sizeof(glm::mat4));
     if (bufferSize == 0) {
@@ -64,4 +76,3 @@ void* RenderEngine::texturePreviewId(const std::shared_ptr<Texture>& texture) {
 }
 
 }  // namespace render
-

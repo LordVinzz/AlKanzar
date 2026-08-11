@@ -2,8 +2,39 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string_view>
+
+#include <spdlog/spdlog.h>
+
+#include "render/engine/OpenGlDiagnostics.hpp"
 
 namespace render {
+namespace {
+
+std::string_view diagnosticPath(const Texture& texture) {
+    return texture.sourcePath.empty()
+        ? std::string_view(texture.name)
+        : std::string_view(texture.sourcePath);
+}
+
+class Texture2DBindingGuard {
+public:
+    Texture2DBindingGuard() {
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousBinding_);
+    }
+
+    ~Texture2DBindingGuard() {
+        glBindTexture(
+            GL_TEXTURE_2D,
+            static_cast<GLuint>(previousBinding_)
+        );
+    }
+
+private:
+    GLint previousBinding_{0};
+};
+
+}  // namespace
 
 RenderResourceRegistry::~RenderResourceRegistry() {
     destroy();
@@ -109,6 +140,7 @@ void RenderResourceRegistry::destroy() {
     defaultClearcoatTexture_ = {};
     defaultDetailNormalTexture_ = {};
     defaultHeightTexture_ = {};
+    reportedUnitOneTextures_.clear();
     textures_.clear();
     samplers_.clear();
 }
@@ -162,8 +194,39 @@ bool RenderResourceRegistry::ensureTextureUploaded(Texture& texture) const {
     }
 
     GLuint handle = 0;
+    const std::string_view path = diagnosticPath(texture);
+    gl_diagnostics::beginCheckedOperation("upload texture", path);
+    // Lazy uploads occur while material texture units are already populated.
+    // Preserve this unit so uploading the next slot cannot clear its binding.
+    const Texture2DBindingGuard bindingGuard{};
     glGenTextures(1, &handle);
     glBindTexture(GL_TEXTURE_2D, handle);
+    if (!gl_diagnostics::reportErrors("create and bind GL_TEXTURE_2D", path) ||
+        handle == 0) {
+        spdlog::error(
+            "OpenGL texture error: unable to create path='{}' name='{}'",
+            path,
+            texture.name
+        );
+        if (handle != 0) {
+            glDeleteTextures(1, &handle);
+        }
+        return false;
+    }
+
+    const int mipLevels = 1 + static_cast<int>(std::floor(std::log2(
+        static_cast<float>(std::max(texture.width, texture.height)))));
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, mipLevels - 1);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    if (!gl_diagnostics::reportErrors("configure GL_TEXTURE_2D", path)) {
+        glDeleteTextures(1, &handle);
+        return false;
+    }
+
     glTexImage2D(
         GL_TEXTURE_2D,
         0,
@@ -175,15 +238,25 @@ bool RenderResourceRegistry::ensureTextureUploaded(Texture& texture) const {
         type,
         texture.bytes.data()
     );
+    if (!gl_diagnostics::reportErrors("glTexImage2D", path)) {
+        glDeleteTextures(1, &handle);
+        return false;
+    }
     glGenerateMipmap(GL_TEXTURE_2D);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-    const int mipLevels = 1 + static_cast<int>(std::floor(std::log2(static_cast<float>(std::max(texture.width, texture.height)))));
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, std::max(mipLevels - 1, 0));
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    if (!gl_diagnostics::reportErrors("glGenerateMipmap", path)) {
+        glDeleteTextures(1, &handle);
+        return false;
+    }
+    const bool storageValid = gl_diagnostics::validateBoundTexture2D(
+        path,
+        texture.width,
+        texture.height,
+        mipLevels
+    );
+    if (!storageValid) {
+        glDeleteTextures(1, &handle);
+        return false;
+    }
 
     texture.gpuHandle = handle;
     texture.mipLevels = mipLevels;
@@ -196,6 +269,8 @@ bool RenderResourceRegistry::ensureSamplerUploaded(Sampler& sampler) const {
     }
 
     GLuint handle = 0;
+    constexpr std::string_view kSamplerPath = "sampler://material";
+    gl_diagnostics::beginCheckedOperation("upload sampler", kSamplerPath);
     glGenSamplers(1, &handle);
 
     const auto toWrap = [](WrapMode mode) {
@@ -242,6 +317,13 @@ bool RenderResourceRegistry::ensureSamplerUploaded(Sampler& sampler) const {
     glSamplerParameterf(handle, GL_TEXTURE_MAX_ANISOTROPY_EXT, std::min(maxAnisotropy, sampler.anisotropy));
 #endif
 
+    if (!gl_diagnostics::reportErrors("configure sampler", kSamplerPath) ||
+        handle == 0) {
+        if (handle != 0) {
+            glDeleteSamplers(1, &handle);
+        }
+        return false;
+    }
     sampler.gpuHandle = handle;
     return true;
 }
@@ -307,13 +389,44 @@ void RenderResourceRegistry::bindTextureRef(int unit, const TextureRef& ref) con
         return;
     }
 
-    if (selected->sampler) {
+    const std::string_view path = diagnosticPath(*selected->texture);
+    const bool samplerReady = selected->sampler == nullptr ||
         ensureSamplerUploaded(*selected->sampler);
-    }
 
+    const bool reportUnitOneBinding = unit == 1 &&
+        reportedUnitOneTextures_.insert(
+            selected->texture->gpuHandle
+        ).second;
+    if (reportUnitOneBinding) {
+        gl_diagnostics::beginCheckedOperation("bind texture unit 1", path);
+    }
     glActiveTexture(GL_TEXTURE0 + unit);
     glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(selected->texture->gpuHandle));
-    glBindSampler(unit, selected->sampler ? static_cast<GLuint>(selected->sampler->gpuHandle) : 0);
+    glBindSampler(
+        unit,
+        samplerReady && selected->sampler
+            ? static_cast<GLuint>(selected->sampler->gpuHandle)
+            : 0
+    );
+    if (reportUnitOneBinding) {
+        (void)gl_diagnostics::reportErrors(
+            "bind GL_TEXTURE_2D and sampler to unit 1",
+            path
+        );
+    }
+
+    if (reportUnitOneBinding) {
+        spdlog::info(
+            "OpenGL texture diagnostic: unit=1 target=GL_TEXTURE_2D "
+            "path='{}' name='{}' handle={} size={}x{} mip_levels={}",
+            path,
+            selected->texture->name,
+            selected->texture->gpuHandle,
+            selected->texture->width,
+            selected->texture->height,
+            selected->texture->mipLevels
+        );
+    }
 }
 
 std::vector<std::shared_ptr<Texture>> RenderResourceRegistry::textureCatalog(TextureSemantic preferredSemantic) const {

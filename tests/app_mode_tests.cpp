@@ -314,6 +314,13 @@ void testDeterministicTestSceneHasAStableMinimalLayout() {
 
     assert(first.models.size() == 3u);
     assert(first.models.size() == second.models.size());
+    assert(first.primitives.size() == 5u);
+    assert(first.primitives.size() == second.primitives.size());
+    assert(first.primitives[0].id == "ground");
+    assert(first.primitives[0].transform.scale == glm::vec3(24.0f, 1.0f, 24.0f));
+    assert(first.primitives[1].id == "wall_a");
+    assert(first.primitives[1].transform.position == glm::vec3(-6.0f, 1.25f, 0.0f));
+    assert(first.primitives[1].transform.scale == glm::vec3(0.5f, 2.5f, 24.0f));
     assert(first.directionalLight.has_value());
     assert(first.pointLights.size() == 1u);
     assert(first.spotLights.empty());

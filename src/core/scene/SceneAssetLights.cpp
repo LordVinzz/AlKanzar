@@ -11,15 +11,17 @@ namespace {
 
 bool parseDirectionalLight(
     lua_State* state,
+    int objectIndex,
     int parametersIndex,
     SceneBlueprint& blueprint,
     std::string* error,
-    std::string_view path
+    std::string_view path,
+    std::uint32_t version
 ) {
     if (!validateStringFields(
             state,
             parametersIndex,
-            {"type", "name", "direction", "color", "intensity"},
+            {"type", "id", "name", "direction", "color", "intensity"},
             error,
             path)) {
         return false;
@@ -29,11 +31,26 @@ bool parseDirectionalLight(
     }
 
     DirectionalLightBlueprint light{};
-    if (!readStringField(state, parametersIndex, "name", light.name, true, error, path) ||
+    std::optional<SceneObjectId> parentId{};
+    if (!readSceneObjectIdentity(
+            state,
+            objectIndex,
+            parametersIndex,
+            "DirectionalLight",
+            version,
+            blueprint,
+            light.id,
+            parentId,
+            error,
+            path) ||
+        !readStringField(state, parametersIndex, "name", light.name, true, error, path) ||
         !readVec3Field(state, parametersIndex, "direction", light.direction, true, error, path) ||
         !readVec3Field(state, parametersIndex, "color", light.color, false, error, path) ||
         !readFloatField(state, parametersIndex, "intensity", light.intensity, false, error, path)) {
         return false;
+    }
+    if (parentId.has_value()) {
+        return fail(error, std::string(path) + ".parent", "DirectionalLight cannot have a parent");
     }
 
     const float directionLength = glm::length(light.direction);
@@ -53,18 +70,30 @@ bool parseLightVolume(
     int parametersIndex,
     SceneBlueprint& blueprint,
     std::string* error,
-    std::string_view path
+    std::string_view path,
+    std::uint32_t version
 ) {
     if (!validateStringFields(
             state,
             parametersIndex,
-            {"type", "name", "half_extents"},
+            {"type", "id", "name", "half_extents"},
             error,
             path)) {
         return false;
     }
     LightVolumeBlueprint volume{};
-    if (!readStringField(state, parametersIndex, "name", volume.name, true, error, path) ||
+    if (!readSceneObjectIdentity(
+            state,
+            objectIndex,
+            parametersIndex,
+            "LightVolume",
+            version,
+            blueprint,
+            volume.id,
+            volume.parentId,
+            error,
+            path) ||
+        !readStringField(state, parametersIndex, "name", volume.name, true, error, path) ||
         !readVec3Field(state, parametersIndex, "half_extents", volume.halfExtents, false, error, path) ||
         !readTransform(state, objectIndex, volume.transform, error, path)) {
         return false;
@@ -85,13 +114,14 @@ bool parsePointLight(
     int parametersIndex,
     SceneBlueprint& blueprint,
     std::string* error,
-    std::string_view path
+    std::string_view path,
+    std::uint32_t version
 ) {
     if (!validateStringFields(
             state,
             parametersIndex,
             {
-                "type", "name", "radius", "color", "intensity", "phase",
+                "type", "id", "name", "radius", "color", "intensity", "phase",
                 "movable", "casts_shadow", "shadow_bias_min", "shadow_bias_slope"
             },
             error,
@@ -99,7 +129,18 @@ bool parsePointLight(
         return false;
     }
     PointLightBlueprint light{};
-    if (!readStringField(state, parametersIndex, "name", light.name, true, error, path) ||
+    if (!readSceneObjectIdentity(
+            state,
+            objectIndex,
+            parametersIndex,
+            "PointLight",
+            version,
+            blueprint,
+            light.id,
+            light.parentId,
+            error,
+            path) ||
+        !readStringField(state, parametersIndex, "name", light.name, true, error, path) ||
         !readFloatField(state, parametersIndex, "radius", light.radius, false, error, path) ||
         !readVec3Field(state, parametersIndex, "color", light.color, false, error, path) ||
         !readFloatField(state, parametersIndex, "intensity", light.intensity, false, error, path) ||
@@ -125,13 +166,14 @@ bool parseSpotLight(
     int parametersIndex,
     SceneBlueprint& blueprint,
     std::string* error,
-    std::string_view path
+    std::string_view path,
+    std::uint32_t version
 ) {
     if (!validateStringFields(
             state,
             parametersIndex,
             {
-                "type", "name", "radius", "color", "intensity", "target",
+                "type", "id", "name", "radius", "color", "intensity", "target",
                 "inner_angle", "outer_angle", "phase", "movable",
                 "casts_shadow", "shadow_bias_min", "shadow_bias_slope"
             },
@@ -140,7 +182,18 @@ bool parseSpotLight(
         return false;
     }
     SpotLightBlueprint light{};
-    if (!readStringField(state, parametersIndex, "name", light.name, true, error, path) ||
+    if (!readSceneObjectIdentity(
+            state,
+            objectIndex,
+            parametersIndex,
+            "SpotLight",
+            version,
+            blueprint,
+            light.id,
+            light.parentId,
+            error,
+            path) ||
+        !readStringField(state, parametersIndex, "name", light.name, true, error, path) ||
         !readFloatField(state, parametersIndex, "radius", light.radius, false, error, path) ||
         !readVec3Field(state, parametersIndex, "color", light.color, false, error, path) ||
         !readFloatField(state, parametersIndex, "intensity", light.intensity, false, error, path) ||
@@ -173,19 +226,20 @@ bool parseLightObject(
     std::string_view type,
     SceneBlueprint& blueprint,
     std::string* error,
-    std::string_view path
+    std::string_view path,
+    std::uint32_t version
 ) {
     if (type == "DirectionalLight") {
-        return parseDirectionalLight(state, parametersIndex, blueprint, error, path);
+        return parseDirectionalLight(state, objectIndex, parametersIndex, blueprint, error, path, version);
     }
     if (type == "LightVolume") {
-        return parseLightVolume(state, objectIndex, parametersIndex, blueprint, error, path);
+        return parseLightVolume(state, objectIndex, parametersIndex, blueprint, error, path, version);
     }
     if (type == "PointLight") {
-        return parsePointLight(state, objectIndex, parametersIndex, blueprint, error, path);
+        return parsePointLight(state, objectIndex, parametersIndex, blueprint, error, path, version);
     }
     if (type == "SpotLight") {
-        return parseSpotLight(state, objectIndex, parametersIndex, blueprint, error, path);
+        return parseSpotLight(state, objectIndex, parametersIndex, blueprint, error, path, version);
     }
     return fail(error, std::string(path) + ".type", "contains an unknown object type");
 }

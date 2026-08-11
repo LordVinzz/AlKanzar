@@ -24,6 +24,10 @@ struct OrientedBox {
 };
 
 glm::mat4 composeTransform(const TransformComponent& transform);
+[[nodiscard]] bool decomposeTransform(
+    const glm::mat4& matrix,
+    TransformComponent& outTransform
+);
 glm::mat3 normalMatrixFromModel(const glm::mat4& model);
 render::Bounds3 transformBounds(const render::Bounds3& bounds, const glm::mat4& model);
 OrientedBox makeOrientedBox(const TransformComponent& transform, const BoxColliderComponent& collider);

@@ -28,6 +28,7 @@ public:
         names.remove(entity);
         transforms.remove(entity);
         parents.remove(entity);
+        authoredSceneObjects.remove(entity);
         visibilities.remove(entity);
         bounds.remove(entity);
         renderables.remove(entity);
@@ -71,6 +72,7 @@ public:
         names.clear();
         transforms.clear();
         parents.clear();
+        authoredSceneObjects.clear();
         visibilities.clear();
         bounds.clear();
         renderables.clear();
@@ -225,6 +227,21 @@ public:
         return {};
     }
 
+    [[nodiscard]] EntityId authoredSceneOwnerEntity(EntityId entity) const {
+        EntityId current = entity;
+        while (current.valid() && isAlive(current)) {
+            if (authoredSceneObjects.contains(current)) {
+                return current;
+            }
+            const ParentComponent* parent = parents.tryGet(current);
+            if (parent == nullptr || !isAlive(parent->parent)) {
+                break;
+            }
+            current = parent->parent;
+        }
+        return {};
+    }
+
     void ensureCacheSize(std::size_t size) {
         if (transformCache_.size() < size) {
             transformCache_.resize(size);
@@ -237,6 +254,7 @@ public:
     ComponentStore<NameComponent> names{};
     ComponentStore<TransformComponent> transforms{};
     ComponentStore<ParentComponent> parents{};
+    ComponentStore<AuthoredSceneObjectComponent> authoredSceneObjects{};
     ComponentStore<VisibilityComponent> visibilities{};
     ComponentStore<BoundsComponent> bounds{};
     ComponentStore<RenderableComponent> renderables{};

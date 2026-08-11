@@ -76,6 +76,16 @@ std::optional<std::vector<std::uint8_t>> makeGeneratedBuffer(
         static_cast<std::size_t>(source.height) * 4u);
 }
 
+std::string generatedTexturePath(
+    const Texture& source,
+    const std::string& generatedName
+) {
+    const std::string& origin = source.sourcePath.empty()
+        ? source.name
+        : source.sourcePath;
+    return origin + " [generated:" + generatedName + "]";
+}
+
 }  // namespace
 
 std::shared_ptr<Texture> loadTextureFromFile(
@@ -100,6 +110,7 @@ std::shared_ptr<Texture> loadTextureFromFile(
     auto texture = makeTexture(
         name, width, height, srgb, std::move(bytes), semantic,
         TextureOrigin::Project);
+    texture->sourcePath = path;
     texture->generated = false;
     return texture;
 }
@@ -127,6 +138,7 @@ std::shared_ptr<Texture> makeSolidTexture(
             glm::clamp(color[component], 0.0f, 1.0f) * 255.0f);
     }
     auto texture = makeTexture(name, 1, 1, srgb, std::move(bytes), semantic, origin);
+    texture->sourcePath = "builtin://" + name;
     texture->generated = true;
     return texture;
 }
@@ -155,6 +167,7 @@ std::shared_ptr<Texture> generateNormalTexture(
     }
     auto texture = makeTexture(name, source.width, source.height, false,
         std::move(*bytes), TextureSemantic::Normal, TextureOrigin::Generated);
+    texture->sourcePath = generatedTexturePath(source, name);
     texture->generated = true;
     return texture;
 }
@@ -180,6 +193,7 @@ std::shared_ptr<Texture> generateOcclusionTexture(
     }
     auto texture = makeTexture(name, source.width, source.height, false,
         std::move(*bytes), TextureSemantic::AO, TextureOrigin::Generated);
+    texture->sourcePath = generatedTexturePath(source, name);
     texture->generated = true;
     return texture;
 }
@@ -203,6 +217,7 @@ std::shared_ptr<Texture> generateMetallicRoughnessTexture(
     }
     auto texture = makeTexture(name, source.width, source.height, false,
         std::move(*bytes), TextureSemantic::ORM, TextureOrigin::Generated);
+    texture->sourcePath = generatedTexturePath(source, name);
     texture->generated = true;
     return texture;
 }
@@ -223,6 +238,7 @@ std::shared_ptr<Texture> generateHeightTexture(
     }
     auto texture = makeTexture(name, source.width, source.height, false,
         std::move(*bytes), TextureSemantic::Height, TextureOrigin::Generated);
+    texture->sourcePath = generatedTexturePath(source, name);
     texture->generated = true;
     return texture;
 }

@@ -11,6 +11,7 @@ namespace core {
 // Factory for the procedural meshes used by scene blueprints.
 class SceneMeshFactory final {
 public:
+    [[nodiscard]] static render::Mesh createPlane(const glm::vec4& color);
     [[nodiscard]] static render::Mesh createBox(
         const glm::vec3& minCorner,
         const glm::vec3& maxCorner,

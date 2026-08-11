@@ -53,7 +53,8 @@ Les fichiers de contenu versionnés commencent par un en-tête de taille fixe de
 10 octets défini dans `core/content/ContentFileHeader.hpp`. Il contient le jeton
 ASCII `V<version décimale><TYPE>` puis un remplissage jusqu'à atteindre
 exactement 10 octets. Un navmesh binaire V1 commence par
-`V1NAV\0\0\0\0\0`. Une scène texte V1 commence par `V1SCN-----`.
+`V1NAV\0\0\0\0\0`. Une scène texte courante V2 commence par `V2SCN-----` ;
+le lecteur accepte encore `V1SCN-----` pour la migration.
 
 - La version est strictement positive et peut comporter plusieurs chiffres.
 - Le type ne contient que des lettres ASCII majuscules.
@@ -70,13 +71,13 @@ Types attribués actuellement :
 | Type | Contenu | Version courante |
 | --- | --- | --- |
 | `NAV` | Navmesh | `V1` |
-| `SCN` | Scène Lua déclarative | `V1` |
+| `SCN` | Scène Lua déclarative | `V2` |
 
 Le parseur NAV sait encore lire l'ancien préambule texte `version 1` afin de
 permettre une migration progressive. Toute nouvelle sérialisation utilise
 l'en-tête commun de 10 octets.
 
-## Scènes SCN V1
+## Scènes SCN V1/V2
 
 Le payload d'une scène est du Lua lisible, limité à une API déclarative. La
 scène par défaut se trouve dans `assets/scenes/DefaultScene.scene` et suit le
@@ -84,7 +85,22 @@ flux suivant :
 
 ```lua
 scene = Create({ type = "Scene", navmesh = "navmeshes/DefaultScene.navmesh" })
-player = Create({ type = "Model", name = "Player", asset = "Adventurer.glb" })
+ground = Create({
+    type = "Primitive",
+    id = "ground",
+    name = "Ground",
+    shape = "Plane",
+    material = "Soil",
+    layer = "Ground",
+})
+ground.transform({ scale = { x = 1000, y = 1, z = 1000 } })
+scene.add(ground)
+player = Create({
+    type = "Model",
+    id = "player",
+    name = "Player",
+    asset = "Adventurer.glb",
+})
 player.transform({ position = { x = 0, y = 0, z = 0 } })
 player.character({
     affiliation = "Player",
@@ -95,6 +111,7 @@ player.character({
 scene.add(player)
 sun = Create({
     type = "DirectionalLight",
+    id = "sun",
     name = "Sun",
     direction = { x = -0.35, y = -1, z = -0.25 },
     color = { x = 1, y = 0.93, z = 0.82 },
@@ -108,6 +125,39 @@ scene.build()
 créés doivent être passés une seule fois à `scene.add`. Le chargeur transforme
 ensuite les tables validées en `SceneBlueprint`; le Lua ne manipule jamais le
 monde ECS ou le renderer.
+
+SCN V2 exige un `id` stable et unique pour chaque objet auteur. Un objet doté
+d'un transform peut déclarer `child.parent(parent)` ; la cible doit elle-même
+être transformable et la hiérarchie ne peut contenir ni référence absente, ni
+auto-parentage, ni cycle. La lecture V1 attribue des IDs déterministes pour
+conserver la compatibilité, mais `SceneDocument` garde le document sale jusqu'à
+son premier enregistrement en V2. Toute nouvelle sérialisation est canonique,
+locale-indépendante, revalidée avant écriture et remplacée atomiquement.
+
+`SceneDocument` possède le blueprint auteur, ses chemins source/staging, son
+état sale et les liaisons temporaires entre IDs SCN et entités ECS. Seules les
+racines portant `AuthoredSceneObjectComponent` sont éditables et persistées ;
+les enfants générés par l'import glTF restent visibles mais en lecture seule.
+Les commandes structurelles restaurent un snapshot auteur puis reconstruisent
+le monde et la navigation, tandis que les inspecteurs capturent les propriétés
+SCN prises en charge. Créer, dupliquer, supprimer et reparent-er sont annulables.
+Le reparentage conserve le transform monde et refuse une décomposition ambiguë
+due au cisaillement.
+
+La composition visible est intégralement déclarée par les objets SCN. Les
+primitives `Plane` et `Box` choisissent explicitement leur preset de matériau
+(`Soil`, `Rock` ou `Wood`), leur couche de rendu et leur transform ; leur
+échelle constitue leurs dimensions. `SceneFactory` ne crée aucun sol, mur ou
+objet de test implicite. Le profil de matériau spécial d'un modèle est lui
+aussi un champ auteur (`material_profile`) et ne dépend pas de son nom. Les
+anciens champs globaux de sol/murs de V1, ainsi que les premiers fichiers V2
+qui les contenaient encore, sont matérialisés en cinq primitives et marqués
+pour migration lors du prochain enregistrement.
+
+Le picking éditeur remonte toute section de rendu importée jusqu'à la première
+racine portant `AuthoredSceneObjectComponent`. La racine du modèle reste donc
+l'objet sélectionné et sauvegardé, tandis que ses sous-maillages glTF restent
+des détails techniques consultables en lecture seule dans la hiérarchie.
 
 Une scène peut déclarer au plus un `DirectionalLight`. Sa direction non nulle,
 sa couleur et son intensité positives ou nulles sont validées au chargement,
@@ -160,6 +210,14 @@ lorsqu'ils ne sont pas sélectionnés, y compris quand la simulation est en
 pause. Le rectangle vert est transmis au rendu par
 `FramePartySelectionMarquee`, sans requête du renderer vers l'ECS. Seule la
 sélection éditeur peut alimenter l'outline et les gizmos de l'éditeur.
+
+En mode Editor, ImGuizmo manipule uniquement le transform d'une racine SCN
+sélectionnée. Translation, rotation et échelle acceptent les espaces local ou
+monde et le snapping ; l'échelle reste locale. Une interaction continue met à
+jour la présentation immédiatement mais ne crée qu'une commande undo à son
+relâchement. La rotation monde est désactivée sous un parent à échelle non
+uniforme, car la conversion monde-vers-local pourrait introduire du
+cisaillement que `TransformComponent` ne sait pas représenter.
 
 Un clic de déplacement est transformé par `PartyOrderSystem` en destinations
 de formation distinctes, centrées sur le point demandé et espacées selon les

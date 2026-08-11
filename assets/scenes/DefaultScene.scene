@@ -1,19 +1,84 @@
-V1SCN-----
--- AlKanzar SCN V1
+V2SCN-----
+-- AlKanzar SCN V2
 -- This payload is ordinary Lua, executed in the restricted scene DSL.
 
 scene = Create({
     type = "Scene",
-    ground_half_extent = 500.0,
-    wall_height = 2.5,
-    wall_offset = 3.0,
-    wall_length = 5.0,
-    wall_thickness = 0.5,
     navmesh = "navmeshes/DefaultScene.navmesh",
 })
 
+ground = Create({
+    type = "Primitive",
+    id = "ground",
+    name = "Ground",
+    shape = "Plane",
+    material = "Soil",
+    layer = "Ground",
+})
+ground.transform({
+    scale = { x = 1000.0, y = 1.0, z = 1000.0 },
+})
+scene.add(ground)
+
+wall_a = Create({
+    type = "Primitive",
+    id = "wall_a",
+    name = "Wall A",
+    shape = "Box",
+    material = "Rock",
+    layer = "Geometry",
+})
+wall_a.transform({
+    position = { x = -3.0, y = 1.25, z = 0.0 },
+    scale = { x = 0.5, y = 2.5, z = 10.0 },
+})
+scene.add(wall_a)
+
+wall_b = Create({
+    type = "Primitive",
+    id = "wall_b",
+    name = "Wall B",
+    shape = "Box",
+    material = "Wood",
+    layer = "Geometry",
+})
+wall_b.transform({
+    position = { x = 3.0, y = 1.25, z = 0.0 },
+    scale = { x = 0.5, y = 2.5, z = 10.0 },
+})
+scene.add(wall_b)
+
+frustum_test_box = Create({
+    type = "Primitive",
+    id = "frustum_test_box",
+    name = "Frustum Test Box",
+    shape = "Box",
+    material = "Wood",
+    layer = "Geometry",
+})
+frustum_test_box.transform({
+    position = { x = -9.5, y = 0.75, z = -14.0 },
+    scale = { x = 1.5, y = 1.5, z = 1.5 },
+})
+scene.add(frustum_test_box)
+
+occlusion_test_box = Create({
+    type = "Primitive",
+    id = "occlusion_test_box",
+    name = "Occlusion Test Box",
+    shape = "Box",
+    material = "Rock",
+    layer = "Geometry",
+})
+occlusion_test_box.transform({
+    position = { x = -3.0, y = 0.75, z = -8.5 },
+    scale = { x = 1.5, y = 1.5, z = 1.5 },
+})
+scene.add(occlusion_test_box)
+
 player = Create({
     type = "Model",
+    id = "player",
     name = "Player - Human Fighter",
     asset = "Adventurer.glb",
     layer = "Actors",
@@ -57,6 +122,7 @@ scene.add(player)
 
 friendly_npc = Create({
     type = "Model",
+    id = "friendly_npc",
     name = "Friendly NPC - Human Cleric",
     asset = "Adventurer.glb",
     layer = "Actors",
@@ -96,6 +162,7 @@ scene.add(friendly_npc)
 
 hostile_npc = Create({
     type = "Model",
+    id = "hostile_npc",
     name = "Hostile NPC - Orc Rogue",
     asset = "Adventurer.glb",
     layer = "Actors",
@@ -135,6 +202,7 @@ scene.add(hostile_npc)
 
 party_scout = Create({
     type = "Model",
+    id = "party_scout",
     name = "Party Scout - Elf Tracker",
     asset = "Adventurer.glb",
     layer = "Actors",
@@ -176,6 +244,7 @@ scene.add(party_scout)
 
 party_guardian = Create({
     type = "Model",
+    id = "party_guardian",
     name = "Party Guardian - Dwarf Cleric",
     asset = "Adventurer.glb",
     layer = "Actors",
@@ -217,9 +286,11 @@ scene.add(party_guardian)
 
 house = Create({
     type = "Model",
+    id = "house",
     name = "House",
     asset = "FantasyHouse.glb",
     layer = "Geometry",
+    material_profile = "House",
 })
 house.transform({
     position = { x = -3.0, y = 0.0, z = -8.0 },
@@ -230,6 +301,7 @@ scene.add(house)
 
 sun = Create({
     type = "DirectionalLight",
+    id = "sun",
     name = "Sun",
     direction = { x = -0.35, y = -1.0, z = -0.25 },
     color = { x = 1.0, y = 0.93, z = 0.82 },
@@ -239,6 +311,7 @@ scene.add(sun)
 
 global_light_volume = Create({
     type = "LightVolume",
+    id = "global_light_volume",
     name = "Global Light Volume",
     half_extents = { x = 100.0, y = 100.0, z = 100.0 },
 })
@@ -246,6 +319,7 @@ scene.add(global_light_volume)
 
 point_light = Create({
     type = "PointLight",
+    id = "point_light",
     name = "Point Light",
     radius = 40.0,
     color = { x = 0.9, y = 0.7, z = 1.0 },
@@ -263,6 +337,7 @@ scene.add(point_light)
 
 spot_light = Create({
     type = "SpotLight",
+    id = "spot_light",
     name = "Spot Light",
     radius = 32.0,
     color = { x = 0.55, y = 0.70, z = 0.95 },

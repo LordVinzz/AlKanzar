@@ -3,7 +3,6 @@
 #include "SceneModelFactory.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <string>
 
@@ -17,37 +16,6 @@
 #include "render/resources/Geometry.hpp"
 #include "render/engine/RenderEngine.hpp"
 #include "render/resources/StaticGltfModel.hpp"
-
-namespace {
-
-struct Vertex {
-    glm::vec3 position{0.0f};
-    glm::vec3 normal{0.0f, 1.0f, 0.0f};
-    glm::vec2 uv0{0.0f};
-    glm::vec2 uv1{0.0f};
-    glm::vec4 color{1.0f};
-};
-
-void pushVertex(const Vertex& vertex, render::Mesh& outMesh) {
-    outMesh.positions.push_back(vertex.position);
-    outMesh.normals.push_back(vertex.normal);
-    outMesh.colors.push_back(vertex.color);
-    if (outMesh.uvSets.size() < 2) {
-        outMesh.uvSets.resize(2);
-    }
-    outMesh.uvSets[0].push_back(vertex.uv0);
-    outMesh.uvSets[1].push_back(vertex.uv1);
-}
-
-void addQuad(const std::array<Vertex, 4>& verts, render::Mesh& outMesh) {
-    const unsigned int base = static_cast<unsigned int>(outMesh.positions.size());
-    for (const auto& vertex : verts) {
-        pushVertex(vertex, outMesh);
-    }
-    outMesh.indices.insert(outMesh.indices.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
-}
-
-}  // namespace
 
 namespace core {
 
@@ -192,50 +160,6 @@ bool SceneFactory::buildScene(
         0.45f
     );
 
-    render::Mesh groundMesh;
-    groundMesh.uvSets.resize(2);
-    addQuad(
-        {{
-            {glm::vec3(-blueprint.groundHalfExtent, 0.0f, -blueprint.groundHalfExtent), glm::vec3(0.0f, 1.0f, 0.0f), glm::vec2(0.0f, 0.0f), glm::vec2(0.0f), glm::vec4(1.0f)},
-            {glm::vec3(-blueprint.groundHalfExtent, 0.0f, blueprint.groundHalfExtent), glm::vec3(0.0f, 1.0f, 0.0f), glm::vec2(0.0f, 1.0f), glm::vec2(0.0f), glm::vec4(1.0f)},
-            {glm::vec3(blueprint.groundHalfExtent, 0.0f, blueprint.groundHalfExtent), glm::vec3(0.0f, 1.0f, 0.0f), glm::vec2(1.0f, 1.0f), glm::vec2(0.0f), glm::vec4(1.0f)},
-            {glm::vec3(blueprint.groundHalfExtent, 0.0f, -blueprint.groundHalfExtent), glm::vec3(0.0f, 1.0f, 0.0f), glm::vec2(1.0f, 0.0f), glm::vec2(0.0f), glm::vec4(1.0f)},
-        }},
-        groundMesh
-    );
-
-    const render::Mesh wallAMesh = SceneMeshFactory::createBox(
-        glm::vec3(-blueprint.wallThickness * 0.5f, 0.0f, -blueprint.wallLength),
-        glm::vec3(blueprint.wallThickness * 0.5f, blueprint.wallHeight, blueprint.wallLength),
-        glm::vec4(1.0f)
-    );
-    const render::Mesh wallBMesh = SceneMeshFactory::createBox(
-        glm::vec3(-blueprint.wallThickness * 0.5f, 0.0f, -blueprint.wallLength),
-        glm::vec3(blueprint.wallThickness * 0.5f, blueprint.wallHeight, blueprint.wallLength),
-        glm::vec4(1.0f)
-    );
-    const render::Mesh frustumTestBoxMesh = SceneMeshFactory::createBox(
-        glm::vec3(-0.75f, -0.75f, -0.75f),
-        glm::vec3(0.75f, 0.75f, 0.75f),
-        glm::vec4(1.0f)
-    );
-    const render::Mesh occlusionTestBoxMesh = SceneMeshFactory::createBox(
-        glm::vec3(-0.75f, -0.75f, -0.75f),
-        glm::vec3(0.75f, 0.75f, 0.75f),
-        glm::vec4(1.0f)
-    );
-
-    const render::MeshHandle groundMeshHandle = renderer.uploadMesh(groundMesh);
-    const render::MeshHandle wallAMeshHandle = renderer.uploadMesh(wallAMesh);
-    const render::MeshHandle wallBMeshHandle = renderer.uploadMesh(wallBMesh);
-    const render::MeshHandle frustumTestBoxMeshHandle = renderer.uploadMesh(frustumTestBoxMesh);
-    const render::MeshHandle occlusionTestBoxMeshHandle = renderer.uploadMesh(occlusionTestBoxMesh);
-    if (!groundMeshHandle.valid() || !wallAMeshHandle.valid() || !wallBMeshHandle.valid() ||
-        !frustumTestBoxMeshHandle.valid() || !occlusionTestBoxMeshHandle.valid()) {
-        spdlog::error("SceneFactory: failed to upload procedural scene meshes");
-        return false;
-    }
-
     auto createRenderableEntity = [&world](
         const std::string& name,
         const TransformComponent& transform,
@@ -257,55 +181,43 @@ bool SceneFactory::buildScene(
         return entity;
     };
 
-    createRenderableEntity(
-        "Ground",
-        TransformComponent{},
-        groundMesh,
-        SceneMeshFactory::computeBounds(groundMesh),
-        groundMeshHandle,
-        groundMaterial,
-        render::RenderLayer::Ground
-    );
-    createRenderableEntity(
-        "Wall A",
-        TransformComponent{glm::vec3(-blueprint.wallOffset, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)},
-        wallAMesh,
-        SceneMeshFactory::computeBounds(wallAMesh),
-        wallAMeshHandle,
-        wallRockMaterial,
-        render::RenderLayer::Geometry
-    );
-    createRenderableEntity(
-        "Wall B",
-        TransformComponent{glm::vec3(blueprint.wallOffset, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)},
-        wallBMesh,
-        SceneMeshFactory::computeBounds(wallBMesh),
-        wallBMeshHandle,
-        wallWoodMaterial,
-        render::RenderLayer::Geometry
-    );
-    createRenderableEntity(
-        "Frustum Test Box",
-        TransformComponent{glm::vec3(-9.5f, 0.75f, -14.0f), glm::vec3(0.0f), glm::vec3(1.0f)},
-        frustumTestBoxMesh,
-        SceneMeshFactory::computeBounds(frustumTestBoxMesh),
-        frustumTestBoxMeshHandle,
-        wallWoodMaterial,
-        render::RenderLayer::Geometry
-    );
-    createRenderableEntity(
-        "Occlusion Test Box",
-        TransformComponent{glm::vec3(-3.0f, 0.75f, -8.5f), glm::vec3(0.0f), glm::vec3(1.0f)},
-        occlusionTestBoxMesh,
-        SceneMeshFactory::computeBounds(occlusionTestBoxMesh),
-        occlusionTestBoxMeshHandle,
-        wallRockMaterial,
-        render::RenderLayer::Geometry
-    );
+    const auto materialForPreset = [&](SceneMaterialPreset preset) {
+        switch (preset) {
+            case SceneMaterialPreset::Soil: return groundMaterial;
+            case SceneMaterialPreset::Rock: return wallRockMaterial;
+            case SceneMaterialPreset::Wood: return wallWoodMaterial;
+        }
+        return wallRockMaterial;
+    };
+    for (const ScenePrimitiveBlueprint& primitive : blueprint.primitives) {
+        const render::Mesh mesh = primitive.shape == ScenePrimitiveShape::Plane
+            ? SceneMeshFactory::createPlane(glm::vec4(1.0f))
+            : SceneMeshFactory::createBox(
+                glm::vec3(-0.5f),
+                glm::vec3(0.5f),
+                glm::vec4(1.0f)
+            );
+        const render::MeshHandle meshHandle = renderer.uploadMesh(mesh);
+        if (!meshHandle.valid()) {
+            spdlog::error("SceneFactory: failed to upload primitive '{}'", primitive.id);
+            return false;
+        }
+        const EntityId entity = createRenderableEntity(
+            primitive.name,
+            primitive.transform,
+            mesh,
+            SceneMeshFactory::computeBounds(mesh),
+            meshHandle,
+            materialForPreset(primitive.material),
+            primitive.layer
+        );
+        world.authoredSceneObjects.emplace(entity, AuthoredSceneObjectComponent{primitive.id});
+    }
 
     for (const LightVolumeBlueprint& volumeBlueprint : blueprint.lightVolumes) {
         const EntityId entity = world.createEntity();
         world.names.emplace(entity, NameComponent{volumeBlueprint.name});
+        world.authoredSceneObjects.emplace(entity, AuthoredSceneObjectComponent{volumeBlueprint.id});
         world.transforms.emplace(entity, volumeBlueprint.transform);
         world.lightVolumes.emplace(entity, LightVolumeComponent{volumeBlueprint.halfExtents});
         world.markTransformsDirty(entity);
@@ -326,7 +238,7 @@ bool SceneFactory::buildScene(
             return false;
         }
 
-        if (modelBlueprint.name == "House") {
+        if (modelBlueprint.materialProfile == SceneModelMaterialProfile::House) {
             for (auto& section : modelAsset->sections) {
                 if (!section.material) {
                     section.material = std::make_shared<render::Material>();
@@ -356,6 +268,7 @@ bool SceneFactory::buildScene(
 
         const EntityId rootEntity = world.createEntity();
         world.names.emplace(rootEntity, NameComponent{modelBlueprint.name});
+        world.authoredSceneObjects.emplace(rootEntity, AuthoredSceneObjectComponent{modelBlueprint.id});
         world.transforms.emplace(rootEntity, modelBlueprint.transform);
         world.visibilities.emplace(rootEntity, VisibilityComponent{true});
         if (modelAsset->animated()) {
@@ -428,6 +341,7 @@ bool SceneFactory::buildScene(
         const DirectionalLightBlueprint& lightBlueprint = *blueprint.directionalLight;
         const EntityId entity = world.createEntity();
         world.names.emplace(entity, NameComponent{lightBlueprint.name});
+        world.authoredSceneObjects.emplace(entity, AuthoredSceneObjectComponent{lightBlueprint.id});
         world.directionalLights.emplace(entity, DirectionalLightComponent{
             lightBlueprint.direction,
             lightBlueprint.color,
@@ -439,6 +353,7 @@ bool SceneFactory::buildScene(
     for (const PointLightBlueprint& lightBlueprint : blueprint.pointLights) {
         const EntityId entity = world.createEntity();
         world.names.emplace(entity, NameComponent{lightBlueprint.name});
+        world.authoredSceneObjects.emplace(entity, AuthoredSceneObjectComponent{lightBlueprint.id});
         world.transforms.emplace(entity, lightBlueprint.transform);
         world.pointLights.emplace(entity, PointLightComponent{
             lightBlueprint.radius,
@@ -457,6 +372,7 @@ bool SceneFactory::buildScene(
     for (const SpotLightBlueprint& lightBlueprint : blueprint.spotLights) {
         const EntityId entity = world.createEntity();
         world.names.emplace(entity, NameComponent{lightBlueprint.name});
+        world.authoredSceneObjects.emplace(entity, AuthoredSceneObjectComponent{lightBlueprint.id});
         world.transforms.emplace(entity, lightBlueprint.transform);
         world.spotLights.emplace(entity, SpotLightComponent{
             lightBlueprint.radius,

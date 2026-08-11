@@ -71,7 +71,7 @@ bool validateStringFields(
             allowedFields.end();
         if (!allowed) {
             lua_pop(state, 2);
-            return fail(error, childPath(path, key), "is not supported by SCN V1");
+            return fail(error, childPath(path, key), "is not supported by SCN");
         }
         lua_pop(state, 1);
     }

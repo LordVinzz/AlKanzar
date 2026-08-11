@@ -21,6 +21,7 @@
 #include "core/profiling/ProfilerService.hpp"
 #include "core/systems/RenderExtractionSystem.hpp"
 #include "core/scene/SceneFactory.hpp"
+#include "core/scene/SceneDocument.hpp"
 #include "core/scene/SceneRegistry.hpp"
 #include "core/editor/SelectionModel.hpp"
 #include "core/systems/TaskScheduler.hpp"
@@ -86,7 +87,7 @@ struct EngineServices {
     PartySelectionSystem partySelectionSystem;
     SceneRegistry sceneRegistry;
     SceneFactory sceneFactory;
-    SceneBlueprint currentScene{};
+    SceneDocument sceneDocument{};
     World world;
     TimeContext time;
     CameraState camera;
