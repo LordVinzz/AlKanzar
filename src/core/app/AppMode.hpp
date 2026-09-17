@@ -20,6 +20,7 @@ enum class AppRuntimeSystem : std::uint32_t {
     Transforms = 1u << 4u,
     Lighting = 1u << 5u,
     RenderExtraction = 1u << 6u,
+    Combat = 1u << 7u,
 };
 
 struct AppModeCapabilities {

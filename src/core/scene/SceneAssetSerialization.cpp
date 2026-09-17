@@ -148,6 +148,9 @@ void appendModel(std::ostream& output, std::string_view variable, const ModelIns
     if (model.character.has_value()) {
         appendCharacterLua(output, variable, *model.character);
     }
+    if (model.combatant.has_value()) {
+        appendCombatantLua(output, variable, *model.combatant);
+    }
 }
 
 void appendPrimitive(

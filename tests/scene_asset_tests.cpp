@@ -55,6 +55,40 @@ std::string makeCharacterControlAsset(
     return makeSceneAsset(lua);
 }
 
+std::string makeV2CombatantAsset(
+    std::string_view combatantFields,
+    bool includeCharacter = true
+) {
+    std::string lua = R"lua(
+scene = Create({ type = "Scene" })
+actor = Create({
+    type = "Model",
+    id = "actor",
+    name = "Actor",
+    asset = "Hero.glb",
+    layer = "Actors",
+})
+)lua";
+    if (includeCharacter) {
+        lua += R"lua(actor.character({
+    affiliation = "FriendlyNpc",
+    race = "Human",
+    kit = "Fighter",
+    abilities = {
+        strength = 10, agility = 10, physique = 10,
+        intelligence = 10, faith = 10, charisma = 10,
+    },
+    skills = {},
+    vitals = { current_hp = 45, maximum_hp = 45, mana = 0 },
+})
+)lua";
+    }
+    lua += "actor.combatant({\n";
+    lua += combatantFields;
+    lua += "})\nscene.add(actor)\nscene.build()\n";
+    return makeSceneAsset(lua, 2u);
+}
+
 void testSceneDslBuildsTypedBlueprint() {
     const std::string asset = makeSceneAsset(R"lua(
 scene = Create({
@@ -218,6 +252,54 @@ void testSceneCharacterControlFieldsAreStrictAndPartySlotsAreUnique() {
     assert(error.find("same party_slot") != std::string::npos);
 }
 
+void testSceneCombatantFieldsAreStrictAndCharacterBound() {
+    core::SceneBlueprint scene{};
+    std::string error{};
+    assert(core::parseSceneAsset(
+        makeV2CombatantAsset(R"lua(    weapon_mode = "Ranged",
+    state = "Scripted",
+    script_phase = 12,
+    animations = {
+        ranged_ready = "Bow Ready",
+        ranged_attack = "Bow Shoot",
+        scripted = "Boss Phase",
+    },
+)lua"),
+        scene,
+        &error
+    ));
+    assert(scene.models[0].combatant.has_value());
+    assert(scene.models[0].combatant->weaponMode == core::CombatWeaponMode::Ranged);
+    assert(scene.models[0].combatant->state == core::CombatState::Scripted);
+    assert(scene.models[0].combatant->scriptPhase == 12u);
+    assert(scene.models[0].combatant->animations.ranged.attackClip == "Bow Shoot");
+
+    assert(!core::parseSceneAsset(
+        makeV2CombatantAsset(R"lua(    weapon_mode = "Melee",
+    state = "Ambushing",
+)lua"),
+        scene,
+        &error
+    ));
+    assert(error.find("unknown combat state") != std::string::npos);
+
+    assert(!core::parseSceneAsset(
+        makeV2CombatantAsset(R"lua(    weapon_mode = "Melee",
+    animations = { misspelled_attack = "Attack" },
+)lua"),
+        scene,
+        &error
+    ));
+    assert(error.find("misspelled_attack") != std::string::npos);
+
+    assert(!core::parseSceneAsset(
+        makeV2CombatantAsset("    weapon_mode = \"Unarmed\",\n", false),
+        scene,
+        &error
+    ));
+    assert(error.find("requires character data") != std::string::npos);
+}
+
 void testSceneHeaderTypeAndVersionAreValidated() {
     core::SceneBlueprint scene{};
     std::string error{};
@@ -344,6 +426,20 @@ void testSceneV2SerializationRoundTripsAllAuthoredData() {
     parent.character->skills.ranks[static_cast<std::size_t>(core::CharacterSkill::Knowledge)] =
         core::SkillRank::Legendary;
     parent.character->vitals = {37, 52, 81};
+    parent.combatant = core::CombatantComponent{};
+    parent.combatant->weaponMode = core::CombatWeaponMode::Ranged;
+    parent.combatant->state = core::CombatState::Scripted;
+    parent.combatant->resumeState = core::CombatState::Scripted;
+    parent.combatant->scriptPhase = 7u;
+    parent.combatant->animations.unarmed = {"Idle", "Punch"};
+    parent.combatant->animations.melee = {"Sword Ready", "Sword Attack"};
+    parent.combatant->animations.ranged = {"Bow Ready", "Bow Shoot"};
+    parent.combatant->animations.hitReactionClip = "Hit";
+    parent.combatant->animations.fleeClip = "Run";
+    parent.combatant->animations.scriptedClip = "Boss Phase";
+    parent.combatant->animations.downedClip = "Downed";
+    parent.combatant->animations.deadClip = "Death";
+    parent.combatant->observedState = parent.combatant->state;
     before.models.push_back(parent);
 
     core::DirectionalLightBlueprint sun{};
@@ -456,6 +552,8 @@ void testSceneV2SerializationRoundTripsAllAuthoredData() {
     assert(after.models[0].character->partyMember.has_value());
     assert(after.models[0].character->partyMember->slot == 2u);
     assert(!after.models[0].character->partyMember->active);
+    assert(after.models[0].combatant.has_value());
+    assert(after.models[0].combatant == parent.combatant);
     assert(after.directionalLight.has_value());
     assert(after.directionalLight->id == sun.id);
     assert(after.directionalLight->name == sun.name);
@@ -646,6 +744,14 @@ void testDefaultSceneAssetLoadsFromStagedAssets() {
     assert(core::isPlayerControlled(scene.models[4].character->controller));
     assert(scene.models[3].character->partyMember->slot == 1u);
     assert(scene.models[4].character->partyMember->slot == 2u);
+    assert(scene.models[0].combatant.has_value());
+    assert(!scene.models[1].combatant.has_value());
+    assert(scene.models[2].combatant.has_value());
+    assert(scene.models[3].combatant.has_value());
+    assert(scene.models[4].combatant.has_value());
+    assert(scene.models[0].combatant->weaponMode == core::CombatWeaponMode::Melee);
+    assert(scene.models[2].combatant->state == core::CombatState::Combat);
+    assert(scene.models[3].combatant->weaponMode == core::CombatWeaponMode::Ranged);
     assert(scene.models[5].name == "House");
     assert(scene.models[5].materialProfile == core::SceneModelMaterialProfile::House);
     assert(scene.models[5].fitToFootprint);
@@ -662,6 +768,7 @@ int main() {
     testSceneDslBuildsTypedBlueprint();
     testSceneAllowsOnlyOneValidDirectionalLight();
     testSceneCharacterControlFieldsAreStrictAndPartySlotsAreUnique();
+    testSceneCombatantFieldsAreStrictAndCharacterBound();
     testSceneHeaderTypeAndVersionAreValidated();
     testSceneV2RequiresStableIdsAndValidHierarchy();
     testSceneV2SerializationRoundTripsAllAuthoredData();

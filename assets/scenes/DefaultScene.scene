@@ -118,6 +118,24 @@ player.character({
         mana = 0,
     },
 })
+player.combatant({
+    weapon_mode = "Melee",
+    state = "Idle",
+    script_phase = 0,
+    animations = {
+        unarmed_ready = "CharacterArmature|Idle_Neutral",
+        unarmed_attack = "",
+        melee_ready = "CharacterArmature|Idle_Sword",
+        melee_attack = "",
+        ranged_ready = "CharacterArmature|Idle_Gun_Pointing",
+        ranged_attack = "CharacterArmature|Gun_Shoot",
+        hit_reaction = "CharacterArmature|HitRecieve",
+        flee = "CharacterArmature|Run",
+        scripted = "",
+        downed = "CharacterArmature|Death",
+        dead = "CharacterArmature|Death",
+    },
+})
 scene.add(player)
 
 friendly_npc = Create({
@@ -198,6 +216,24 @@ hostile_npc.character({
         mana = 0,
     },
 })
+hostile_npc.combatant({
+    weapon_mode = "Melee",
+    state = "Combat",
+    script_phase = 0,
+    animations = {
+        unarmed_ready = "CharacterArmature|Idle_Neutral",
+        unarmed_attack = "",
+        melee_ready = "CharacterArmature|Idle_Sword",
+        melee_attack = "",
+        ranged_ready = "CharacterArmature|Idle_Gun_Pointing",
+        ranged_attack = "CharacterArmature|Gun_Shoot",
+        hit_reaction = "CharacterArmature|HitRecieve",
+        flee = "CharacterArmature|Run",
+        scripted = "",
+        downed = "CharacterArmature|Death",
+        dead = "CharacterArmature|Death",
+    },
+})
 scene.add(hostile_npc)
 
 party_scout = Create({
@@ -240,6 +276,24 @@ party_scout.character({
         mana = 0,
     },
 })
+party_scout.combatant({
+    weapon_mode = "Ranged",
+    state = "Idle",
+    script_phase = 0,
+    animations = {
+        unarmed_ready = "CharacterArmature|Idle_Neutral",
+        unarmed_attack = "",
+        melee_ready = "CharacterArmature|Idle_Sword",
+        melee_attack = "",
+        ranged_ready = "CharacterArmature|Idle_Gun_Pointing",
+        ranged_attack = "CharacterArmature|Gun_Shoot",
+        hit_reaction = "CharacterArmature|HitRecieve",
+        flee = "CharacterArmature|Run",
+        scripted = "",
+        downed = "CharacterArmature|Death",
+        dead = "CharacterArmature|Death",
+    },
+})
 scene.add(party_scout)
 
 party_guardian = Create({
@@ -280,6 +334,24 @@ party_guardian.character({
         current_hp = 55,
         maximum_hp = 55,
         mana = 36,
+    },
+})
+party_guardian.combatant({
+    weapon_mode = "Melee",
+    state = "Idle",
+    script_phase = 0,
+    animations = {
+        unarmed_ready = "CharacterArmature|Idle_Neutral",
+        unarmed_attack = "",
+        melee_ready = "CharacterArmature|Idle_Sword",
+        melee_attack = "",
+        ranged_ready = "CharacterArmature|Idle_Gun_Pointing",
+        ranged_attack = "CharacterArmature|Gun_Shoot",
+        hit_reaction = "CharacterArmature|HitRecieve",
+        flee = "CharacterArmature|Run",
+        scripted = "",
+        downed = "CharacterArmature|Death",
+        dead = "CharacterArmature|Death",
     },
 })
 scene.add(party_guardian)

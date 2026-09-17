@@ -13,6 +13,7 @@ constexpr std::uint32_t systemMask(AppRuntimeSystem system) {
 constexpr std::uint32_t kRuntimeSystems =
     systemMask(AppRuntimeSystem::StateUpdate) |
     systemMask(AppRuntimeSystem::Navigation) |
+    systemMask(AppRuntimeSystem::Combat) |
     systemMask(AppRuntimeSystem::Animation) |
     systemMask(AppRuntimeSystem::Physics) |
     systemMask(AppRuntimeSystem::Transforms) |

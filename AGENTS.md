@@ -19,6 +19,8 @@ Dear ImGui and CMake. It currently provides:
 - a fixed-step simulation loop with pause and speed control;
 - player, friendly NPC and hostile NPC character profiles;
 - pure character rules, derived statistics and an ImGui character inspector;
+- optional combat capability with authored weapon mode, explicit combat/script
+  states, boss phases and model-specific animation selection;
 - explicit player controllers, active party membership, six-member selection
   limits and minimal formation-based group movement;
 - default gravity-free dynamic bodies and world-aligned nav-bound box
@@ -36,8 +38,9 @@ Dear ImGui and CMake. It currently provides:
   persistent inspectors and ImGuizmo transform tools;
 - architecture, unit, integration and source-size checks through CTest.
 
-NPC AI is intentionally not implemented yet. Do not infer that friendly or
-hostile affiliation implies autonomous behavior.
+Autonomous NPC AI, target acquisition and attack/damage resolution are not
+implemented yet. `CombatantComponent` provides state for editor control and
+future scripts; do not infer behavior from affiliation or component presence.
 
 The long-term product and all pending work are described in the requirements
 matrix in `TODO.md`. The named RPG rules and formulas come from
@@ -93,9 +96,9 @@ clones; do not include its incidental changes in a commit.
 | Directory | Responsibility and starting points |
 |---|---|
 | `app/` | Process orchestration, modes, input translation, fixed-step loop and shared services. Start with `Application.cpp`, `ApplicationInput.cpp`, `AppState.cpp`, `EngineServices.hpp`, `SimulationClock.hpp` and `TimeContext.hpp`. |
-| `content/` | Serializable/configurable RPG data and enums with no engine behavior. Start with `CharacterData.hpp`. |
+| `content/` | Serializable/configurable RPG data and enums with no engine behavior. Start with `CharacterData.hpp` and `CombatData.hpp`. |
 | `rules/` | Pure deterministic domain calculations and normalization. Start with `CharacterRules.hpp/.cpp`. This target compiles independently as `alkanzar_rules`. |
-| `simulation/` | Mutable runtime components and adapters between ECS state and pure rules. Start with `CharacterComponents.hpp` and `CharacterSimulation.hpp/.cpp`. |
+| `simulation/` | Mutable runtime components and adapters between ECS state and pure rules. Start with `CharacterComponents.hpp`, `CharacterSimulation.hpp/.cpp` and `CombatComponents.hpp`. |
 | `ecs/` | Entity identity, pools, component stores, world ownership and technical ECS components. `World.hpp` owns all stores and lifecycle cleanup. |
 | `presentation/` | Lightweight presentation contracts shared without importing full editor/render APIs. `ComponentKind.hpp` is the current example. |
 | `editor/` | ImGui windows, persistent scene actions, inspectors, component descriptors, selection, ImGuizmo tools, editor session state and undo/redo commands. |
@@ -106,7 +109,7 @@ clones; do not include its incidental changes in a commit.
 | `physics/` | Physics-system updates and collider/rigidbody behavior. |
 | `transform/` | Local/world transform propagation and transform caches. |
 | `lighting/` | Runtime light updates, light volumes and material-library support. |
-| `systems/` | Cross-cutting engine systems: picking, render extraction and task scheduling. |
+| `systems/` | Cross-cutting engine/gameplay systems: combat state updates, picking, render extraction and task scheduling. Start combat work with `CombatSystem.hpp/.cpp`. |
 | `profiling/` | CPU/GPU/runtime profiling, Perfetto capture and trace export. |
 
 ### `src/render`
@@ -161,8 +164,9 @@ guide was written:
   save-game content formats are not implemented yet;
 - Gameplay, Editor and TestTool modes are isolated through explicit capability
   policies; broader product-level test tooling remains a requirement;
-- character inspection and formulas exist, but combat, abilities, inventory,
-  dialogue, quests, campaign state, save/load and NPC AI are not complete;
+- character inspection, formulas and the combatant state/animation foundation
+  exist, but attacks, damage, targeting, abilities, inventory, dialogue,
+  quests, campaign state, save/load and autonomous NPC AI are not complete;
 - navigation/pathfinding and a minimal movement formation exist, but dynamic
   reformation, laggard recovery and general combat orders are not implemented;
 - the full asynchronous resource manager, product-wide content validators and
@@ -225,9 +229,9 @@ The main frame is orchestrated in `Application::run()`:
 3. `SimulationClock` clamps unsafe frame deltas and fills a fixed-step
    accumulator.
 4. ImGui begins a new presentation frame and free-camera input is sampled.
-5. For every available fixed step, state, navigation intent, animation,
-   physics, navigation reconciliation, transforms, lighting and frame
-   extraction are updated.
+5. For every available fixed step, state, navigation intent, combat state and
+   animation intent, animation, physics, navigation reconciliation,
+   transforms, lighting and frame extraction are updated.
 6. State UI is drawn once per rendered frame, not once per simulation tick.
 7. navigation debug data is synchronized into `FrameSceneData`.
 8. the renderer consumes the immutable frame snapshot, draws ImGui and
@@ -287,6 +291,22 @@ Characters currently use a bundle of:
 - `AbilityScoresComponent`;
 - `SkillRanksComponent`;
 - `CharacterVitalsComponent`.
+- optional `CombatantComponent` for combat capability, weapon animation mode,
+  explicit combat/script state, boss/script phase and runtime state timing.
+
+The presence of `CombatantComponent` is the capability check: a character
+without it is a noncombatant even if its affiliation is hostile. Its states are
+`Idle`, `Combat`, `Attacking`, `HitReaction`, `Fleeing`, `Scripted`, `Downed`
+and `Dead`. `CombatSystem` runs after navigation and before animation on each
+fixed step. It stops movement for action-locking states, discards navigation
+orders when a combatant becomes downed/dead, and requests the configured glTF
+clip for the current weapon/state. At zero HP, only combatants transition to
+`Downed`; this foundation does not choose targets or resolve attacks.
+`Attacking` and `HitReaction` are transient one-shot graph nodes. They remember
+the last resumable state and return to it when their clip finishes, unless zero
+HP routes them to `Downed`. While one of these nodes owns animation, navigation
+must not enqueue an idle clip; combat arbitration cancels any lower-priority
+locomotion request and restores the previous loop policy after the blend out.
 
 `World::characterOwnerEntity()` resolves glTF child sections back to a
 character root for gameplay. `World::authoredSceneOwnerEntity()` is the editor
@@ -295,8 +315,8 @@ authored root, whether or not it is a character. Preserve both behaviors when
 changing scene hierarchies, selection or skinned-model ownership.
 
 The default SCN scene defines explicit ground/wall/test primitives, a house,
-a three-member controllable party, one uncontrolled friendly NPC, one hostile
-NPC and one directional sun.
+a three-member controllable combat party, one uncontrolled noncombatant
+friendly NPC, one combat-capable hostile NPC and one directional sun.
 `SceneFactory.cpp` turns blueprints into ECS entities and render resources.
 Friendly affiliation alone never grants control. Uncontrolled NPCs remain
 non-autonomous until a future explicit AI requirement implements that behavior.
@@ -726,6 +746,7 @@ captures can be exported from the profiler UI for Perfetto analysis.
 | Pause, speed or delta-time issue | `SimulationClock.hpp`, `TimeContext.hpp` | fixed-step section of `Application.cpp`, input events |
 | Incorrect character statistic | rules DOCX, `CharacterRules.*` | `CharacterData.hpp`, rules tests, inspector display |
 | Character data missing/stale | `CharacterComponents.hpp`, `World.hpp` | scene blueprint/factory, component descriptor, normalization |
+| Combat capability, state or animation issue | `CombatComponents.hpp`, `CombatSimulation.*`, `CombatSystem.*` | `CombatData.hpp`, SCN combatant parser/serializer, combatant descriptor and tests |
 | Wrong NPC/player ring | `PartySelectionSystem.*`, `FrameGroundIndicator` | controller/party components, affiliation data, overlay renderer paths |
 | Picking selects a mesh child | `PickingSystem.*`, `World::characterOwnerEntity()` | `SelectionModel`, scene/skinned hierarchy |
 | Gameplay marquee selection issue | `ApplicationPartySelection.cpp`, `PartySelectionSystem.*` | `PartySelectionModel.hpp`, `FramePartySelectionMarquee`, `SceneOverlayMarquee.cpp` |

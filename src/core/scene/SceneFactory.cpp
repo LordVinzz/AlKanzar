@@ -291,6 +291,17 @@ bool SceneFactory::buildScene(
             world.skillRanks.emplace(rootEntity, character.skills);
             world.characterVitals.emplace(rootEntity, character.vitals);
         }
+        if (modelBlueprint.combatant.has_value()) {
+            CombatantComponent combatant = *modelBlueprint.combatant;
+            if (combatStateCanResume(combatant.state)) {
+                combatant.resumeState = combatant.state;
+            } else if (!combatStateCanResume(combatant.resumeState)) {
+                combatant.resumeState = CombatState::Idle;
+            }
+            combatant.observedState = combatant.state;
+            combatant.stateElapsedSeconds = 0.0f;
+            world.combatants.emplace(rootEntity, std::move(combatant));
+        }
         world.markTransformsDirty(rootEntity);
 
         for (std::size_t sectionIndex = 0; sectionIndex < modelAsset->sections.size(); ++sectionIndex) {

@@ -21,4 +21,10 @@ void appendCharacterLua(
     const CharacterBlueprint& character
 );
 
+void appendCombatantLua(
+    std::ostream& output,
+    std::string_view variable,
+    const CombatantComponent& combatant
+);
+
 }  // namespace core::scene_asset_serialization_detail

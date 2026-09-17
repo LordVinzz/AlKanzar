@@ -47,6 +47,7 @@ public:
         pointLights.remove(entity);
         spotLights.remove(entity);
         characters.remove(entity);
+        combatants.remove(entity);
         characterControllers.remove(entity);
         partyMembers.remove(entity);
         abilityScores.remove(entity);
@@ -91,6 +92,7 @@ public:
         pointLights.clear();
         spotLights.clear();
         characters.clear();
+        combatants.clear();
         characterControllers.clear();
         partyMembers.clear();
         abilityScores.clear();
@@ -273,6 +275,7 @@ public:
     ComponentStore<PointLightComponent> pointLights{};
     ComponentStore<SpotLightComponent> spotLights{};
     ComponentStore<CharacterComponent> characters{};
+    ComponentStore<CombatantComponent> combatants{};
     ComponentStore<CharacterControllerComponent> characterControllers{};
     ComponentStore<PartyMemberComponent> partyMembers{};
     ComponentStore<AbilityScoresComponent> abilityScores{};

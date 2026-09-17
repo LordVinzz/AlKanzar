@@ -108,6 +108,17 @@ player.character({
     party_slot = 0,
     -- race, kit, abilities, skills and vitals omitted here
 })
+player.combatant({
+    weapon_mode = "Melee",
+    state = "Idle",
+    script_phase = 0,
+    animations = {
+        melee_ready = "Sword Ready",
+        melee_attack = "Sword Attack",
+        downed = "Downed",
+        dead = "Death",
+    },
+})
 scene.add(player)
 sun = Create({
     type = "DirectionalLight",
@@ -180,6 +191,39 @@ finies, enums inconnus, mauvais en-tête et version non supportée produisent un
 erreur exploitable. Les références de ressources doivent être des chemins
 relatifs portables sans remontée `..`. Lua 5.5.0 est récupéré depuis le dépôt
 officiel et épinglé par CMake.
+
+## Socle de combat
+
+La capacité à combattre est explicite et indépendante de l'affiliation : la
+présence optionnelle de `CombatantComponent` sur une racine de personnage est
+le seul critère. `CombatData.hpp` porte les modes d'arme et noms de clips
+configurables ; `CombatComponents.hpp` porte l'état runtime, la phase de script
+et le temps passé dans l'état. Une scène SCN V2 peut persister ces données par
+`model.combatant({...})`, uniquement après avoir déclaré `model.character`.
+
+`CombatSystem` s'exécute au pas fixe après la navigation et avant
+`AnimationSystem`. Il observe les transitions entre `Idle`, `Combat`,
+`Attacking`, `HitReaction`, `Fleeing`, `Scripted`, `Downed` et `Dead`, bloque
+le mouvement pour les états qui interdisent une action concurrente et choisit
+le clip demandé selon le mode `Unarmed`, `Melee` ou `Ranged`. Une arrivée à
+zéro PV place un combattant à terre et annule sa destination ; un personnage
+sans ce composant reste hors de cette mécanique.
+
+`Attacking` et `HitReaction` sont des nœuds transitoires non bouclés. Leur
+entrée mémorise le dernier état reprenable (`Idle`, `Combat`, `Fleeing` ou
+`Scripted`) ; la fin effective du clip revient vers ce nœud, tandis que zéro
+PV dirige immédiatement vers `Downed`. Pour éviter une oscillation pendant le
+fondu, la navigation ne demande aucune animation de locomotion lorsqu'un état
+verrouille le mouvement. L'arbitre combat annule aussi toute requête moins
+prioritaire déjà présente et restaure la politique de boucle antérieure une
+fois la transition stabilisée.
+
+Ce socle expose des entrées déterministes aux futurs scripts et IA, notamment
+`scriptPhase` pour une fuite ou une phase de boss. Il ne contient encore ni
+sélection autonome de cible, ni jets d'attaque, ni dégâts, ni transition
+automatique entre toutes les phases. Ces décisions devront alimenter le
+composant ou des commandes de simulation sans être placées dans l'éditeur ou
+le rendu.
 
 ## Modes d'exécution
 

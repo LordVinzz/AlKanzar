@@ -12,6 +12,7 @@
 
 #include "Entity.hpp"
 #include "core/simulation/CharacterComponents.hpp"
+#include "core/simulation/CombatComponents.hpp"
 #include "render/engine/RenderTypes.hpp"
 #include "render/resources/Geometry.hpp"
 #include "render/resources/Material.hpp"

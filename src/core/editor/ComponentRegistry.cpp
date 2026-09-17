@@ -19,6 +19,11 @@ bool isLightComponent(ComponentKind kind) {
         kind == ComponentKind::LightVolume;
 }
 
+bool capturesSceneDataOnPresenceChange(ComponentKind kind) {
+    return kind == ComponentKind::Character ||
+        kind == ComponentKind::Combatant;
+}
+
 }  // namespace
 
 const ComponentDescriptor* ComponentRegistry::find(ComponentKind kind) const {
@@ -44,6 +49,10 @@ void ComponentRegistry::drawAddComponentButton(EngineServices& services, EntityI
             if (descriptor.hasComponent(services.world, entity)) {
                 continue;
             }
+            if (descriptor.canAddComponent &&
+                !descriptor.canAddComponent(services.world, entity)) {
+                continue;
+            }
             if (descriptor.kind == ComponentKind::DirectionalLight &&
                 !services.world.directionalLights.entities().empty()) {
                 continue;
@@ -59,6 +68,15 @@ void ComponentRegistry::drawAddComponentButton(EngineServices& services, EntityI
 
             if (ImGui::Selectable(descriptor.name.c_str())) {
                 descriptor.addComponent(services.world, entity);
+                if (capturesSceneDataOnPresenceChange(descriptor.kind)) {
+                    if (const std::optional<SceneObjectId> object =
+                            services.sceneDocument.objectForEntity(entity)) {
+                        (void)services.sceneDocument.captureRuntimeObject(
+                            *object,
+                            services.world
+                        );
+                    }
+                }
                 if (isLightComponent(descriptor.kind)) {
                     notifyLightChanged(services, entity);
                 }
@@ -108,6 +126,15 @@ void ComponentRegistry::drawComponentTabs(
 
         if (authored && !open) {
             descriptor.removeComponent(services.world, entity);
+            if (capturesSceneDataOnPresenceChange(descriptor.kind)) {
+                if (const std::optional<SceneObjectId> object =
+                        services.sceneDocument.objectForEntity(entity)) {
+                    (void)services.sceneDocument.captureRuntimeObject(
+                        *object,
+                        services.world
+                    );
+                }
+            }
             if (isLightComponent(descriptor.kind)) {
                 notifyLightChanged(services, entity);
             }

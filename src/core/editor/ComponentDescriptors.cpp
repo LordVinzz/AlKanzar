@@ -370,6 +370,7 @@ ComponentRegistry::ComponentRegistry() {
     });
 
     registerCharacterDescriptor();
+    registerCombatantDescriptor();
 }
 
 }  // namespace core

@@ -92,6 +92,7 @@ add_library(alkanzar_core STATIC
     src/core/editor/DirectionalLightComponentDescriptor.cpp
     src/core/editor/LightingComponentDescriptors.cpp
     src/core/editor/CharacterComponentDescriptor.cpp
+    src/core/editor/CombatantComponentDescriptor.cpp
     src/core/editor/CharacterControlInspector.cpp
     src/core/editor/ComponentInspector.cpp
     src/core/editor/CharacterInspector.cpp
@@ -158,6 +159,8 @@ add_library(alkanzar_core STATIC
     src/core/scene/SceneAsset.cpp
     src/core/scene/SceneAssetCharacter.cpp
     src/core/scene/SceneAssetCharacterSerialization.cpp
+    src/core/scene/SceneAssetCombatant.cpp
+    src/core/scene/SceneAssetCombatantSerialization.cpp
     src/core/scene/SceneAssetHierarchy.cpp
     src/core/scene/SceneAssetLights.cpp
     src/core/scene/SceneAssetLuaFields.cpp
@@ -172,6 +175,7 @@ add_library(alkanzar_core STATIC
     src/core/scene/SceneModelFactory.cpp
     src/core/scene/SceneRegistry.cpp
     src/core/simulation/CharacterSimulation.cpp
+    src/core/simulation/CombatSimulation.cpp
     src/core/lighting/LightSystem.cpp
     src/core/transform/TransformMath.cpp
     src/core/transform/TransformSystem.cpp
@@ -180,6 +184,7 @@ add_library(alkanzar_core STATIC
     src/core/profiling/ProfilerService.cpp
     src/core/profiling/ProfilerRuntime.cpp
     src/core/systems/PickingSystem.cpp
+    src/core/systems/CombatSystem.cpp
     src/core/systems/PartyOrderSystem.cpp
     src/core/systems/PartySelectionSystem.cpp
     src/core/systems/RenderExtractionAnimation.cpp
@@ -229,6 +234,10 @@ if(BUILD_TESTING)
         tests/character_rules_tests.cpp
     )
 
+    add_executable(alkanzar_combat_system_tests
+        tests/combat_system_tests.cpp
+    )
+
     add_executable(alkanzar_rules_layer_tests
         tests/rules_layer_tests.cpp
     )
@@ -268,6 +277,11 @@ if(BUILD_TESTING)
             alkanzar_core
     )
 
+    target_link_libraries(alkanzar_combat_system_tests
+        PRIVATE
+            alkanzar_core
+    )
+
     target_link_libraries(alkanzar_rules_layer_tests
         PRIVATE
             alkanzar_rules
@@ -300,6 +314,7 @@ if(BUILD_TESTING)
 
     add_test(NAME alkanzar_core_tests COMMAND alkanzar_core_tests)
     add_test(NAME alkanzar_character_rules_tests COMMAND alkanzar_character_rules_tests)
+    add_test(NAME alkanzar_combat_system_tests COMMAND alkanzar_combat_system_tests)
     add_test(NAME alkanzar_rules_layer_tests COMMAND alkanzar_rules_layer_tests)
     add_test(NAME alkanzar_app_mode_tests COMMAND alkanzar_app_mode_tests)
     add_test(NAME alkanzar_content_file_header_tests COMMAND alkanzar_content_file_header_tests)

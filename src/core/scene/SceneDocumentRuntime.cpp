@@ -58,6 +58,20 @@ bool SceneDocument::captureRuntimeObjectValues(std::string_view id, const World&
                     captured.vitals = *vitals;
                 }
                 model.character = std::move(captured);
+            } else {
+                model.character.reset();
+            }
+            if (model.character.has_value()) {
+                if (const CombatantComponent* combatant =
+                        world.combatants.tryGet(*entity)) {
+                    model.combatant = *combatant;
+                    model.combatant->observedState = model.combatant->state;
+                    model.combatant->stateElapsedSeconds = 0.0f;
+                } else {
+                    model.combatant.reset();
+                }
+            } else {
+                model.combatant.reset();
             }
             break;
         }

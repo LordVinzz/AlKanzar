@@ -21,6 +21,7 @@ struct ComponentDescriptor {
     std::function<void(World&, EntityId)> addComponent;
     std::function<void(World&, EntityId)> removeComponent;
     std::function<bool(EngineServices&, EntityId)> drawInspector;
+    std::function<bool(const World&, EntityId)> canAddComponent{};
 };
 
 class ComponentRegistry {
@@ -43,6 +44,7 @@ private:
     void registerDirectionalLightDescriptor();
     void registerLocalLightingDescriptors();
     void registerCharacterDescriptor();
+    void registerCombatantDescriptor();
     std::vector<ComponentDescriptor> descriptors_;
 };
 

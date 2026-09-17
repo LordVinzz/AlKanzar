@@ -239,7 +239,9 @@ void Application::run() {
                     services_.navigationSystem.updateAgents(services_.world, services_.navigation, services_.time);
                 }
             }
-
+            if (capabilities.runs(AppRuntimeSystem::Combat)) {
+                services_.combatSystem.update(services_.world, services_.time);
+            }
             if (capabilities.runs(AppRuntimeSystem::Animation)) {
                 ALKANZAR_PROFILE_SCOPE(services_.profiler, "Animation Update");
                 if (diagnostics.shouldLogFrameStage(frameIndex)) {

@@ -70,6 +70,18 @@ function Create(parameters)
         return object
     end
 
+    function object.combatant(value)
+        ensure_mutable()
+        if scene_version < 2 then
+            fail("object.combatant requires SCN V2")
+        end
+        if parameters.type ~= "Model" then
+            fail("object.combatant is only valid for Model objects")
+        end
+        object.combatant_data = value
+        return object
+    end
+
     function object.fit_to_footprint(value)
         ensure_mutable()
         object.fit_footprint = value

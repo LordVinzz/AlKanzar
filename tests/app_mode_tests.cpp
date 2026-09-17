@@ -19,9 +19,10 @@
 
 namespace {
 
-constexpr std::array<core::AppRuntimeSystem, 7> kRuntimeSystems{
+constexpr std::array<core::AppRuntimeSystem, 8> kRuntimeSystems{
     core::AppRuntimeSystem::StateUpdate,
     core::AppRuntimeSystem::Navigation,
+    core::AppRuntimeSystem::Combat,
     core::AppRuntimeSystem::Animation,
     core::AppRuntimeSystem::Physics,
     core::AppRuntimeSystem::Transforms,

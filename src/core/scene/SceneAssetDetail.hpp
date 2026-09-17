@@ -124,6 +124,14 @@ enum class FieldStatus {
     std::uint32_t version
 );
 
+[[nodiscard]] bool parseCombatantTable(
+    lua_State* state,
+    int tableIndex,
+    CombatantComponent& outCombatant,
+    std::string* error,
+    std::string_view path
+);
+
 [[nodiscard]] bool parseLightObject(
     lua_State* state,
     int objectIndex,

@@ -47,6 +47,7 @@ struct ModelInstanceBlueprint {
     bool fitToFootprint{false};
     float footprint{0.0f};
     std::optional<CharacterBlueprint> character{};
+    std::optional<CombatantComponent> combatant{};
     SceneObjectId id{};
     std::optional<SceneObjectId> parentId{};
 };

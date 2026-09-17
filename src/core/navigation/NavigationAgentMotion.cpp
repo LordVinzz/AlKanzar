@@ -156,14 +156,19 @@ void NavigationSystem::updateAgents(
             agent.traversingLink = false;
             continue;
         }
+        AnimatedModelComponent* animation = world.animatedModels.tryGet(entity);
+        const LocomotionComponent* locomotion = world.locomotion.tryGet(entity);
+        const CombatantComponent* combatant = world.combatants.tryGet(entity);
+        if (combatant != nullptr && combatStateLocksMovement(combatant->state)) {
+            agent.traversingLink = false;
+            continue;
+        }
+
         const bool physicsDriven = usesPhysicsMotor(world, entity);
         if (physicsDriven) {
             agent.physicsStepStart = transform->position;
             agent.physicsStepStartRotationDeg = transform->rotationDeg;
         }
-
-        AnimatedModelComponent* animation = world.animatedModels.tryGet(entity);
-        const LocomotionComponent* locomotion = world.locomotion.tryGet(entity);
         if (!agent.moving || agent.pathCorners.empty()) {
             agent.moving = false;
             agent.traversingLink = false;

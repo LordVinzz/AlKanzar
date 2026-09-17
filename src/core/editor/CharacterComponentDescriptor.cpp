@@ -39,8 +39,17 @@ void ComponentRegistry::registerCharacterDescriptor() {
             world.characterVitals.emplace(entity, vitals);
         },
         [](World& world, EntityId entity) {
+            const CombatantComponent* combatant =
+                world.combatants.tryGet(entity);
+            AnimatedModelComponent* animation =
+                world.animatedModels.tryGet(entity);
+            if (combatant != nullptr && animation != nullptr &&
+                combatant->animationLoopOverrideActive) {
+                animation->loop = combatant->animationLoopBeforeOverride;
+            }
             world.locomotion.remove(entity);
             world.navAgents.remove(entity);
+            world.combatants.remove(entity);
             world.partyMembers.remove(entity);
             world.characterControllers.remove(entity);
             world.characterVitals.remove(entity);

@@ -253,6 +253,42 @@ bool parseModelObject(
         model.character = std::move(character);
     }
 
+    const FieldStatus combatantStatus = pushTableField(
+        state,
+        objectIndex,
+        "combatant_data",
+        false,
+        error,
+        path
+    );
+    if (combatantStatus == FieldStatus::Error) {
+        return false;
+    }
+    if (combatantStatus == FieldStatus::Present) {
+        if (version < 2u) {
+            lua_pop(state, 1);
+            return fail(error, std::string(path) + ".combatant", "requires SCN V2");
+        }
+        if (!model.character.has_value()) {
+            lua_pop(state, 1);
+            return fail(error, std::string(path) + ".combatant", "requires character data");
+        }
+        CombatantComponent combatant{};
+        const std::string combatantPath = std::string(path) + ".combatant";
+        const bool valid = parseCombatantTable(
+            state,
+            -1,
+            combatant,
+            error,
+            combatantPath
+        );
+        lua_pop(state, 1);
+        if (!valid) {
+            return false;
+        }
+        model.combatant = std::move(combatant);
+    }
+
     blueprint.models.push_back(std::move(model));
     return true;
 }

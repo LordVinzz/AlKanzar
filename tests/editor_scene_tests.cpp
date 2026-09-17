@@ -128,6 +128,47 @@ void testWorldBindingsDistinguishAuthoredRootsFromGeneratedChildren() {
     assert(world.parents.get(child).parent == parent);
 }
 
+void testCombatantCapturePersistsOnlyAuthoredState() {
+    core::SceneBlueprint blueprint{};
+    core::ModelInstanceBlueprint actor{};
+    actor.id = "actor";
+    actor.name = "Actor";
+    actor.path = "Actor.glb";
+    actor.character = core::CharacterBlueprint{};
+    blueprint.models.push_back(actor);
+    blueprint.objectOrder.push_back(actor.id);
+
+    core::SceneDocument document{};
+    document.begin(std::move(blueprint));
+    core::World world{};
+    const core::EntityId entity = world.createEntity();
+    world.authoredSceneObjects.emplace(
+        entity,
+        core::AuthoredSceneObjectComponent{"actor"}
+    );
+    world.characters.emplace(entity, core::CharacterComponent{});
+    core::CombatantComponent combatant{};
+    combatant.state = core::CombatState::Scripted;
+    combatant.scriptPhase = 4u;
+    combatant.observedState = core::CombatState::Combat;
+    combatant.stateElapsedSeconds = 9.0f;
+    world.combatants.emplace(entity, combatant);
+    document.bindWorld(world);
+
+    assert(document.captureRuntimeObject("actor", world));
+    const core::CombatantComponent& captured =
+        *document.blueprint().models[0].combatant;
+    assert(captured.state == core::CombatState::Scripted);
+    assert(captured.scriptPhase == 4u);
+    assert(captured.observedState == captured.state);
+    assert(captured.stateElapsedSeconds == 0.0f);
+    assert(document.dirty());
+
+    world.combatants.remove(entity);
+    assert(document.captureRuntimeObject("actor", world));
+    assert(!document.blueprint().models[0].combatant.has_value());
+}
+
 void testInvalidAtomicSaveDoesNotReplaceExistingFile() {
     const std::filesystem::path path =
         std::filesystem::current_path() / "editor-scene-atomic-witness.scene";
@@ -243,6 +284,7 @@ int main() {
     testPrimitiveCreationDuplicationAndPersistence();
     testReparentPreservesWorldTransform();
     testWorldBindingsDistinguishAuthoredRootsFromGeneratedChildren();
+    testCombatantCapturePersistsOnlyAuthoredState();
     testInvalidAtomicSaveDoesNotReplaceExistingFile();
     testLegacyDocumentRemainsDirtyUntilSavedAsV2();
     testEditedDocumentSavesMirrorsAndReopensCanonically();

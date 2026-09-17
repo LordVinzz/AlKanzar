@@ -15,6 +15,7 @@
 #include "core/navigation/Navigation.hpp"
 #include "core/physics/PhysicsSystem.hpp"
 #include "core/systems/PickingSystem.hpp"
+#include "core/systems/CombatSystem.hpp"
 #include "core/systems/PartyOrderSystem.hpp"
 #include "core/systems/PartySelectionModel.hpp"
 #include "core/systems/PartySelectionSystem.hpp"
@@ -94,6 +95,7 @@ struct EngineServices {
     EditorSession editorSession;
     FrameSceneData frame;
     AnimationSystem animationSystem;
+    CombatSystem combatSystem;
     TransformSystem transformSystem;
     LightSystem lightSystem;
     NavigationRuntime navigation;
